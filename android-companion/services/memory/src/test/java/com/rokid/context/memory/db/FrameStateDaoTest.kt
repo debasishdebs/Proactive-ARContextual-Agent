@@ -280,4 +280,22 @@ class FrameStateDaoTest {
         dao.claimCaptionQueued(listOf("b"), "cb", 1_000); assertEquals(1, dao.requeueAbandoned(100_000, 50_000))
         dao.get("b")!!.let { assertEquals(1, it.attempts); assertEquals(100_000 + dayMs, it.claimedAt) }
     }
+
+    @Test fun reviveTransientFinalTakesOnlyTimeoutAndTransient() = runBlocking {
+        fun fin(id: String, err: String?, upd: Long = 1) = row(id, "FAILED_FINAL", 8).copy(lastError = err, updatedAt = upd)
+        dao.insertIgnore(listOf(
+            fin("to", "timeout"), fin("tr", "TRANSIENT"), fin("rej", "REJECTED"), fin("bad", "INVALID_OUTPUT"), fin("cl", "cluster_failed"),
+            fin("df", "describe_failed"), fin("ab", "abandoned"), fin("forgot", "timeout"), row("p", "PENDING").copy(lastError = "timeout"),
+        ))
+        db.forgetDao().insertTombstone(ForgetTombstoneEntity("forgot", 1))
+        assertEquals(2, dao.reviveTransientFinal(nowMs = 500, limit = 10))
+        for (id in listOf("to", "tr")) dao.get(id)!!.let { assertEquals("PENDING", it.state); assertEquals(0, it.attempts); assertNull(it.lastError); assertEquals(500L, it.updatedAt) }
+        for (id in listOf("rej", "bad", "cl", "df", "ab", "forgot")) assertEquals("FAILED_FINAL", dao.get(id)!!.state)
+    }
+
+    @Test fun reviveTransientFinalIsBoundedNewestFirst() = runBlocking {
+        dao.insertIgnore((1..5).map { row("f$it", "FAILED_FINAL", 8).copy(lastError = "timeout", updatedAt = it.toLong()) })
+        assertEquals(2, dao.reviveTransientFinal(nowMs = 900, limit = 2))
+        assertEquals(setOf("f4", "f5"), listOf("f1", "f2", "f3", "f4", "f5").filter { dao.get(it)!!.state == "PENDING" }.toSet())
+    }
 }

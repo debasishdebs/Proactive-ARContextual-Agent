@@ -185,6 +185,19 @@ class KeyframeHandle internal constructor(private val app: Context) {
     }
 
     private var networkWatch: ConnectivityManager.NetworkCallback? = null
+    /** A validated network nudges the WorkManager queues (unless the pipeline is paused) and, at most every 5 minutes, revives frames that failed for good only on timeouts/5xx. */
+    private val networkWake by lazy {
+        NetworkWake(
+            revive = { now, limit -> db.frameStateDao().reviveTransientFinal(now, limit) },
+            nudge = {
+                if (com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(app)) {
+                    val sch = com.rokid.context.work.OrchestrationScheduler(app)
+                    sch.enqueueQueueDrainNow(); sch.enqueueFrameIngestIfIdle()
+                }
+            },
+            clock,
+        )
+    }
     private val openHooked = AtomicBoolean(false)
     /** The roaming data saver (the app's one [com.rokid.context.ai.datasaver.DataSaverGraph]). */
     internal val dataGate: DataGate by lazy { com.rokid.context.ai.datasaver.DataSaverGraph.get(app).also { it.reachProvider = ::photoReach } }
@@ -279,14 +292,23 @@ class KeyframeHandle internal constructor(private val app: Context) {
         if (networkWatch != null) return
         val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         val cb = object : ConnectivityManager.NetworkCallback() {
+            // WP9: fires when a network is VALIDATED (actually usable), not merely connected. Android's own check; no custom probe.
             override fun onAvailable(network: Network) {
-                scope.launch { runCatching { pipeline.recover() } }
-                pipeline.onNetworkReturn()
+                scope.launch {
+                    runCatching { pipeline.recover() }
+                    val n = runCatching { networkWake.onValidated() }.getOrDefault(0)
+                    if (n > 0) PcLog.i(TAG, "network validated: revived $n transient-failed frames")
+                    pipeline.onNetworkReturn()
+                }
             }
         }
+        val request = android.net.NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            .build()
         // The roaming data saver opening (Wi-Fi back, mode or abroad switch changed) wakes the parked loop like a returning network does.
         if (openHooked.compareAndSet(false, true)) (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.addOpenListener { scope.launch { runCatching { pipeline.parkForDataSaver() }; pipeline.onNetworkReturn() } }
-        try { cm.registerDefaultNetworkCallback(cb); networkWatch = cb } catch (e: Exception) { PcLog.w(TAG, "network watch unavailable: ${e.javaClass.simpleName}") }
+        try { cm.registerNetworkCallback(request, cb); networkWatch = cb } catch (e: Exception) { PcLog.w(TAG, "network watch unavailable: ${e.javaClass.simpleName}") }
     }
 
     /** Whether the active network has validated internet access (ConnectivityManager). Unknown counts as online: only a clear "no" means offline. */
