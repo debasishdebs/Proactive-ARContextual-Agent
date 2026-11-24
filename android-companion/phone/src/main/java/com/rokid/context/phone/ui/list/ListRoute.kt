@@ -30,7 +30,7 @@ fun ListViewRoute(kind: ListKind, ids: List<String>, scope: ListScope?, deps: Ph
     }
     // Multi-select Forget exists only while the Developer flag `forgetV2` is ON (default OFF): with it OFF the port is null and the list is exactly the unselectable one.
     vm.forgetPort = SelectionGate.port(app)
-    ListScreen(vm.source, onBack = back, onMessage = { Toast.makeText(app, it, Toast.LENGTH_SHORT).show() }, breakdown = breakdown, selection = vm.selection)
+    ListScreen(vm.source, onBack = back, onMessage = { Toast.makeText(app, it, Toast.LENGTH_SHORT).show() }, breakdown = breakdown, selection = vm.selection, filter = if (vm.canFilter) FilterUi(vm.filter, vm::applyFilter, vm::clearFilter) else null)
 }
 
 /** The one switch of the multi-select Forget (proxy ruling P2: flagged, default OFF, Developer only until the real user rules). */

@@ -5,10 +5,12 @@ import com.rokid.context.memory.DayBucket
 import com.rokid.context.phone.ui.list.ListKind
 import com.rokid.context.phone.ui.list.ListItem
 import com.rokid.context.phone.ui.list.PagedRow
+import com.rokid.context.phone.ui.list.RangeFilter
 import com.rokid.context.phone.ui.preview.ActivityData
 import com.rokid.context.phone.ui.preview.ActivityPage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.debounce
@@ -49,20 +51,42 @@ class BreakdownModel(
     private data class HourKey(val day: LocalDate, val startMs: Long)
     private var dayEntries: Map<LocalDate, List<HourEntry>> = emptyMap()
     private var started = false
+    private var host: CoroutineScope? = null
+    private var timesJob: Job? = null
+    private var filter: LongRange? = null
+
+    /** [r] narrowed to the date and time filter; null when nothing of it is inside (the filter and the range do not meet). */
+    private fun clip(r: LongRange): LongRange? = RangeFilter.narrow(r, filter).takeIf { !it.isEmpty() }
 
     /** Starts following the counts: the first emission builds the tree and re-opens the saved hours; every later one (and every debounced change signal) re-reads what is expanded. */
     @OptIn(FlowPreview::class)
     fun start(scope: CoroutineScope) {
         if (started) return
-        started = true
+        started = true; host = scope
         restore()
-        scope.launch {
-            var first = true
-            data.times(kind, range).collect { t ->
+        followTimes(scope, reopen = true)
+        scope.launch { data.listChanges(kind).debounce(KeysetPager.DEBOUNCE_MS).collect { lock.withLock { rebuild(reloadDays = true) } } }
+    }
+
+    private fun followTimes(scope: CoroutineScope, reopen: Boolean) {
+        timesJob?.cancel()
+        timesJob = scope.launch {
+            var first = reopen
+            data.times(kind, RangeFilter.narrow(range, filter)).collect { t ->
                 lock.withLock { times = t; rebuild(reloadDays = true); if (first) { first = false; reopenSaved() } }
             }
         }
-        scope.launch { data.listChanges(kind).debounce(KeysetPager.DEBOUNCE_MS).collect { lock.withLock { rebuild(reloadDays = true) } } }
+    }
+
+    /** Sets the date and time filter ([f] in epoch ms, both ends included; null clears it): the counts and every page are read inside it, and the open hours close. */
+    fun setFilter(f: LongRange?) {
+        if (filter == f) return
+        filter = f
+        val scope = host ?: return // not started yet: it is read when it starts
+        scope.launch {
+            lock.withLock { open.clear(); dayEntries = emptyMap(); times = emptyList(); save() }
+            followTimes(scope, reopen = false)
+        }
     }
 
     /** Expands or collapses [date]; collapsing it closes its open hours. */
@@ -76,7 +100,7 @@ class BreakdownModel(
         val key = HourKey(day, startMs)
         if (open.remove(key) == null) {
             val node = dayEntries[day].orEmpty().filterIsInstance<HourNode>().firstOrNull { it.startMs == startMs } ?: return@withLock
-            val pager = pagerFor(DayBucket.bounds(day, zone()), node)
+            val pager = pagerFor(clip(DayBucket.bounds(day, zone())) ?: return@withLock, node)
             open[key] = pager
             while (open.size > MAX_OPEN_HOURS) open.remove(open.keys.first())
             rebuild(reloadDays = false) // the hour shows at once, its rows as skeletons of the known count
@@ -95,7 +119,8 @@ class BreakdownModel(
     }
 
     private fun pagerFor(day: LongRange, e: HourNode): HourPager<PagedRow> {
-        val hour = if (e.earlier) Long.MIN_VALUE..(e.endMs - 1) else e.startMs..(e.endMs - 1)
+        val whole = if (e.earlier) Long.MIN_VALUE..(e.endMs - 1) else e.startMs..(e.endMs - 1)
+        val hour = clip(whole) ?: RangeFilter.NONE
         return HourPager(Cursor.head(hour), { it.cursor }, HourPager.PAGE_SIZE) { after, n -> summarize(data.momentHourPage(day, hour, after, n)) }
     }
 
@@ -111,7 +136,8 @@ class BreakdownModel(
         for (d in days.filter { it in expandedDays }) {
             if (reloadDays || d !in entries) {
                 val dr = DayBucket.bounds(d, z)
-                entries[d] = DayHourTree.hours(d, z, data.momentTimes(dr), data.pauses(dr))
+                val inside = clip(dr)
+                entries[d] = DayHourTree.hours(d, z, if (inside == null) emptyList() else data.momentTimes(inside), data.pauses(dr))
             }
         }
         entries.keys.retainAll(days.toSet()); dayEntries = entries
@@ -164,7 +190,7 @@ class BreakdownModel(
     private suspend fun reopenSaved() {
         for ((k, page, starts) in saved) {
             val node = dayEntries[k.day]?.filterIsInstance<HourNode>()?.firstOrNull { it.startMs == k.startMs } ?: continue
-            val pager = pagerFor(DayBucket.bounds(k.day, zone()), node)
+            val pager = pagerFor(clip(DayBucket.bounds(k.day, zone())) ?: continue, node)
             pager.open(node.count, HourSnapshot(page, starts))
             open[k] = pager
         }

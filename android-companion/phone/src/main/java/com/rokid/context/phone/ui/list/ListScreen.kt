@@ -99,6 +99,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
+private const val RANGE_EMPTY = "No items in this range"
+
 private enum class SortOrder { AZ, ZA }
 
 /** Saves a selection as a list (a Set is not Bundle-able). */
@@ -124,6 +126,8 @@ fun ListScreen(
     breakdown: BreakdownUi? = null,
     /** Multi-select Forget (Activity pagination A7/A8). Null, or one whose [SelectionController.available] is false, hides all of it: no long-press, no checkbox, no menu. */
     selection: SelectionController? = null,
+    /** The date and time filter (a list over a period only); null hides the Filter button. */
+    filter: FilterUi? = null,
 ) {
     val scope = rememberCoroutineScope()
 
@@ -143,6 +147,8 @@ fun ListScreen(
     val showTree = breakdown != null && mode == ListViewMode.BREAKDOWN
     val tree by (breakdown?.tree ?: remember { MutableStateFlow(TreePane()) }).collectAsState()
     val selState by (selection?.state ?: remember { MutableStateFlow(SelectionState()) }).collectAsState()
+    val range by (filter?.range ?: remember { MutableStateFlow<DateTimeRange?>(null) }).collectAsState()
+    var pickingRange by rememberSaveable { mutableStateOf(false) }
     val canSelect = selection != null && selection.available
     val picking = canSelect && selState.selection.active
     LaunchedEffect(selState.message) { selState.message?.let { onMessage(it); selection?.consumeMessage() } }
@@ -221,6 +227,7 @@ fun ListScreen(
                 if (grouped) BadgedBox(badge = { if (statusFilter != null) Badge(containerColor = PcColors.Mint) }) {
                     IconButton(onClick = { showFilters = true }) { Icon(Icons.Rounded.FilterList, contentDescription = "Filter") }
                 }
+                if (filter != null) TextButton(onClick = { pickingRange = true }, modifier = Modifier.testTag("list_filter_button")) { Text(if (range != null) "Filter (on)" else "Filter", color = PcColors.MintDeep) }
                 if (canSelect) SelectionMenu(selection!!, selState, tree, showTree, itemsNow.orEmpty().map { it.id })
                 if (source.sortable) IconButton(onClick = { sort = if (sort == SortOrder.AZ) SortOrder.ZA else SortOrder.AZ }) {
                     Box(contentAlignment = Alignment.BottomEnd) {
@@ -230,15 +237,16 @@ fun ListScreen(
                 }
             }
             header()
+            range?.let { r -> filter?.let { FilterChipRow(r, it.clear) } }
             if (picking) SelectionBar(selState.selection.size) { selection?.clear() }
             if (breakdown != null) ViewToggle(mode, breakdown.setView)
             if (!showTree) SearchBar(query, source.searchHint) { query = it }
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
-                    showTree -> BreakdownPane(tree, breakdown!!.actions, onRow, source.emptyText, pick = pick?.let { p -> BreakdownPick(p, { d -> selection!!.selectDay(d) }, { d, h -> selection!!.selectHour(d, h) }) })
+                    showTree -> BreakdownPane(tree, breakdown!!.actions, onRow, if (range != null) "${source.emptyText}\n$RANGE_EMPTY" else source.emptyText, pick = pick?.let { p -> BreakdownPick(p, { d -> selection!!.selectDay(d) }, { d, h -> selection!!.selectHour(d, h) }) })
                     itemsNow == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = PcColors.Mint) }
-                    visible.isEmpty() -> EmptyState(if (itemsNow!!.isEmpty()) source.emptyText else "No matches")
+                    visible.isEmpty() -> EmptyState(if (itemsNow!!.isEmpty()) (if (range != null) "${source.emptyText}\n$RANGE_EMPTY" else source.emptyText) else "No matches")
                     else -> Box(Modifier.fillMaxSize()) {
                         LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 32.dp), modifier = Modifier.testTag("list_lazy")) {
                             items(entries, key = { it.key }) { e ->
@@ -307,6 +315,8 @@ fun ListScreen(
                 }
             }
         }
+
+        if (pickingRange && filter != null) RangeFilterDialog(range, filter.apply, filter.clear) { pickingRange = false }
 
         progress?.let { ProgressOverlay(it) }
         if (canSelect) SelectionDialogs(selState, selection!!)

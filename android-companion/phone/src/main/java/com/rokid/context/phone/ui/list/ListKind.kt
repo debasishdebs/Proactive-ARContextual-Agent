@@ -16,6 +16,7 @@ import com.rokid.context.phone.ui.activity.PeriodWindow
 import com.rokid.context.phone.ui.shell.Routes
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -114,35 +115,61 @@ class RecordListSource(
         val byId = Previewables.factory(kind).load(p.ids, PreviewCtx(p.data, zone(), today())).map { it.summary() }.associateBy { it.id }
         return p.ids.mapIndexed { i, id -> PagedRow(p.cursors[i], id, byId[id]) }
     }
-    private val pager: KeysetPager<PagedRow>? by lazy { scope?.let { KeysetPager(rows, it.millis(zone()), pageSize) } }
+    private var pager: KeysetPager<PagedRow>? = null
+    private var filter: LongRange? = null
     private val busy = MutableStateFlow(false)
     private val failure = MutableStateFlow<String?>(null)
     private val restore = MutableStateFlow<String?>(null)
     private var saved: SavedStateHandle? = null
     private var job: CoroutineScope? = null
+    private var running: Job? = null
+    private var loading: Job? = null
 
     private val paneOut = MutableStateFlow(ListPane(loaded = scope == null))
     override val pane: StateFlow<ListPane> get() = paneOut
     override val restoreTarget: StateFlow<String?> get() = restore
     override fun consumeRestore() { restore.value = null }
 
-    /** Starts the paging in [scope] (a ViewModel's): the first page, or a restore from [saved] after a process death, then a refresh after every debounced change. */
-    fun startIn(scope: CoroutineScope, saved: SavedStateHandle? = null) {
-        val p = pager ?: return
-        if (job != null) return
-        job = scope; this.saved = saved
-        scope.launch { combine(p.state, busy, failure) { s, b, e -> ListPane(s.rows.mapNotNull { it.item }, s.headDropped, s.hasMore, b, s.newCount, s.loaded, e) }.collect { paneOut.value = it } }
-        val anchor = saved?.get<String>(KEY_ANCHOR)?.let(::parseAnchor)
-        guarded(scope) { if (anchor != null) { val i = p.restore(anchor); restore.value = p.state.value.rows.getOrNull(i)?.id } else p.loadFirst() }
-        scope.launch { p.refreshSignals.collect { guarded(this) { p.refresh() } } }
+    /** The period narrowed to the date and time filter, so the database reads only the rows inside it. */
+    private fun build(): KeysetPager<PagedRow>? = scope?.let { KeysetPager(rows, RangeFilter.narrow(it.millis(zone()), filter), pageSize) }
+
+    /**
+     * Sets the date and time filter ([range] in epoch ms, both ends included; null clears it). Before [startIn] it only records it; after, the list starts again from the newest row inside the range
+     * (a new bounded query, nothing is filtered in memory). A list of a small set of ids has no period and ignores it.
+     */
+    fun setFilter(range: LongRange?) {
+        if (filter == range) return
+        filter = range
+        val host = job ?: return
+        if (scope == null) return
+        saved?.set(KEY_ANCHOR, "")
+        pager = build()
+        attach(host, null)
     }
 
-    private fun guarded(scope: CoroutineScope, block: suspend () -> Unit) {
+    /** Starts the paging in [host] (a ViewModel's scope): the first page, or a restore from [saved] after a process death, then a refresh after every debounced change. */
+    fun startIn(host: CoroutineScope, saved: SavedStateHandle? = null) {
+        if (scope == null || job != null) return
+        job = host; this.saved = saved
+        pager = build()
+        attach(host, saved?.get<String>(KEY_ANCHOR)?.let(::parseAnchor))
+    }
+
+    private fun attach(host: CoroutineScope, anchor: PagerAnchor?) {
+        val p = pager ?: return
+        running?.cancel(); loading?.cancel()
+        running = host.launch {
+            launch { combine(p.state, busy, failure) { s, b, e -> ListPane(s.rows.mapNotNull { it.item }, s.headDropped, s.hasMore, b, s.newCount, s.loaded, e) }.collect { paneOut.value = it } }
+            launch { p.refreshSignals.collect { guarded(this) { p.refresh() } } }
+        }
+        loading = guarded(host) { if (anchor != null) { val i = p.restore(anchor); restore.value = p.state.value.rows.getOrNull(i)?.id } else p.loadFirst() }
+    }
+
+    private fun guarded(scope: CoroutineScope, block: suspend () -> Unit): Job =
         scope.launch {
             busy.value = true
             try { block(); failure.value = null } catch (e: CancellationException) { throw e } catch (e: Exception) { failure.value = "Couldn't load this list" } finally { busy.value = false }
         }
-    }
     override fun loadMore() { val s = job ?: return; val p = pager ?: return; if (!busy.value && p.state.value.hasMore) guarded(s) { p.loadMore() } }
     override fun showNewer() { val s = job ?: return; val p = pager ?: return; guarded(s) { p.showNewer(); restore.value = null } }
     override fun clearNew() { pager?.clearNew() }
