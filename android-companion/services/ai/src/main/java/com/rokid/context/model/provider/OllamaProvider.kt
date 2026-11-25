@@ -47,6 +47,7 @@ class OllamaProvider(
             put("options", buildJsonObject {
                 request.temperature?.let { put("temperature", JsonPrimitive(it)) }
                 request.maxTokens?.let { put("num_predict", JsonPrimitive(it)) }
+                request.seed?.let { put("seed", JsonPrimitive(it)) }
             })
         }
         val http = Request.Builder().url("${baseUrl.trimEnd('/')}/api/generate")
