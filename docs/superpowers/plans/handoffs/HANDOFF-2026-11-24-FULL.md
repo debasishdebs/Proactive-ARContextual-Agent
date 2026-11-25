@@ -114,4 +114,5 @@ Order of work for the next session (cheapest first): check disk/devices -> insta
 WP3-WP9 DONE and committed on feat/v101-ask-eval: WP3 6a7338fd+7e44692a, WP4 4d960d0b, WP5 aad27ae4, WP6+7 dc3fb28f, WP9 29bbc527, WP8 87dc5a3a, timeout 20 min 49b19876, Codex round 1 fix 98039244 (review: docs/superpowers/reviews/2026-11/codex-v18-wp1-9.md, NO P1; P2 #3 imported-photo export after retention is a documented known limit).
 verify_final: 14/15 green on 87dc5a3a, orchestration release rerun green with the 20 min task timeout. Not yet rerun after 98039244 (its two modules pass).
 LEFT: (a) rerun verify_final on the final tip once; (b) fallback rel-1.5 APK staged by Fri 27 18:00; (c) Sat 28 migration over a FRESH phone pull + emulator rehearsal (needs user pull); (d) Sun 29 ~18:00 install on explicit go; (e) Mon 30 go/no-go; embeddings 1.7 calibration Sat. Nothing installed; no device touched.
+Fallback rel-1.5 staged at ~/Desktop/rokid/backups/apks-v110-rel-1.5-cbcb5702 (25 Nov, Room v17, not installed; install only on the owner go).
 MORNING MESSAGE MUST LEAD WITH: offline vision spike yes/no; fresh phone pull for Saturday.
