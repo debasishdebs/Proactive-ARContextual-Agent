@@ -6,6 +6,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -97,6 +98,22 @@ class MemorySettingsTest {
         compose.onNodeWithText("quick recall for 48 h", substring = true).assertExists()
         compose.onNodeWithTag("retention_medium").assertDoesNotExist(); compose.onNodeWithTag("retention_long").assertDoesNotExist() // K3: the rows are gone, the old values are only read
         compose.onNodeWithText("Automatic clean-up arrives together with Forget.").assertDoesNotExist()
+    }
+
+    /** Retention P2: the read-only preview lines show under Storage when there are some, and nothing when the read failed. */
+    @Test fun theRetentionPreviewShowsCountsAndIsAbsentWhenEmpty() {
+        val lines = listOf("Next 24 hours: 3 photos, 1 skipped photos, 0 image vectors removed; 40 details leave Quick recall (kept).", "Next 7 days: nothing is due.")
+        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(retentionPreview = lines), onBack = {}, onRecall = {}, onQuota = {},
+            onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = {}, onCancelDeleteAll = {}, onOpenReview = {}) } }
+        compose.onNodeWithTag("memory_settings").performScrollToNode(androidx.compose.ui.test.hasText("Coming up"))
+        compose.onNodeWithText("Coming up").assertExists()
+        compose.onNodeWithTag("retention_preview_0").assertExists(); compose.onNodeWithText(lines[1]).assertExists()
+    }
+
+    @Test fun noRetentionPreviewRowsWhenTheReadFailed() {
+        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(), onBack = {}, onRecall = {}, onQuota = {},
+            onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = {}, onCancelDeleteAll = {}, onOpenReview = {}) } }
+        compose.onNodeWithText("Coming up").assertDoesNotExist(); compose.onNodeWithTag("retention_preview_0").assertDoesNotExist()
     }
 
     @Test fun firstConfirmSaysMyCarIsCleared() {

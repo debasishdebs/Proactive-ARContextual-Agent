@@ -298,6 +298,17 @@ abstract class ForgetDao {
     )
     abstract suspend fun quotaPhotosDue(olderThanMs: Long, radiusMs: Long, protectedIds: List<String>, limit: Int): List<String>
 
+    /**
+     * Retention P2 (flag `retentionP2`): of [frameIds], the photos of explicit importance that live INSIDE this database: a `place` memory cites them, or a mark names them or lies within [radiusMs] of their capture time. (Place cards and pins live outside
+     * `context.db`; the caller adds them.) Read-only; no schema change. Callers bind at most a few hundred ids per call.
+     */
+    @Query(
+        "SELECT f.id FROM frame f WHERE f.id IN (:frameIds) AND (" +
+            "EXISTS (SELECT 1 FROM memory pm WHERE pm.type = 'place' AND (pm.frameId = f.id OR EXISTS (SELECT 1 FROM frame_source pf WHERE pf.memoryId = pm.id AND pf.frameId = f.id))) " +
+            "OR EXISTS (SELECT 1 FROM canvas_label l WHERE l.frameId = f.id OR l.atMs BETWEEN f.ts - :radiusMs AND f.ts + :radiusMs))",
+    )
+    abstract suspend fun explicitlyKeptAmong(frameIds: List<String>, radiusMs: Long): List<String>
+
     /** Quota eviction (K6): the photos captured within `[fromMs, toMs]` (the second of a pinned Moment). */
     @Query("SELECT id FROM frame WHERE ts >= :fromMs AND ts <= :toMs") abstract suspend fun frameIdsBetween(fromMs: Long, toMs: Long): List<String>
 

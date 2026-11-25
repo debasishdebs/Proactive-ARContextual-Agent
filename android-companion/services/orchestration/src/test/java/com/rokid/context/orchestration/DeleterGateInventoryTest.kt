@@ -16,6 +16,7 @@ class DeleterGateInventoryTest {
     )
     /** Files that call a deleting API and are NOT themselves gated, each with why that is fine. */
     private val insideGatedCallers = mapOf("HubGraph.kt" to "it only constructs CanvasSlice3Forget for CanvasForgetCoordinator.forgetRange (gated) and calls the gated WatchRowCleanup",
+        "RetentionPreview.kt" to "it constructs a ForgetService only because Retention needs one, and calls only the read-only Retention.plan: nothing is ever expired or removed",
         "CanvasApi.kt" to "it only routes DELETE runs/:id to CanvasBackendImpl.deleteRun, which takes the DataOpGate (CanvasApi maps ExportInProgress to 409)")
 
     @Test fun everyDeleterOutsideTheMemoryModuleTakesTheGate() {

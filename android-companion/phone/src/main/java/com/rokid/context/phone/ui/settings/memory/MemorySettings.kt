@@ -61,6 +61,8 @@ data class MemorySettingsUiState(
     val pinsChecked: Boolean = false,
     /** The pin lookup failed and the user chose "Delete all, keep pins": the wipe is bound to an EMPTY pin set (no pin is deleted), so Delete all is never impossible. */
     val keepPins: Boolean = false,
+    /** Retention P2: the read-only "what clean-up would remove next" lines (counts only). Empty until read, and empty when the read failed. */
+    val retentionPreview: List<String> = emptyList(),
 ) {
     val deleteAllConfirmable: Boolean get() = pinsChecked && (!pinsGoing.failed || keepPins)
     /** The pin ids the wipe may delete: none when the lookup failed (keep pins), else exactly the ones the dialog named. */
@@ -81,6 +83,8 @@ class MemorySettingsViewModel(
     private val work: CoroutineDispatcher = Dispatchers.IO,
     /** Slice 1.4.2: how many pins reference a Moment (they go with Delete all). */
     private val pinsGoing: suspend () -> com.rokid.context.work.frames.place.PinsGoing = { com.rokid.context.work.frames.place.PinsGoing.NONE },
+    /** Retention P2: the preview lines (read-only, counts only); null or a failure shows nothing. */
+    private val retentionPreview: suspend () -> List<String>? = { null },
 ) : ViewModel() {
     private val _state = MutableStateFlow(MemorySettingsUiState())
     val state: StateFlow<MemorySettingsUiState> = _state.asStateFlow()
@@ -158,7 +162,8 @@ class MemorySettingsViewModel(
         val used = try { withContext(work) { usedBytes() } } catch (c: CancellationException) { throw c } catch (e: Exception) {
             PcLog.i(TAG, "storage size unavailable (${e.javaClass.simpleName})"); 0L
         }
-        _state.update { it.copy(storage = "${used / (1024 * 1024)} MB of ${it.settings.quotaMb} MB") }
+        val preview = try { withContext(work) { retentionPreview() } } catch (c: CancellationException) { throw c } catch (e: Exception) { null }
+        _state.update { it.copy(storage = "${used / (1024 * 1024)} MB of ${it.settings.quotaMb} MB", retentionPreview = preview ?: emptyList()) }
     }
 
     private fun busy(block: suspend () -> Unit) {
@@ -274,6 +279,10 @@ fun MemorySettingsScreen(
                 val options = (quotas + s.quotaMb).distinct().sorted()
                 ChoiceRow("Storage cap", options.map { "$it MB" }, options.indexOf(s.quotaMb), { onQuota(options[it]) }, tag = "quota")
                 NoticeText(MemorySettingsViewModel.CAP_NOTE, tag = "quota_note")
+                if (state.retentionPreview.isNotEmpty()) {
+                    Text("Coming up", style = MaterialTheme.typography.titleSmall)
+                    state.retentionPreview.forEachIndexed { i, line -> NoticeText(line, tag = "retention_preview_$i") }
+                }
                 SwitchRow("Encrypt memory", "Protects the memory database with a key kept in this phone", state.encryptionOn, onEncryption, tag = "encryption")
                 state.encryptionNote?.let { NoticeText(it, tag = "encryption_note") }
             }

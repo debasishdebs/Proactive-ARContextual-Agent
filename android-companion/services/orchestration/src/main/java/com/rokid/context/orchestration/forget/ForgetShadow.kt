@@ -27,6 +27,8 @@ object DeveloperFlags {
 
     /** P0 retention fix: "Pause clean-up". ON = the nightly [RetentionWorker] returns at once and expires nothing (safety valve for outings). ON BY DEFAULT in the retention-fix candidate (nothing expires until the user turns it OFF); Developer-only row in Diagnostics. */
     const val PAUSE_RETENTION = "pause_retention"
+    /** Retention P2 (1.8): photo expiry skips the photos a place card, a mark or a pin points to. OFF BY DEFAULT (also OFF when the prefs cannot be read): OFF = the shipped retention, unchanged. The read-only retention preview in Settings does not depend on it. */
+    const val RETENTION_P2 = "retentionP2"
 
     /** Place Guide shadow scoring (1.4.4 slice A): scores the candidates against the dwell photo on-device and adds content-free fields to the `place attempt` line. Never changes a card or a call. OFF by default; no UI. */
     const val PLACE_SHADOW_SCORE = "placeShadowScore"
@@ -109,6 +111,8 @@ object DeveloperFlags {
     fun setMapMomentsDensity(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(MAP_MOMENTS_DENSITY, on).apply() }
 
     fun pauseRetention(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PAUSE_RETENTION, true) }.getOrDefault(true)
+    fun retentionP2(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(RETENTION_P2, false) }.getOrDefault(false)
+    fun setRetentionP2(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(RETENTION_P2, on).apply() }
     fun setPauseRetention(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PAUSE_RETENTION, on).apply() }
     fun multilingualAsk(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MULTILINGUAL_ASK, false) }.getOrDefault(false)
     fun setMultilingualAsk(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(MULTILINGUAL_ASK, on).apply() }
