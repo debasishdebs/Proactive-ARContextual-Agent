@@ -332,6 +332,8 @@ data class HudSettings(
      * The phone sends NEXUS only when the user chose it (default PCA). A glasses build that knows it draws no popups or cards while it is NEXUS (the phone hands them to Nexus instead); an old glasses build ignores it. PROTOCOL_VERSION stays 1.
      */
     val hudHost: HudHost = HudHost.PCA,
+    /** Card wake-up, additive: the glasses may switch their screen on (briefly, rate limited) when the phone auto-opens a place card while the screen is off. Absent (an old phone) = true. */
+    val wakeForCards: Boolean = true,
 )
 
 /** Who draws the HUD popups and cards: PCA's own glasses app (default) or the Rokid Nexus bridge (opt-in, one host at a time). */

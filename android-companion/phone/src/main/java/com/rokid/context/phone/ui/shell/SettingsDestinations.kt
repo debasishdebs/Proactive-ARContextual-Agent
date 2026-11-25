@@ -106,7 +106,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val vm = viewModel { GlassesSettingsViewModel(deps.glasses, s.hud, voice = s.voice.capabilities, reauthorizeAction = s.reauthorize) }
         val state by vm.state.collectAsStateWithLifecycle()
         GlassesSettingsScreen(state, onBack = back, onVerbosity = vm::setVerbosity, onScale = vm::setScale, onPosition = vm::setPosition,
-            onGesture = vm::setGesture, onReauthorize = vm::reauthorize, onIconCorner = vm::setIconCorner, onPopupSeconds = vm::setPopupSeconds,
+            onGesture = vm::setGesture, onReauthorize = vm::reauthorize, onIconCorner = vm::setIconCorner, onPopupSeconds = vm::setPopupSeconds, onWakeForCards = vm::setWakeForCards,
             onOpenNearby = { nav.navigate(Routes.SETTINGS_NEARBY) })
     }
 

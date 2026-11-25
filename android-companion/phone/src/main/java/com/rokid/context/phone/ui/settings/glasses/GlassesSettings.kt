@@ -52,6 +52,7 @@ import com.rokid.context.phone.ui.settings.HudSettingsControl
 import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.SecondaryAction
 import com.rokid.context.phone.ui.settings.SettingsCard
+import com.rokid.context.phone.ui.settings.SwitchRow
 import com.rokid.context.phone.ui.settings.SettingsModel
 import com.rokid.context.phone.ui.settings.SettingsPage
 import com.rokid.context.voice.VoiceCapabilities
@@ -85,6 +86,7 @@ class GlassesSettingsViewModel(
     fun setGesture(g: Gesture, a: GestureAction) = hud.update { it.copy(gestures = it.gestures + (g to a)) }
     fun setIconCorner(c: IconCorner) = hud.update { it.copy(iconCorner = c) }
     fun setPopupSeconds(s: Int) = hud.update { it.copy(popupSeconds = clampPopupSeconds(s)) }
+    fun setWakeForCards(on: Boolean) = hud.update { it.copy(wakeForCards = on) }
     fun reauthorize() = reauthorizeAction()
 }
 
@@ -123,6 +125,7 @@ fun GlassesSettingsScreen(
     onReauthorize: () -> Unit,
     onIconCorner: (IconCorner) -> Unit = {},
     onPopupSeconds: (Int) -> Unit = {},
+    onWakeForCards: (Boolean) -> Unit = {},
     onOpenNearby: () -> Unit = {},
 ) {
     val s = state.settings
@@ -205,6 +208,7 @@ fun GlassesSettingsScreen(
                     valueRange = POPUP_MIN_SEC.toFloat()..POPUP_MAX_SEC.toFloat(), steps = POPUP_MAX_SEC - POPUP_MIN_SEC - 1,
                     modifier = Modifier.testTag("popup_seconds").semantics { contentDescription = "Pop-up time" },
                 )
+                SwitchRow("Wake glasses for cards", "Briefly switch the screen on when a place card pops up while it is off (at most once a minute).", s.wakeForCards, onWakeForCards, tag = "wake_for_cards")
                 NoticeText(GlassesLabels.OVERLAY_HINT, tag = "overlay_hint")
             }
         }

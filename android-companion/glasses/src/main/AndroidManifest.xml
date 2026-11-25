@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <!-- Minimised icon and pop-ups (spec 2026-10-14 §3): overlay windows; Settings.canDrawOverlays gates them at runtime. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:allowBackup="false"

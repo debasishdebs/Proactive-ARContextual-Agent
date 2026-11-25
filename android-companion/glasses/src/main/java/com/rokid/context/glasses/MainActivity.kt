@@ -105,6 +105,7 @@ class MainActivity : ComponentActivity() {
     private var shownPlaceCard: PlaceCardInfo? = null
     /** The place card the minimised pop-up shows (so it can be withdrawn before its timer). */
     private val placePopup = com.rokid.context.glasses.overlay.PlacePopupTracker()
+    private val cardWaker by lazy { com.rokid.context.glasses.overlay.CardWaker(getSystemService(PowerManager::class.java), android.os.SystemClock::elapsedRealtime) }
     /** Minimised when this start began, until the next intent decides why we came forward. */
     private var wasMinimised = false
     private var sessionReopenedAtMs = Long.MIN_VALUE / 2
@@ -249,12 +250,16 @@ class MainActivity : ComponentActivity() {
         }
         // Place Guide PG3: a place card shows at Medium and Max only, and never while a pause zone is active (fail closed when the pauses are not loaded).
         if (o is Overlay.Nudge && o.place != null && (controller.settings.value.verbosity == com.rokid.context.core.model.Verbosity.SILENT || runtime.pauses.zoneActive())) return
-        val pm = getSystemService(PowerManager::class.java)
-        if (!PopupGate.show(o, pm?.isInteractive ?: true, com.rokid.context.core.model.context.ContextPolicies.of(runtime.contextApplied()).nudges)) { runtime.screenWakes.onNudgeSkipped(); return }
         // v3.1 r6 P1-1/2: a place card lives for what is left of its cap and absolute deadline AT THIS DRAW (not 12 s flat); nothing is drawn when that is 0 or less (the same rule as the HudPresenter).
         val isPlace = o is Overlay.Nudge && o.place != null
         val popMs = PopupOverlay.showMs(o, System.currentTimeMillis(), controller.settings.value.popupMs())
         if (isPlace && popMs <= 0L) return
+        val pm = getSystemService(PowerManager::class.java)
+        val nudgesAllowed = com.rokid.context.core.model.context.ContextPolicies.of(runtime.contextApplied()).nudges
+        var interactive = pm?.isInteractive ?: true
+        // Card wake-up: only the phone's own place card (never a wearer's open), screen off, switch on, rate limited. A brief timed wake lock; nothing is held after the card goes.
+        if (!interactive && isPlace && nudgesAllowed && cardWaker.wake(controller.settings.value.wakeForCards)) interactive = true
+        if (!PopupGate.show(o, interactive, nudgesAllowed)) { runtime.screenWakes.onNudgeSkipped(); return }
         PopupOverlay.textFor(o, controller.settings.value.verbosity)?.let {
             runtime.screenWakes.onOurUi()
             runtime.popup.show(it, popMs)
@@ -264,6 +269,7 @@ class MainActivity : ComponentActivity() {
 
     /** Takes the place pop-up down (only while it still shows that card's text) and tells the phone which card instance is gone, so it drops its copy. */
     private fun withdrawPlacePopup(w: com.rokid.context.glasses.overlay.PlacePopupTracker.Shown) {
+        cardWaker.release() // the card is gone: do not hold the screen for it
         if (runtime.popup.text == w.text) runtime.popup.hide()
         controller.send(Command.DismissPlace(w.card.title, w.card.id))
     }
@@ -605,6 +611,7 @@ class MainActivity : ComponentActivity() {
         cancelAsk()
         controller.onActivityExit()
         if (isFinishing) { runtime.hudPresence.onExited(); CaptureService.stopKeepAlive(this); runtime.minimisedIcon.hide(); runtime.popup.hide() }
+        cardWaker.release()
         runtime.motionListener = null
         runtime.detach(controller)
         super.onDestroy()

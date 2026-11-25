@@ -125,6 +125,11 @@ class ProtocolTest {
         assertEquals(Wire.encode(Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = 5, pauses = emptyList())).contains("diagFlagState"), false)
     }
 
+    /** Card wake-up: `wakeForCards` is additive, default on (an old phone sends no field). */
+    @Test fun wakeForCardsIsAdditiveDefaultOn() {
+        assertTrue(assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1}""")).value.wakeForCards)
+    }
+
     /** Fix wave H3: `captureCue` is additive, default on; old phones' settings (no field) keep the blink on. */
     @Test fun captureCueIsAdditiveDefaultOn() {
         assertTrue(assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1}""")).value.captureCue)
