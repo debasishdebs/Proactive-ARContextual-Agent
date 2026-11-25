@@ -61,6 +61,7 @@ class FamilyInventoryTest {
     @Test fun thePlacePackIsNotPhotoDerivedAndDeleteAllKeepsItsSeededAreas() {
         assertEquals(Family.PLACE_PACK, Families.ownerOfTable("place")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("cell")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("area"))
         assertEquals(Family.PLACE_HISTORY, Families.ownerOfTable("place_card_log"))
+        assertEquals(Family.SCENE_CENTROID, Families.ownerOfTable("scene_centroid"))
         val fate = DeletionGraph.TABLES.associate { it.name to it.fate }
         assertEquals("fetched places and recency are cleared", DeletionGraph.Fate.SCRUBBED, fate["place"]); assertEquals(DeletionGraph.Fate.SCRUBBED, fate["cell"])
         assertEquals("seeded areas are kept", DeletionGraph.Fate.KEPT, fate["area"])

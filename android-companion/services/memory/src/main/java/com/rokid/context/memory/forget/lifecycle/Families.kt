@@ -21,7 +21,7 @@ internal object SideEffectRefs {
 object Families {
     val ALL: List<ForgetFamily> = listOf(
         PhotoFamily, MemoryFamily, MomentFamily, SceneFamily, DerivedFieldFamily, MarkFamily, TraceFamily, RunResultFamily,
-        AnswerFamily, NudgeFamily, ProposalFamily, AudioFamily, PersonFamily, ObjectFamily, MomentLocationFamily, PlaceHistoryFamily, PlacePackFamily, PlaceCardFamily, ConfigFamily, ControlFamily,
+        AnswerFamily, NudgeFamily, ProposalFamily, AudioFamily, PersonFamily, ObjectFamily, MomentLocationFamily, SceneCentroidFamily, PlaceHistoryFamily, PlacePackFamily, PlaceCardFamily, ConfigFamily, ControlFamily,
     )
 
     fun of(f: Family): ForgetFamily = ALL.first { it.family == f }
@@ -178,6 +178,17 @@ internal object DerivedFieldFamily : ForgetFamily {
 internal object MomentLocationFamily : ForgetFamily {
     override val family = Family.MOMENT_LOCATION
     override val tables = listOf("moment_location")
+    override val selfDeletes = false
+}
+
+/**
+ * The centroid of a Scene's member embeddings per space (v18 WP10): derived data, a leaf (no [SceneFamily] table: a Scene rebuild must not touch it, the producer replaces it). Not enumerated by the planner
+ * ([DesignDivergence] SCENE_CENTROID_NOT_PLANNED). Every Scene deletion deletes it with the Scene (`DerivedStaleDao.purgeScenes`); a USER Forget also deletes every centroid whose Scene changed or is gone
+ * ([com.rokid.context.memory.db.SceneCentroidDao.deleteStale], called at the user-Forget choke points); retention, the sweep and the purge keep it while its Scene row (and revision) lives.
+ */
+internal object SceneCentroidFamily : ForgetFamily {
+    override val family = Family.SCENE_CENTROID
+    override val tables = listOf("scene_centroid")
     override val selfDeletes = false
 }
 

@@ -278,6 +278,7 @@ class MomentForget(
             dropped += md.dropHolding(frames, memories, labels)
             md.remove(projected.toList())
             spans.forEach { dropped += md.dropBetween(it.first, it.last) }
+            db.sceneCentroidDao().deleteStale() // v18 WP10: user Forget only: the Scenes that lost a Moment (shrunk, revision moved) lose their centroid; a dropped Scene's goes with it
             if (byKey && cascade.invalidated.isNotEmpty()) { // derived facts elsewhere were hidden (not deleted): the Moments that hold them survive, lose their text copy and rebuild; their derived fields are hidden
                 val remote = cascade.invalidated.toList().chunked(CHUNK).flatMap { md.momentIdsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), it) }.distinct() - dropped
                 remote.chunked(CHUNK).forEach { md.blankText(it) } // chunked: more than SQLite's bind limit of Moments may hold one hidden fact

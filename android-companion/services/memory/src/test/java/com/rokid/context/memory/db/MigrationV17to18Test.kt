@@ -16,7 +16,7 @@ import org.robolectric.annotation.Config
 import java.io.File
 
 /**
- * v17 -> v18 (v18 build spec WP1): two new tables (`place_card_log`, `moment_location`) and four indexes, nothing else. Started from the REAL exported v17 schema (plain SQLite, Robolectric).
+ * v17 -> v18 (v18 build spec WP1, WP10): three new tables (`place_card_log`, `moment_location`, `scene_centroid`) and four indexes, nothing else. Started from the REAL exported v17 schema (plain SQLite, Robolectric).
  * The encrypted run is NOT covered here (EncryptedMigrationV17to18DeviceTest, androidTest, runs on the emulator).
  */
 @RunWith(AndroidJUnit4::class)
@@ -39,9 +39,9 @@ class MigrationV17to18Test {
         assertTrue(v17.isNotEmpty())
         v17.keys.forEach { t -> assertEquals("v17 table $t", 1, V1Fixture.count(db, t)) }
         val v18 = V1Fixture.tables(18)
-        assertEquals(v17.keys + setOf("place_card_log", "moment_location"), v18.keys)
+        assertEquals(v17.keys + setOf("place_card_log", "moment_location", "scene_centroid"), v18.keys)
         v17.forEach { (t, cols) -> assertEquals("table $t unchanged", cols, v18.getValue(t)) }
-        assertEquals(0, V1Fixture.count(db, "place_card_log")); assertEquals(0, V1Fixture.count(db, "moment_location"))
+        assertEquals(0, V1Fixture.count(db, "place_card_log")); assertEquals(0, V1Fixture.count(db, "moment_location")); assertEquals(0, V1Fixture.count(db, "scene_centroid"))
         db.close()
     }
 
@@ -59,19 +59,22 @@ class MigrationV17to18Test {
         db.query("SELECT photoGone, members, frameId FROM place_card_log").use { c -> assertTrue(c.moveToFirst()); assertEquals(0, c.getInt(0)); assertTrue(c.isNull(1)); assertTrue(c.isNull(2)) }
         db.execSQL("INSERT INTO moment_location (momentId, atMs, anchorKind, anchorId, lat, lon, accuracyM, fixAgeMs, source, savedAt) VALUES ('m', 1, 'FRAME', 'f', 1.0, 2.0, 5.0, 100, 'ZONE_STREAM', 2)")
         db.query("SELECT speedClass, method FROM moment_location").use { c -> assertTrue(c.moveToFirst()); assertTrue(c.isNull(0)); assertTrue(c.isNull(1)) }
+        db.execSQL("INSERT INTO scene_centroid (sceneId, space, membershipRev, dim, vector, memberCount, builtAt) VALUES ('s', 'sp', 1, 2, x'0000803f00000000', 3, 4)")
+        db.query("SELECT dim, memberCount FROM scene_centroid WHERE sceneId = 's' AND space = 'sp'").use { c -> assertTrue(c.moveToFirst()); assertEquals(2, c.getInt(0)); assertEquals(3, c.getInt(1)) }
+        try { db.execSQL("INSERT INTO scene_centroid (sceneId, space, membershipRev, dim, vector, memberCount, builtAt) VALUES ('s', 'sp', 1, 2, x'00', 3, 4)"); fail("one row per (scene, space)") } catch (e: android.database.SQLException) { /* expected */ }
         val idx = db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('place_card_log','moment_location')").use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
         assertTrue(idx.toString(), idx.containsAll(setOf("index_place_card_log_at", "index_place_card_log_frameId", "index_moment_location_atMs", "index_moment_location_anchorId")))
         db.close()
     }
 
-    /** Two CREATE TABLE and four CREATE INDEX, all IF NOT EXISTS; no DROP, ALTER, RENAME, DELETE, UPDATE, INSERT. */
-    @Test fun migrationBodyIsTwoTablesFourIndexes() {
+    /** Three CREATE TABLE and four CREATE INDEX, all IF NOT EXISTS; no DROP, ALTER, RENAME, DELETE, UPDATE, INSERT. */
+    @Test fun migrationBodyIsThreeTablesFourIndexes() {
         var d: File? = File(System.getProperty("user.dir")).absoluteFile
         while (d != null && !File(d, "src/main/java/com/rokid/context/memory/db/ContextDatabase.kt").isFile) d = d.parentFile
         val src = File(requireNotNull(d), "src/main/java/com/rokid/context/memory/db/ContextDatabase.kt").readText()
         val sql = Regex("execSQL\\(\"([^\"]*)\"\\)").findAll(src.substring(src.indexOf("val MIGRATION_17_18"))).map { it.groupValues[1] }.toList()
-        assertEquals(6, sql.size)
-        assertEquals(2, sql.count { it.startsWith("CREATE TABLE IF NOT EXISTS `") })
+        assertEquals(7, sql.size)
+        assertEquals(3, sql.count { it.startsWith("CREATE TABLE IF NOT EXISTS `") })
         assertEquals(4, sql.count { it.startsWith("CREATE INDEX IF NOT EXISTS `") })
         sql.forEach { s -> listOf("DROP", "ALTER", "RENAME", "DELETE", "UPDATE", "INSERT").forEach { w -> assertFalse("$w in $s", Regex("\\b$w\\b", RegexOption.IGNORE_CASE).containsMatchIn(s)) } }
     }
@@ -94,7 +97,7 @@ class MigrationV17to18Test {
         v17()
         val broken = object : Migration(17, 18) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                MIGRATION_17_18.migrate(db) // creates both tables and all four indexes ...
+                MIGRATION_17_18.migrate(db) // creates all three tables and all four indexes ...
                 db.execSQL("CREATE TABLE `moment_location` (`x` TEXT)") // ... then fails: the table exists
             }
         }
@@ -104,7 +107,7 @@ class MigrationV17to18Test {
         try {
             assertEquals(17, raw.version)
             val tables = raw.rawQuery("SELECT name FROM sqlite_master WHERE type='table'", null).use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
-            assertFalse(tables.toString(), tables.contains("place_card_log")); assertFalse(tables.contains("moment_location"))
+            assertFalse(tables.toString(), tables.contains("place_card_log")); assertFalse(tables.contains("moment_location")); assertFalse(tables.contains("scene_centroid"))
             V1Fixture.tables(17).keys.forEach { t -> assertEquals("v17 table $t", 1, raw.rawQuery("SELECT COUNT(*) FROM `$t`", null).use { it.moveToFirst(); it.getInt(0) }) }
         } finally { raw.close() }
     }

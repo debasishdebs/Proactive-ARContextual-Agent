@@ -20,7 +20,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ObjectAuditEntity::class, ObjectDerivedEntity::class,
         SceneEntity::class, ScenePartEntity::class,
         MomentSensorEntity::class,
-        PlaceCardLogEntity::class, MomentLocationEntity::class,
+        PlaceCardLogEntity::class, MomentLocationEntity::class, SceneCentroidEntity::class,
     ],
     version = 18,
     exportSchema = true,
@@ -61,6 +61,7 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun sceneDao(): SceneDao
     abstract fun placeCardLogDao(): PlaceCardLogDao
     abstract fun momentLocationDao(): MomentLocationDao
+    abstract fun sceneCentroidDao(): SceneCentroidDao
     /** Developer dump API: read-only SELECTs only. */
     abstract fun dumpDao(): DumpDao
 }
@@ -362,8 +363,8 @@ val MIGRATION_16_17: Migration = object : Migration(16, 17) {
 }
 
 /**
- * v17 -> v18 (v18 build spec WP1): two new tables and four indexes, nothing else. `place_card_log` moves the phone-only card history into context.db (its SQL is byte-identical to `MIGRATION_PLACES_1_2`);
- * `moment_location` is the optional saved location of a Moment. No existing table changes, no row is touched; the SQL equals the exported `18.json`.
+ * v17 -> v18 (v18 build spec WP1, WP10): three new tables and four indexes, nothing else. `place_card_log` moves the phone-only card history into context.db (its SQL is byte-identical to `MIGRATION_PLACES_1_2`);
+ * `moment_location` is the optional saved location of a Moment; `scene_centroid` (WP10) is the centroid of a Scene's member embeddings per space. No existing table changes, no row is touched; the SQL equals the exported `18.json`.
  */
 val MIGRATION_17_18: Migration = object : Migration(17, 18) {
     override fun migrate(db: SupportSQLiteDatabase) {
@@ -373,5 +374,6 @@ val MIGRATION_17_18: Migration = object : Migration(17, 18) {
         db.execSQL("CREATE TABLE IF NOT EXISTS `moment_location` (`momentId` TEXT NOT NULL, `atMs` INTEGER NOT NULL, `anchorKind` TEXT NOT NULL, `anchorId` TEXT NOT NULL, `lat` REAL NOT NULL, `lon` REAL NOT NULL, `accuracyM` REAL NOT NULL, `fixAgeMs` INTEGER NOT NULL, `source` TEXT NOT NULL, `speedClass` TEXT, `method` TEXT, `savedAt` INTEGER NOT NULL, PRIMARY KEY(`momentId`))")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_moment_location_atMs` ON `moment_location` (`atMs`)")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_moment_location_anchorId` ON `moment_location` (`anchorId`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `scene_centroid` (`sceneId` TEXT NOT NULL, `space` TEXT NOT NULL, `membershipRev` INTEGER NOT NULL, `dim` INTEGER NOT NULL, `vector` BLOB NOT NULL, `memberCount` INTEGER NOT NULL, `builtAt` INTEGER NOT NULL, PRIMARY KEY(`sceneId`, `space`))")
     }
 }

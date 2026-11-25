@@ -21,6 +21,7 @@ import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.memory.db.ObjectDerivedEntity
 import com.rokid.context.memory.db.ProposalEntity
 import com.rokid.context.memory.db.ReviewState
+import com.rokid.context.memory.db.SceneCentroidEntity
 import com.rokid.context.memory.db.SceneEntity
 import com.rokid.context.memory.db.ScenePartEntity
 import com.rokid.context.memory.db.ScenePartKind
@@ -114,6 +115,15 @@ class GoldenWorld(val db: ContextDatabase, now: Long = 1_000) {
     suspend fun seedHistory() {
         fun row(id: String, at: Long, frame: String?) = PlaceCardLogEntity(id, at, "wd:Q1", "Site", "PHOTO", null, frame, null, "c$id", "SENT", 0)
         listOf(row("h1", tA, "fA"), row("h2", tB, "fB"), row("h3", tFar, "fFar"), row("h4", tFar + 3_600_000, null)).forEach { db.placeCardLogDao().put(it) }
+    }
+
+    /**
+     * v18 WP10, called AFTER [seed] and only by the tests that pin `scene_centroid`. Current (not stale) centroids: `sNear|e1`, `sNear|e2` and `sMixed|e1`, each built at the Scene's present `membershipRev`.
+     */
+    suspend fun seedCentroids() {
+        val rev = listOf("sNear", "sMixed").associateWith { db.sceneDao().scene(it)!!.membershipRev }
+        fun row(scene: String, space: String) = SceneCentroidEntity(scene, space, rev.getValue(scene), 2, ByteArray(8) { 1 }, 2, 1)
+        listOf(row("sNear", "e1"), row("sNear", "e2"), row("sMixed", "e1")).forEach { db.sceneCentroidDao().upsert(it) }
     }
 
     /** The delta of [op] on a freshly seeded world. */

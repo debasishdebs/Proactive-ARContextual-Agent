@@ -824,7 +824,7 @@ res_table_count() { # table count
 }
 
 check_trip_db() { # serial: only a COPY, only when the app's own flag says plaintext
-  local s="$1" d hdr enc mode uv ic d_cnt_ml d_cnt_pc
+  local s="$1" d hdr enc mode uv ic d_cnt_ml d_cnt_pc d_cnt_sc
   [ -n "$TMP" ] || { res UNKNOWN "db version" "no temp dir"; return; }
   d="$TMP/db"; mkdir -p "$d"
   A "$s" exec-out run-as "$PHONE_PKG" cat databases/context.db > "$d/context.db" 2>/dev/null || true
@@ -843,11 +843,13 @@ check_trip_db() { # serial: only a COPY, only when the app's own flag says plain
   ic="$(sqlite3 "$d/context.db" 'PRAGMA integrity_check;' 2>/dev/null | tr -d '\r')" || ic=""
   d_cnt_ml="$(sqlite3 "$d/context.db" 'SELECT COUNT(*) FROM moment_location;' 2>/dev/null | tr -d '\r[:space:]')" || d_cnt_ml=""
   d_cnt_pc="$(sqlite3 "$d/context.db" 'SELECT COUNT(*) FROM place_card_log;' 2>/dev/null | tr -d '\r[:space:]')" || d_cnt_pc=""
+  d_cnt_sc="$(sqlite3 "$d/context.db" 'SELECT COUNT(*) FROM scene_centroid;' 2>/dev/null | tr -d '\r[:space:]')" || d_cnt_sc=""
   rm -rf "$d"
   case "$uv" in ''|*[!0-9]*) res UNKNOWN "db version" "user_version unreadable"; return ;; esac
   if [ "$uv" = "$EXPECT_DB_VERSION" ]; then res PASS "db version" "user_version=$uv"; else res FAIL "db version" "user_version=$uv (expected $EXPECT_DB_VERSION)"; fi
   res_table_count moment_location "$d_cnt_ml"
   res_table_count place_card_log "$d_cnt_pc"
+  res_table_count scene_centroid "$d_cnt_sc"
   if [ "$ic" = ok ]; then res PASS "db integrity" "integrity_check ok (copy)"
   elif [ -z "$ic" ]; then res UNKNOWN "db integrity" "integrity_check gave no answer"
   else res FAIL "db integrity" "integrity_check on the copy did not say ok"; fi

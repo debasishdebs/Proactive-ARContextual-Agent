@@ -22,6 +22,13 @@ class WipeDaoTest {
         assertEquals(0, rowCount(db.openHelper.writableDatabase, "moment_location"))
     }
 
+    @Test fun sceneCentroidEmptyAfterWipe() = runBlocking {
+        db.sceneCentroidDao().upsert(SceneCentroidEntity("s1", "e1", 1, 2, ByteArray(8), 3, 1))
+        assertEquals(1, db.sceneCentroidDao().count())
+        db.wipeDao().wipeMemory()
+        assertEquals(0, rowCount(db.openHelper.writableDatabase, "scene_centroid"))
+    }
+
     @Test fun deleteAllClearsFrameTablesKeepsNotes() = runBlocking {
         db.frameDao().insertIgnore(FrameEntity("f1", 1, "/f1.jpg", "rokid_glasses"))
         db.frameMetaDao().upsert(FrameMetaEntity("f1", "w1", "s", "UNKNOWN", false, null, null, null, 640, null, null, null, null, null, 1))

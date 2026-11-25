@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 18,
-    "identityHash": "802987aad614e6317ced7e2e5784ae37",
+    "identityHash": "480a6d0d436a24c329e304f1edd25efa",
     "entities": [
       {
         "tableName": "frame",
@@ -4141,12 +4141,69 @@
           }
         ],
         "foreignKeys": []
+      },
+      {
+        "tableName": "scene_centroid",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sceneId` TEXT NOT NULL, `space` TEXT NOT NULL, `membershipRev` INTEGER NOT NULL, `dim` INTEGER NOT NULL, `vector` BLOB NOT NULL, `memberCount` INTEGER NOT NULL, `builtAt` INTEGER NOT NULL, PRIMARY KEY(`sceneId`, `space`))",
+        "fields": [
+          {
+            "fieldPath": "sceneId",
+            "columnName": "sceneId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "space",
+            "columnName": "space",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "membershipRev",
+            "columnName": "membershipRev",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dim",
+            "columnName": "dim",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "vector",
+            "columnName": "vector",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "memberCount",
+            "columnName": "memberCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "builtAt",
+            "columnName": "builtAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "sceneId",
+            "space"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
       }
     ],
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '802987aad614e6317ced7e2e5784ae37')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '480a6d0d436a24c329e304f1edd25efa')"
     ]
   }
 }

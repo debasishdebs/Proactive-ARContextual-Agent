@@ -281,6 +281,7 @@ class ForgetExecutor internal constructor(
         if (frameIds.isNotEmpty() || spans.isNotEmpty()) c.notifyAfterCommit(frameIds, spans, expired)
         RunResultFamily.selfDelete(frameIds.toSet(), Fate.DROP, c)
         if (!expired) { db.momentLocationDao().deleteForAnchors(frameIds); db.momentLocationDao().deleteForMoments(capturedAt.map(MomentId::ofMs)) } // v18 WP2: a USER Forget deletes the saved location of the photo and of its second; expiry keeps it
+        if (!expired) db.sceneCentroidDao().deleteStale() // v18 WP10: a USER Forget deletes the centroid of every Scene it changed or removed (the Moments are already dropped here); expiry keeps it
         if (!expired) PlaceHistoryFamily.eraseFrames(db, frameIds) // v18 WP3: a USER Forget deletes the place card history rows of the photos (same transaction); expiry unlinks them instead
         RunResultFamily.dropSliceOutputs(c, frameIds)
         return spans
@@ -338,6 +339,7 @@ class ForgetExecutor internal constructor(
             RunResultFamily.selfDelete((sceneIds.map { "scene:$it" } + dropped.map { "moment:$it" }).toSet(), Fate.DROP, c)
         }
         rebuildScenes(c, plan) // F3
+        db.sceneCentroidDao().deleteStale() // v18 WP10: the Scenes this Forget shrank or dropped lose their centroid (user Forget only)
         // 5. The durable cleanup, same transaction.
         val tombstonedTraces = liveTracesBefore - s3.forgettableTraces().map { it.traceId }.toSet()
         val inserted = CleanupOutbox.queue(md, now, cascade.framesToDelete, wire, tombstonedTraces, spans)

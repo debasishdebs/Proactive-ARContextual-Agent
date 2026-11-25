@@ -31,6 +31,7 @@ abstract class DerivedStaleDao {
     @Query("SELECT MAX(partTimeMs) FROM scene_part WHERE sceneId = :sceneId") abstract suspend fun scenePartLastMs(sceneId: String): Long?
     @Query("UPDATE scene SET startMs = :startMs, endMs = :endMs, membershipRev = membershipRev + 1 WHERE sceneId = :sceneId") abstract suspend fun shrinkSceneRow(sceneId: String, startMs: Long, endMs: Long)
     @Query("DELETE FROM scene WHERE sceneId IN (:ids)") protected abstract suspend fun deleteSceneRows(ids: List<String>)
+    @Query("DELETE FROM scene_centroid WHERE sceneId IN (:ids)") protected abstract suspend fun deleteSceneCentroids(ids: List<String>) // v18 WP10: the centroid lives only while its Scene row does
     @Query("DELETE FROM object_audit WHERE objectKind = 'SCENE' AND objectId IN (:ids)") protected abstract suspend fun deleteSceneAudit(ids: List<String>)
     @Query("DELETE FROM object_derived WHERE objectKind = 'SCENE' AND objectId IN (:ids)") protected abstract suspend fun deleteSceneDerived(ids: List<String>)
 
@@ -99,7 +100,7 @@ abstract class DerivedStaleDao {
     protected suspend fun purgeScenes(ids: List<String>) {
         val top = sceneMaxSeq(ids)
         if (top > (sceneSeqFloorValue()?.toIntOrNull() ?: 0)) putSceneSeqFloor(top.toString())
-        deleteSceneRows(ids); deleteSceneAudit(ids); deleteSceneDerived(ids)
+        deleteSceneRows(ids); deleteSceneAudit(ids); deleteSceneDerived(ids); deleteSceneCentroids(ids)
     }
 
     /**
