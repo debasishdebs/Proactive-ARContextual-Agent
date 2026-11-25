@@ -27,7 +27,7 @@ class PlaceSurfaceInventoryTest {
 
     @Test fun thePublishedCardIsAnInMemoryHolderWithdrawnByForgetAndDeleteAll() {
         val holders = Families.of(Family.PLACE_CARD).holders
-        assertEquals(listOf("PlaceCardHolder", "PinReferenceVectors", "PlaceShadow"), holders) // the card, and the shadow's in-memory derived vectors (cleared through ShadowCaches)
+        assertEquals(listOf("PlaceCardHolder", "PinReferenceVectors", "PlaceShadow", "PackMomentStats"), holders) // the card, and the shadow's in-memory derived vectors (cleared through ShadowCaches)
         val card = mainSources.single { it.name == "PlaceCard.kt" }.readText()
         assertTrue("the holder class exists", "class PlaceCardHolder" in card && "never stored" in card)
         val graph = mainSources.single { it.name == "PlaceGraph.kt" }.readText()

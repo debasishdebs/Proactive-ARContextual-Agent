@@ -330,6 +330,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         var askZoneFenceOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.AskZoneFence.isEnabled(app)) }
         var pauseRetentionOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.pauseRetention(app)) }
         var mapZonesV2On by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app)) }
+        var packMomentsOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.packMoments(app)) }
         val ctxDecision by s.contextSources.decision.collectAsStateWithLifecycle()
         val ctxStats = s.contextSources.stats
         var ctxTick by remember { androidx.compose.runtime.mutableIntStateOf(0) }
@@ -355,6 +356,8 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
                     ?.let { c -> @androidx.compose.runtime.Composable { com.rokid.context.phone.devtest.DevTestPlaceSection(c) } }
             } else null,
             mapZonesV2 = mapZonesV2On, onMapZonesV2 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setMapZonesV2(app, on); mapZonesV2On = on },
+            packMoments = packMomentsOn, onPackMoments = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setPackMoments(app, on); packMomentsOn = on },
+            packMomentsCount = if (packMomentsOn) com.rokid.context.work.frames.place.PackMomentStats.summary() else "",
             sensorRecHz = s.hud.settings.collectAsStateWithLifecycle().value.sensorRecHz,
             onSensorRecHz = { hz -> s.hud.update { it.copy(sensorRecHz = hz).normalized() } },
             contextHub = contextHub,

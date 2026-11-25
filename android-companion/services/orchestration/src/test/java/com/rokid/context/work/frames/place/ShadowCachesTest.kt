@@ -58,7 +58,7 @@ class ShadowCachesTest {
         try {
             val refs = PinReferenceVectors(pinMoments = { mapOf("user:a" to "00000001") }, momentFrame = { "f1" }, photo = { ByteArray(1) }, mayEmbed = { true }, zoneBlocked = { false }, generation = { 0L }, scope = sp, elapsed = { 0L })
             val sh = PlaceShadow(embedder = { null }, photo = { null }, elapsed = { 0L })
-            ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[0], refs::clear); ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[1], sh::clear)
+            ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[0], refs::clear); ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[1], sh::clear); ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[2], PackMomentStats::clear)
             ShadowCaches.clearAll() // no throw, both reachable
             assertEquals(ShadowCaches.DERIVED_ITEMS.toSet(), ShadowCaches.registered())
         } finally { sp.coroutineContext[kotlinx.coroutines.Job]!!.cancel() }
@@ -75,7 +75,7 @@ class ShadowCachesTest {
         assertEquals("the DeletionGraph in-memory table and the registry name the same items", ShadowCaches.DERIVED_ITEMS.toSet(), DeletionGraph.IN_MEMORY.map { it.name }.toSet())
         DeletionGraph.IN_MEMORY.forEach { assertEquals("${it.name}: Delete all clears it", DeletionGraph.Fate.WIPED, it.fate); assertTrue(it.why.isNotBlank()) }
         val holders = Families.of(Family.PLACE_CARD).holders
-        assertTrue("the family lists the holders: $holders", holders.containsAll(listOf("PinReferenceVectors", "PlaceShadow")))
+        assertTrue("the family lists the holders: $holders", holders.containsAll(listOf("PinReferenceVectors", "PlaceShadow", "PackMomentStats")))
     }
 
     @Test fun everyDeletionPathCallsTheRegistry() {

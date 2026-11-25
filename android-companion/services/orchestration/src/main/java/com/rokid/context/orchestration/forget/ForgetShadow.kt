@@ -42,6 +42,14 @@ object DeveloperFlags {
     fun placeShadowSiglip(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_SHADOW_SIGLIP, false) }.getOrDefault(false)
     fun setPlaceShadowSiglip(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_SHADOW_SIGLIP, on).apply(); if (!on) com.rokid.context.work.frames.place.ShadowCaches.clearAll() }
 
+    /**
+     * Pack Moments (1.4.6, design 2026-11-25): the Place Guide shadow matches pack places through the same candidate interface as pin Moments and logs counts only. Needs [PLACE_SHADOW_SCORE] ON as well (it rides on
+     * the same hook). Never changes a card, a call or anything the user sees; no network. OFF by default (also OFF when the prefs cannot be read).
+     */
+    const val PACK_MOMENTS = "packMoments"
+    fun packMoments(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PACK_MOMENTS, false) }.getOrDefault(false)
+    fun setPackMoments(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PACK_MOMENTS, on).apply(); if (!on) com.rokid.context.work.frames.place.ShadowCaches.clearAll() }
+
     /** Place fixes (spec 2026-11-24 section 2): each is ON by default and has no UI; OFF restores the older behaviour. */
     const val PLACE_PIN_FIRST = "placePinFirst"
     const val PLACE_FIX_REUSE = "placeFixReuse"

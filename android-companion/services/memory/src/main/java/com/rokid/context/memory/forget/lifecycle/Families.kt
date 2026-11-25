@@ -373,7 +373,7 @@ internal object PlacePackFamily : ForgetFamily {
 internal object PlaceCardFamily : ForgetFamily {
     override val family = Family.PLACE_CARD
     override val tables = emptyList<String>()
-    override val holders = listOf("PlaceCardHolder", "PinReferenceVectors", "PlaceShadow")
+    override val holders = listOf("PlaceCardHolder", "PinReferenceVectors", "PlaceShadow", "PackMomentStats")
 }
 
 /** Settings and user lists a Forget never touches: endpoints, role bindings, prompts, pauses, the shopping list, notes, pipelines and publishes. Pause zones (`pause_zones`, `pause_zone_state`) are preferences: never deleted by a Forget or Delete all. */

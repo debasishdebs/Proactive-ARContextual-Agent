@@ -32,6 +32,7 @@ object DeletionGraph {
     val IN_MEMORY: List<Entry> = listOf(
         w("place_shadow.pin_reference_vectors", "in-memory image vectors of user pins' reference Moment photos (PinReferenceVectors, 1.4.4 B1); max 16, never persisted, dropped with the process; revalidated on every use against the pin link and the photo's tombstone"),
         w("place_shadow.pack_text_vectors", "in-memory text vectors of pack place names (PlaceShadow cache, public text, max 64); not photo-derived, cleared with the others for simplicity"),
+        w("place_shadow.pack_moment_counts", "in-memory COUNTS of pack and pin candidates the shadow saw (PackMomentStats, 1.4.6, flag packMoments); four integers, no id, name, text or photo; reset by every Forget and Delete all"),
     )
 
     val TABLES: List<Entry> = listOf(

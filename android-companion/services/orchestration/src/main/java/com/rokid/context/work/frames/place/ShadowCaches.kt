@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 object ShadowCaches {
     /** The in-memory derived items, as the Forget inventory names them (in-memory derived, never stored, cleared by every deletion path). */
-    val DERIVED_ITEMS = listOf("place_shadow.pin_reference_vectors", "place_shadow.pack_text_vectors")
+    val DERIVED_ITEMS = listOf("place_shadow.pin_reference_vectors", "place_shadow.pack_text_vectors", "place_shadow.pack_moment_counts")
 
     private val clears = ConcurrentHashMap<String, () -> Unit>()
     private val epochValue = AtomicLong(0)
