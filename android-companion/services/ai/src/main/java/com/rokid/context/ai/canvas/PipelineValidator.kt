@@ -182,6 +182,7 @@ object PipelineValidator {
         val out = mutableListOf<String>()
         val params = n.params
         out += ParamCheck.problems(id, t, params)
+        out += ModelNodeTypes.paramProblems(id, n)
         if (n.type == NodeTypes.VISION_EXTRACT) {
             params["batch"]?.let { b ->
                 val v = (b as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull

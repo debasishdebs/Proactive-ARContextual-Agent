@@ -234,14 +234,25 @@ object NodeTypes {
 
     private val index = all.associateBy { it.type }
 
+    /**
+     * Canvas v2.2: the model, classifier, router and rule node types ([ModelNodeTypes]) exist only while this says true. The app sets it from the Developer flag `canvasModelNodes` (default OFF); an unset or
+     * failing switch is OFF (fail closed), so by default no graph can hold them and the palette does not offer them.
+     */
+    @Volatile var modelNodesEnabled: () -> Boolean = { false }
+    private fun modelOn(): Boolean = try { modelNodesEnabled() } catch (e: Exception) { false }
+    private val modelIndex by lazy { ModelNodeTypes.all.associateBy { it.type } }
+
+    /** The types a palette may offer right now: [all], plus the v2.2 types while their flag is on. */
+    fun available(): List<NodeType> = if (modelOn()) all + ModelNodeTypes.all else all
+
     /** The latest descriptor of [t]. */
-    fun byType(t: String): NodeType? = index[t]
+    fun byType(t: String): NodeType? = index[t] ?: if (modelOn()) modelIndex[t] else null
 
     /**
      * The descriptor a node of graph [schema] resolves to (S41): a schema-1 node resolves to version 1 of a slice 2 type, so every old
      * graph keeps validating as it did; a schema-2 graph resolves to the latest. Null for an unknown type, or for a type newer than [schema].
      */
-    fun resolve(t: String, schema: Int): NodeType? = index[t]?.takeIf { it.sinceSchema <= schema }
+    fun resolve(t: String, schema: Int): NodeType? = byType(t)?.takeIf { it.sinceSchema <= schema }
 
     /** The domain of one node: its `params.domain` for a `signal.*` node (the type's default when absent), else its type's. */
     fun domainOf(n: PipelineNode, t: NodeType): Domain {
