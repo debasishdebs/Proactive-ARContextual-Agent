@@ -37,6 +37,8 @@ interface SeedMapControl {
     suspend fun seed(box: GeoBox): Result<SeedOutcome>
     /** Removes the seeded-area record; its places stay as ordinary fetched places. */
     suspend fun remove(id: String)
+    /** Map zones "Show cells" (read only): the stored status of each 5 km cell touching [box]; a missing cell is absent. The default is empty (nothing known). */
+    suspend fun cellStatuses(box: GeoBox): Map<String, String> = emptyMap()
 }
 
 enum class SeedLevel { EMPTY, OK, CONFIRM, TOO_LARGE }

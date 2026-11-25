@@ -66,4 +66,20 @@ class MomentLocationDaoTest {
         dao.insertIfAbsent(row("m1")); dao.insertIfAbsent(row("m2"))
         assertEquals(2, dao.deleteAllMomentLocations()); assertEquals(0, dao.count())
     }
+
+    @Test fun pointsInFiltersByBoxAndTimeAndCaps() = runBlocking {
+        dao.insertIfAbsent(row("a", atMs = 1000, lat = 10.0).copy(lon = 20.0))
+        dao.insertIfAbsent(row("b", atMs = 2000, lat = 10.5).copy(lon = 20.5))
+        dao.insertIfAbsent(row("c", atMs = 3000, lat = 50.0).copy(lon = 20.0)) // outside the box
+        dao.insertIfAbsent(row("d", atMs = 9000, lat = 10.2).copy(lon = 20.2)) // outside the time window
+        val got = dao.pointsIn(9.0, 19.0, 11.0, 21.0, 0, 5000, 100)
+        assertEquals(listOf(1000L, 2000L), got.map { it.atMs })
+        assertEquals(10.5, got[1].lat, 0.0); assertEquals(20.5, got[1].lon, 0.0)
+        assertEquals(1, dao.pointsIn(9.0, 19.0, 11.0, 21.0, 0, 5000, 1).size)
+        assertEquals(1000L, dao.firstAt()); assertEquals(9000L, dao.lastAt())
+    }
+
+    @Test fun emptyTableHasNoRange() = runBlocking {
+        assertEquals(null, dao.firstAt()); assertEquals(null, dao.lastAt()); assertEquals(0, dao.pointsIn(-90.0, -180.0, 90.0, 180.0, 0, Long.MAX_VALUE, 10).size)
+    }
 }

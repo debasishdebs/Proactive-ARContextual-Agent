@@ -330,6 +330,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         var askZoneFenceOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.AskZoneFence.isEnabled(app)) }
         var pauseRetentionOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.pauseRetention(app)) }
         var mapZonesV2On by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app)) }
+        var mapZonesP23On by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesP23(app)) }
         var packMomentsOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.packMoments(app)) }
         val ctxDecision by s.contextSources.decision.collectAsStateWithLifecycle()
         val ctxStats = s.contextSources.stats
@@ -356,6 +357,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
                     ?.let { c -> @androidx.compose.runtime.Composable { com.rokid.context.phone.devtest.DevTestPlaceSection(c) } }
             } else null,
             mapZonesV2 = mapZonesV2On, onMapZonesV2 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setMapZonesV2(app, on); mapZonesV2On = on },
+            mapZonesP23 = mapZonesP23On, onMapZonesP23 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setMapZonesP23(app, on); mapZonesP23On = on },
             packMoments = packMomentsOn, onPackMoments = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setPackMoments(app, on); packMomentsOn = on },
             packMomentsCount = if (packMomentsOn) com.rokid.context.work.frames.place.PackMomentStats.summary() else "",
             sensorRecHz = s.hud.settings.collectAsStateWithLifecycle().value.sensorRecHz,
@@ -407,13 +409,13 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     composable(Routes.SETTINGS_PRIVACY_ZONES) {
         val app = LocalContext.current.applicationContext
         val seedControl = remember { com.rokid.context.phone.place.AndroidSeedMapControl(app, com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) }) }
-        if (remember { com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app) }) com.rokid.context.phone.ui.settings.mapzones.MapZonesRoute(s, back, seed = seedControl) // Developer flag mapZonesV2, default OFF
+        if (remember { com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app) }) com.rokid.context.phone.ui.settings.mapzones.MapZonesRoute(s, back, seed = seedControl, p23On = com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesP23(app), density = com.rokid.context.phone.ui.settings.mapzones.AppMomentDensity(app)) // Developer flag mapZonesV2, default OFF
         else ZonesRoute(s, back, seed = seedControl)
     }
     composable(Routes.SETTINGS_MAP_SEED) {
         val app = LocalContext.current.applicationContext
         val seedControl = remember { com.rokid.context.phone.place.AndroidSeedMapControl(app, com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) }) }
-        if (remember { com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app) }) com.rokid.context.phone.ui.settings.mapzones.MapZonesRoute(s, back, seed = seedControl, seedMode = true)
+        if (remember { com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app) }) com.rokid.context.phone.ui.settings.mapzones.MapZonesRoute(s, back, seed = seedControl, seedMode = true, p23On = com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesP23(app), density = com.rokid.context.phone.ui.settings.mapzones.AppMomentDensity(app))
         else ZonesRoute(s, back, seed = seedControl, seedMode = true)
     }
     composable(Routes.SETTINGS_PLACE_CARDS) {

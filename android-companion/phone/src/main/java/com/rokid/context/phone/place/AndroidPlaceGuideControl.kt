@@ -119,6 +119,7 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
     override suspend fun pins() = guide.pinning?.pins().orEmpty().map { com.rokid.context.phone.ui.settings.privacy.zones.PinInfo(it.lat, it.lon, it.radiusM) }
     override suspend fun seed(box: GeoBox) = guide.seed(box)
     override suspend fun remove(id: String) { PlaceGraph.readyPack(app).removeArea(id) }
+    override suspend fun cellStatuses(box: GeoBox) = PlaceGraph.readyPack(app).cellStatuses(box)
 }
 
 /**

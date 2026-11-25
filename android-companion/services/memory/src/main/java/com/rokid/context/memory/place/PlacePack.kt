@@ -117,6 +117,13 @@ class PlacePack(
 
     suspend fun areas(): List<AreaEntity> = dao.areas()
 
+    /** Map zones "Show cells" (read only): the stored status of each 5 km cell that touches [box] (a cell with no row is absent). Nothing is fetched. */
+    suspend fun cellStatuses(box: GeoBox): Map<String, String> {
+        val want = Geohash5.cellsCovering(box).toHashSet()
+        if (want.isEmpty()) return emptyMap()
+        return dao.cells().filter { it.geohash5 in want }.associate { it.geohash5 to it.status }
+    }
+
     /** Read-only lookup by id (v3.0 shadow loop: where a recalled place is, for the zone check). */
     suspend fun placesByIds(ids: List<String>): List<PlaceEntity> = chunked(ids) { dao.byIds(it) }
 

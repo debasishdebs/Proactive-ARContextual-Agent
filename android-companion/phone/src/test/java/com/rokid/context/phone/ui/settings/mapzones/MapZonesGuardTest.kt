@@ -43,4 +43,19 @@ class MapZonesGuardTest {
         DeveloperFlags.setMapZonesV2(ctx, true); assertTrue(DeveloperFlags.mapZonesV2(ctx))
         DeveloperFlags.setMapZonesV2(ctx, false); assertFalse(DeveloperFlags.mapZonesV2(ctx))
     }
+
+    @Test fun p23AndDensityFlagsAreOffByDefaultAndNothingNewWritesAPauseZone() {
+        val ctx = ApplicationProvider.getApplicationContext<Application>()
+        assertFalse(DeveloperFlags.mapZonesP23(ctx)); assertFalse(DeveloperFlags.mapMomentsDensity(ctx))
+        DeveloperFlags.setMapZonesP23(ctx, true); assertTrue(DeveloperFlags.mapZonesP23(ctx)); DeveloperFlags.setMapZonesP23(ctx, false); assertFalse(DeveloperFlags.mapZonesP23(ctx))
+        DeveloperFlags.setMapMomentsDensity(ctx, true); assertTrue(DeveloperFlags.mapMomentsDensity(ctx)); DeveloperFlags.setMapMomentsDensity(ctx, false); assertFalse(DeveloperFlags.mapMomentsDensity(ctx))
+        // The new files never call the zone store: the only upsert stays in MapZonesModel.kt (checked above), and none of them mention the store or the controller.
+        for (n in listOf("MapEdit.kt", "MapDensity.kt", "MapCells.kt")) {
+            val src = File("src/main/java/com/rokid/context/phone/ui/settings/mapzones/$n").readText()
+            for (w in listOf("upsert(", "ZoneStore", "ZoneController", "ZoneEvaluator", "setEnabled(", "addPreset(")) assertFalse("$n must not use $w", w in src)
+        }
+        // The density layer reads only a position and a time: it never touches a Moment id, text or photo.
+        val d = File("src/main/java/com/rokid/context/phone/ui/settings/mapzones/MapCells.kt").readText() + File("src/main/java/com/rokid/context/phone/ui/settings/mapzones/MapDensity.kt").readText()
+        for (w in listOf("momentId", "anchorId", "frameDao", "MemoryGraph")) assertFalse("density must not use $w", w in d)
+    }
 }

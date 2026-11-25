@@ -33,10 +33,20 @@ data class MomentLocationEntity(
 /** An anchor the recorder may attach a location to: a photo (`frame_meta.frameId`) or a mark (`canvas_label.labelId`) and its capture time. */
 data class MomentAnchor(val anchorId: String, val atMs: Long)
 
+/** One saved location as the map density layer reads it: a position and a time, nothing that names the Moment (map zones P3, read only). */
+data class MomentPoint(val lat: Double, val lon: Double, val atMs: Long)
+
 @Dao
 abstract class MomentLocationDao {
     @Query("SELECT * FROM moment_location WHERE momentId IN (:ids)") protected abstract suspend fun ofChunk(ids: List<String>): List<MomentLocationEntity>
     @Query("SELECT COUNT(*) FROM moment_location") abstract suspend fun count(): Int
+
+    // --- map zones P3 (density layer): read only, no schema change. The caller aggregates in memory; nothing is cached. ---
+    /** Saved positions inside the box and the time range (both inclusive), oldest first, at most [limit]. */
+    @Query("SELECT lat AS lat, lon AS lon, atMs AS atMs FROM moment_location WHERE atMs BETWEEN :from AND :to AND lat BETWEEN :south AND :north AND lon BETWEEN :west AND :east ORDER BY atMs LIMIT :limit")
+    abstract suspend fun pointsIn(south: Double, west: Double, north: Double, east: Double, from: Long, to: Long, limit: Int): List<MomentPoint>
+    @Query("SELECT MIN(atMs) FROM moment_location") abstract suspend fun firstAt(): Long?
+    @Query("SELECT MAX(atMs) FROM moment_location") abstract suspend fun lastAt(): Long?
 
     // --- the live recorder (WP4): candidates and the in-transaction guards. Read-only; no coordinates leave these rows. ---
     /** Photos captured at or after [from] (phone clock). A frame without `capturedAtMs` is never a candidate. */
