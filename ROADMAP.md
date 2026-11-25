@@ -83,6 +83,7 @@ Rokid-Coder is a fork of the Rokid Nexus hub that shows Claude Code and Codex se
 
 - [ ] ❌ **Glasses app closes on the glasses** (about 23 short capture gaps of 1-8 min over the 21-23 Nov trip, roughly 10% of capture time; the phone reopens it after ~8 s but at most about twice an hour). Needs a glasses-side reason log before it can be fixed. Not scheduled before v1.9.
 - [ ] ⚪ **Retention P2** (1.8.0, device-free, Developer flag `retentionP2` default OFF): photo expiry skips photos a place card, mark, pin or place memory points to; dependents are re-pointed by the v3 expiry marker (no schema change); read-only retention preview (counts by kind, next 24 h and 7 days) in Settings, Memory. Parked (needs v19): a durable thumbnail record, a per-photo keep star. Design: `docs/superpowers/plans/2026-11-26-retention-p2.md`. Needs a device test and an owner decision on default ON.
+- [ ] ⚪ **Activity: Scenes list, granularity, range** (1.8, cosmetic, ships ON, no schema change): a Scenes list (time, activity, moment count, fresh summary; keyset pager, breakdown, preview with member Moments), a Photos / Moments / Scenes selector on the Activity page (Moments stays the default) and a Range chip (date and time dialog) whose range the opened lists use. BUILT, device check pending.
 - [ ] ❌ **Explicit phone pause** is not changed (user ruling): no reminder or prompt.
 - [ ] ❌ **Glasses pop-up delivery**: cards show only as a pop-up (12 s) when the glasses screen is on; the glasses do not report skipped pop-ups. Card history on the phone is the interim answer.
 
