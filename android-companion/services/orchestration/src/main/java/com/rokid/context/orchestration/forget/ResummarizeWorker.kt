@@ -142,8 +142,10 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
                     PromptComposer.dataBlock("critic_notes", listOf(NOTE)),
             )
             // codex r12: the surviving source memories' text is re-checked live by the router inside the permit (a Forget meanwhile drops the call unsent)
-            val out = runner.run(RoleCall(PromptKey.SUMMARIZE, vars, callClass = com.rokid.context.model.CallClass.BACKFILL,
-                sources = com.rokid.context.model.PayloadSources.stored(emptyList(), sources.map { it.id }), liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(graph, generation))).output as SummaryOutput
+            val result = runner.run(RoleCall(PromptKey.SUMMARIZE, vars, callClass = com.rokid.context.model.CallClass.BACKFILL,
+                sources = com.rokid.context.model.PayloadSources.stored(emptyList(), sources.map { it.id }), liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(graph, generation)))
+            val out = result.output as SummaryOutput
+            val attribution = com.rokid.context.memory.db.ModelAttribution.of(result.reply.model, result.promptVersion) // v18 WP11a
             val text = out.summary.replace(TextHygiene.SEPARATORS, " ").trim().take(260)
             if (text.isEmpty()) throw IllegalStateException("empty summary")
             val newId = "$PREFIX${UUID.randomUUID()}"
@@ -164,6 +166,7 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
                         searchText = SearchNormalizer.normalize("$text $tags"), imageDelivered = false, // a text summary of memories: describes no photo
                     ),
                 )
+                db.modelAttributionDao().record(com.rokid.context.memory.db.AttributionKind.MEMORY, newId, attribution, System.currentTimeMillis())
                 dao.insertEdges(sources.map { MemorySourceEntity(newId, it.id) })
                 db.frameSourceDao().insertAll(inherited.map { com.rokid.context.memory.db.FrameSourceEntity(newId, it, null, com.rokid.context.orchestration.ExtractSave.CARRIED) })
                 dao.insertEdges(dao.edgesTo(listOf(old.id)).map { MemorySourceEntity(it.memoryId, newId) })

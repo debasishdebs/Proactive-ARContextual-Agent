@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 18,
-    "identityHash": "480a6d0d436a24c329e304f1edd25efa",
+    "identityHash": "37137458efb01a3f3edb7eb73241cb8b",
     "entities": [
       {
         "tableName": "frame",
@@ -4198,12 +4198,63 @@
         },
         "indices": [],
         "foreignKeys": []
+      },
+      {
+        "tableName": "model_attribution",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`kind` TEXT NOT NULL, `refId` TEXT NOT NULL, `model` TEXT NOT NULL, `modelVersion` TEXT, `promptRev` TEXT, `recordedAt` INTEGER NOT NULL, PRIMARY KEY(`kind`, `refId`))",
+        "fields": [
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "refId",
+            "columnName": "refId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "model",
+            "columnName": "model",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelVersion",
+            "columnName": "modelVersion",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "promptRev",
+            "columnName": "promptRev",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "recordedAt",
+            "columnName": "recordedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "kind",
+            "refId"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
       }
     ],
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '480a6d0d436a24c329e304f1edd25efa')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '37137458efb01a3f3edb7eb73241cb8b')"
     ]
   }
 }

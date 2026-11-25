@@ -31,6 +31,8 @@ data class ClusterOutput(
     val imagesDelivered: Boolean = false,
     /** Codex r16, in memory only: the representatives of each model call behind this output (one set per call). */
     val callGroups: List<Set<String>> = emptyList(),
+    /** v18 WP11a, in memory only: the model that answered (every call behind this output agreed), and the prompt version. Null = not known or mixed. */
+    val model: String? = null, val promptRev: Int? = null,
 ) : ContractOutput
 
 /** The cluster-batch call (spec wave 2 §P4.1): ≤ 3 clusters and ≤ 6 photos per call, ids checked per cluster. */
@@ -86,7 +88,8 @@ object ClusterContract {
         var invalid: ModelCallException? = null
         var delivered = true
         val callGroups = mutableListOf<Set<String>>()
-        fun keep(o: ClusterOutput) { results += o.clusters; captions += o.captions; delivered = delivered && o.imagesDelivered; callGroups += o.callGroups }
+        val models = mutableListOf<String?>(); val revs = mutableListOf<Int?>()
+        fun keep(o: ClusterOutput) { results += o.clusters; captions += o.captions; delivered = delivered && o.imagesDelivered; callGroups += o.callGroups; models += o.model; revs += o.promptRev }
         for (batch in batches) {
             val first = attempt(runner, batch, callClass, override, current, liveness)
             if (first.out != null) { keep(first.out); continue }
@@ -99,7 +102,8 @@ object ClusterContract {
             }
         }
         if (results.isEmpty()) throw invalid ?: ModelCallException("CLUSTER_SUMMARY reply was invalid", retryable = true, kind = FailureKind.INVALID_OUTPUT)
-        return ClusterOutput(results, captions, imagesDelivered = delivered, callGroups = callGroups)
+        // v18 WP11a: one model for the whole output only when every call behind it agreed (a fallback endpoint in the middle makes it unknown)
+        return ClusterOutput(results, captions, imagesDelivered = delivered, callGroups = callGroups, model = models.distinct().singleOrNull(), promptRev = revs.distinct().singleOrNull())
     }
 
     private class Attempt(val out: ClusterOutput?, val error: ModelCallException?)
@@ -118,6 +122,7 @@ object ClusterContract {
         val sent = batch.associate { g -> g.first().clusterId to g.map { it.frameId } }
         val flat = batch.flatten()
         var delivered = false
+        var model: String? = null; var rev: Int? = null
         val raw = try {
             val r = runner.run(
                 RoleCall(
@@ -128,12 +133,13 @@ object ClusterContract {
                 ),
             )
             delivered = r.imagesDelivered
+            model = r.reply.model.takeIf { it.isNotBlank() }; rev = r.promptVersion
             r.output as ClusterOutput
         } catch (e: ModelCallException) {
             if (e.kind != FailureKind.INVALID_OUTPUT) throw e
             return Attempt(null, e)
         }
-        val out = (if (current) raw else legacy(raw, sent.entries.single()))?.copy(imagesDelivered = delivered, callGroups = listOf(flat.map { it.frameId }.toSet()))
+        val out = (if (current) raw else legacy(raw, sent.entries.single()))?.copy(imagesDelivered = delivered, callGroups = listOf(flat.map { it.frameId }.toSet()), model = model, promptRev = rev)
         if (out == null || !validate(out, sent, captionsRequired = current)) {
             return Attempt(null, ModelCallException("CLUSTER_SUMMARY reply failed the provenance check", retryable = true, kind = FailureKind.INVALID_OUTPUT))
         }

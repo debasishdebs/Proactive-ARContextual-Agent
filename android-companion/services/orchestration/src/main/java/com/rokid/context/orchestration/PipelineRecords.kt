@@ -132,6 +132,8 @@ object PipelineRecords {
         fenceFrameIds: List<String> = listOfNotNull(frameId),
         /** Room v16: the router's delivery proof for this memory's photo(s): true proved, false text-only/unproved. Every production writer passes it (scan test); null = unknown. */
         imageDelivered: Boolean? = null,
+        /** v18 WP11a: the model that wrote [text] (null = not known: no attribution row, and an older row of this id is removed). Stored in this transaction. */
+        attribution: com.rokid.context.memory.db.ModelAttribution? = null,
     ): Boolean {
         val g = graph(context)
         // Review I1: the Delete-all check and the insert share one transaction, and Delete all bumps the generation
@@ -160,6 +162,7 @@ object PipelineRecords {
                 createdAt = createdAt, derived = derived, searchText = "", imageDelivered = imageDelivered,
             ),
         )
+            g.db.modelAttributionDao().record(com.rokid.context.memory.db.AttributionKind.MEMORY, id, attribution, createdAt)
             if (sources.isNotEmpty()) g.db.forgetDao().insertEdges(sources.map { MemorySourceEntity(id, it) })
             true
         }

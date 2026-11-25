@@ -22,6 +22,13 @@ class WipeDaoTest {
         assertEquals(0, rowCount(db.openHelper.writableDatabase, "moment_location"))
     }
 
+    @Test fun modelAttributionEmptyAfterWipe() = runBlocking {
+        db.modelAttributionDao().upsert(ModelAttributionEntity("MEMORY", "m1", "model-x", null, null, 1))
+        assertEquals(1, db.modelAttributionDao().count())
+        db.wipeDao().wipeMemory()
+        assertEquals(0, rowCount(db.openHelper.writableDatabase, "model_attribution"))
+    }
+
     @Test fun sceneCentroidEmptyAfterWipe() = runBlocking {
         db.sceneCentroidDao().upsert(SceneCentroidEntity("s1", "e1", 1, 2, ByteArray(8), 3, 1))
         assertEquals(1, db.sceneCentroidDao().count())

@@ -29,6 +29,8 @@ abstract class ObjectDao : DerivedStaleDao() {
     @Query("SELECT * FROM object_derived WHERE objectKind = :kind AND objectId = :id AND field = :field") abstract suspend fun derivedRow(kind: String, id: String, field: String): ObjectDerivedEntity?
     @Query("SELECT * FROM object_derived WHERE objectKind = :kind AND objectId = :id ORDER BY field") abstract suspend fun derivedRows(kind: String, id: String): List<ObjectDerivedEntity>
     @Query("SELECT COUNT(*) FROM object_derived") abstract suspend fun derivedCount(): Int
+    @Insert(onConflict = OnConflictStrategy.REPLACE) protected abstract suspend fun upsertAttribution(row: ModelAttributionEntity)
+    @Query("DELETE FROM model_attribution WHERE kind = :kind AND refId = :refId") protected abstract suspend fun deleteAttribution(kind: String, refId: String)
 
     /**
      * Hides every fresh derived field of the object NOW (readers get null from this transaction on) and records it: one INVALIDATED row for the object (with the part or source that
@@ -39,8 +41,11 @@ abstract class ObjectDao : DerivedStaleDao() {
     }
 
     /** Writes a fresh derived field (clears `staleSince`) and records DERIVED_BUILT with the field name only. */
-    @Transaction open suspend fun writeDerivedTx(row: ObjectDerivedEntity, step: String) {
+    @Transaction open suspend fun writeDerivedTx(row: ObjectDerivedEntity, step: String, attribution: ModelAttribution? = null) {
         upsertDerived(row)
+        // v18 WP11a: the model that wrote the field, in the same transaction; no known model clears an older row of this field
+        if (attribution != null) upsertAttribution(attribution.row(AttributionKind.DERIVED, AttributionKind.derivedRef(row.objectKind, row.objectId, row.field), row.atMs))
+        else deleteAttribution(AttributionKind.DERIVED, AttributionKind.derivedRef(row.objectKind, row.objectId, row.field))
         appendAudit(row.objectKind, row.objectId, "DERIVED_BUILT", row.atMs, step, "FIELD", row.field)
     }
 
@@ -52,13 +57,13 @@ abstract class ObjectDao : DerivedStaleDao() {
      * parent object still exists, and that its input revision is still [expectedSeq] (no part, source or invalidation since). Only then are the field and its DERIVED_BUILT row written; a
      * rejected result writes nothing (no field, no audit row), so a derive that finished late can neither resurrect a deleted object nor expose an obsolete answer.
      */
-    @Transaction open suspend fun writeDerivedGuardedTx(row: ObjectDerivedEntity, step: String, fence: DaoFence, expectedSeq: Int): WriteOutcome {
+    @Transaction open suspend fun writeDerivedGuardedTx(row: ObjectDerivedEntity, step: String, fence: DaoFence, expectedSeq: Int, attribution: ModelAttribution? = null): WriteOutcome {
         if (!fence.holds()) return WriteOutcome.OBSOLETE_GENERATION
         val exists = if (row.objectKind == "MOMENT") momentExists(row.objectId) > 0 else auditRowCount(row.objectKind, row.objectId) > 0
         if (!exists) return WriteOutcome.PARENT_GONE
         if (inputSeq(row.objectKind, row.objectId) != expectedSeq) return WriteOutcome.STALE_INPUT
         // a Scene's derived field records the input revision it was built from; the reader (`SceneInputExecutor`) shows it only while that is still the Scene's revision
-        writeDerivedTx(if (row.objectKind == "SCENE") row.copy(builtRev = expectedSeq) else row, step)
+        writeDerivedTx(if (row.objectKind == "SCENE") row.copy(builtRev = expectedSeq) else row, step, attribution)
         return WriteOutcome.WRITTEN
     }
 
@@ -67,5 +72,5 @@ abstract class ObjectDao : DerivedStaleDao() {
     @Query("DELETE FROM object_derived WHERE objectKind = :kind AND objectId IN (:ids)") protected abstract suspend fun deleteDerived(kind: String, ids: List<String>)
 
     /** Removes the audit rows and the derived fields of these objects (the object itself was deleted in the same transaction). */
-    @Transaction open suspend fun removeObjects(kind: String, ids: Collection<String>) = ids.toList().chunked(500).forEach { deleteAudit(kind, it); deleteDerived(kind, it) }
+    @Transaction open suspend fun removeObjects(kind: String, ids: Collection<String>) = ids.toList().chunked(500).forEach { deleteAudit(kind, it); deleteDerived(kind, it); deleteGoneDerivedAttribution() }
 }

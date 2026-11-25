@@ -372,9 +372,11 @@ class AnswerService(
             // Codex r10: recalled photos carry their refs; the router re-checks them live inside the call's permit (a photo forgotten meanwhile fails the ask
             // unsent, PhotoForgottenException; it is never re-asked as text).
             zoneGuard.check() // Z1 point 2: the last step before the dispatch (the call itself is cancelled by [zoned] if a zone comes later)
+            var answerAttribution: com.rokid.context.memory.db.ModelAttribution? = null // v18 WP11a
             val out = zoned(ticket) { runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER,
                 // codex r12: everything stored the prompt carries (memories, photo lines, history dependencies) is re-checked live by the router inside the permit
-                sources = r.sources, liveness = AskZoneLiveness(com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation), zoneGuard, ticket))).output as AnswerOutput }
+                sources = r.sources, liveness = AskZoneLiveness(com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation), zoneGuard, ticket)))
+                .also { answerAttribution = com.rokid.context.memory.db.ModelAttribution.of(it.reply.model, it.promptVersion) }.output as AnswerOutput }
             val text = AskText.collapse(out.answer).take(MAX_ANSWER)
             if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
             val id = askId ?: "ask_${UUID.randomUUID()}"
@@ -395,6 +397,8 @@ class AnswerService(
                     else AskEntity(id, nowMs, q, text, AskSources.encodeWithDeps(out.sources, r.fenceIds + r.ids) /* codex r15: every input, cited or not, is a dependency (the forgetV2 rules read the source states instead) */, null, source, false,
                         sourceStates = if (source != AskSourceStates.EVAL_SOURCE) AskSourceStates.live(out.sources, r.historyRefs) else null /* M5: cited ids + history items, ids only; an eval ask is unaffected */),
                 )
+                // v18 WP11a: the model that wrote the answer, in the same commit; a redacted answer has no text, so no attribution (and a re-saved id loses an older row)
+                memory.db.modelAttributionDao().record(com.rokid.context.memory.db.AttributionKind.ANSWER, id, if (redacted) null else answerAttribution, nowMs)
                 true
             } as? com.rokid.context.memory.forget.lifecycle.Leases.Commit.Committed)?.value == true
             if (!saved) throw NoMemoriesException()

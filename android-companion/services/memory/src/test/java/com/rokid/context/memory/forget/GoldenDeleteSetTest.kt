@@ -44,13 +44,13 @@ class GoldenDeleteSetTest {
     }
 
     /** [onFull]: the COMPLETE ON expectation of a path the Stage 2 rulings (F1, F3, F5, F6, 2026-11-17) change beyond the ask and nudge fates; the OFF expectation never changes. */
-    private fun golden(expected: String, on: V2Fates? = null, onFull: String? = null, locations: Boolean = false, history: Boolean = false, centroids: Boolean = false, op: suspend () -> Unit) = runBlocking {
+    private fun golden(expected: String, on: V2Fates? = null, onFull: String? = null, locations: Boolean = false, history: Boolean = false, centroids: Boolean = false, attribution: Boolean = false, op: suspend () -> Unit) = runBlocking {
         for (v2 in listOf(false, true)) {
             ForgetV2.testOverride = v2
             val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
             try {
                 w = GoldenWorld(db)
-                w.seed(); if (locations) w.seedLocations(); if (history) w.seedHistory(); if (centroids) w.seedCentroids()
+                w.seed(); if (locations) w.seedLocations(); if (history) w.seedHistory(); if (centroids) w.seedCentroids(); if (attribution) w.seedAttribution()
                 val want = (if (v2 && onFull != null) onFull else if (v2 && on != null) on.apply(expected) else expected).trimIndent().trim(); val got = w.deltaOf(op).render()
                 if (want != got) throw AssertionError("forgetV2=$v2 delete set differs.\n--- expected\n$want\n--- actual\n$got") // the whole set, not JUnit's abbreviated diff
             } finally { db.close() }
@@ -581,6 +581,47 @@ class GoldenDeleteSetTest {
             added moment_tombstone: 68f6baa4
             added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
         """, centroids = true) { w.fx.forget.forgetMoments(listOf(w.momA)) }
+    /** v18 WP11a: the model attribution of a deleted memory, derived field and redacted answer goes with it (here: Forget of a fact and of a Moment). */
+    @Test fun modelAttributionRows() = golden("""
+            deleted canvas_label: mkLinked, mkNear, mkNear:i
+            deleted canvas_live_trace: 7|fA|n, 7|fB|n
+            deleted canvas_run_item: r|fA|n, r|fB|n
+            deleted canvas_score: r|fA|n, r|fB|n
+            deleted memory: mA
+            deleted memory_source: mD|mA
+            deleted model_attribution: ANSWER|aCite, DERIVED|MOMENT:68f6baa4:SUMMARY, MEMORY|mA
+            deleted moment: 68f6baa4, 68f6baa5
+            deleted moment_part: 68f6baa4|FRAME|fA, 68f6baa4|MARK|mkNear, 68f6baa4|MEMORY|mA, 68f6baa4|MEMORY|mPlace, 68f6baa5|FRAME|fB, 68f6baa5|MEMORY|mBatch
+            deleted object_audit: MOMENT|68f6baa4|1
+            deleted object_derived: MOMENT|68f6baa4|SUMMARY
+            deleted scene: sNear
+            deleted scene_part: sMixed|MOMENT|68f6baa5, sNear|MOMENT|68f6baa4, sNear|MOMENT|68f6baa5
+            changed action_log: 1, 2
+            changed ask: aCite, aDep
+            changed canvas_meta: labelRev
+            changed canvas_trace: trNear
+            changed memory: mD
+            changed nudge: nCite
+            changed proposal: pAsk, pNudge
+            changed scene: sMixed
+            added action_log: 3
+            added canvas_meta: forgetRanges, frame_forget_rev, scene_seq_floor
+            added cleanup_outbox: 1, 2
+            added forget_tombstone: fA
+            added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
+        """, on = V2Fates(null, "nCite"), attribution = true) { w.service.forgetFact("mA") }
+
+    /** Photo expiry keeps the caption memory, so it keeps its attribution row (no `model_attribution` line). */
+    @Test fun modelAttributionRowsKeptByExpiry() = golden("""
+            deleted canvas_live_trace: 7|fA|n, 7|fB|n
+            deleted canvas_run_item: r|fA|n, r|fB|n
+            deleted canvas_score: r|fA|n, r|fB|n
+            deleted frame: fA
+            added canvas_meta: rx:f:fA, rx:t:1761000100000:fA
+            added cleanup_outbox: 1, 2
+            added forget_tombstone: fA
+        """, attribution = true) { w.service.expirePhotos(listOf("fA"), requireLinked = true) }
+
     /** The same centroids are KEPT by photo expiry (the golden of `retentionExpirePhoto` with the rows seeded: no `scene_centroid` line). */
     @Test fun sceneCentroidRowsKeptByExpiry() = golden("""
             deleted canvas_live_trace: 7|fA|n, 7|fB|n

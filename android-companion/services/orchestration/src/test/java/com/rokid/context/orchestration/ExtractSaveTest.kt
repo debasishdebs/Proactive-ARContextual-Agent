@@ -88,6 +88,26 @@ class ExtractSaveTest {
         assertEquals(setOf("ex1"), AllLive.checked.last())
     }
 
+    // v18 WP11a: the model that answered is recorded with every fact and caption the save writes, in the save's transaction
+    @Test fun theModelThatAnsweredIsRecordedWithEveryMemoryTheSaveWrites() = runBlocking<Unit> {
+        val ai = TestAi.graph(ctx) { p -> reply(sentIds(p).single()) }
+        TestAi.bindAll(ai)
+        val batch = ExtractSave.extract(ai.runner, listOf(photo("ex1")), CallClass.EXTRACT, AllLive)
+        assertEquals("gpt", batch.output.model); assertEquals(batch.promptVersion, batch.output.promptRev)
+        claim(listOf("ex1"), "c1", abandonBeforeMs = 0)
+        assertTrue(ExtractSave.saveExtraction(ctx, "p_", batch.output, setOf("ex1"), mapOf("ex1" to "c1"), MemoryTier.SHORT, ReviewState.OK) is ExtractSaveResult.Saved)
+        val rows = db.modelAttributionDao().ofRefs("MEMORY", listOf("p_0", "p_c0")).associateBy { it.refId }
+        assertEquals(setOf("p_0", "p_c0"), rows.keys); assertTrue(rows.values.all { it.model == "gpt" && it.promptRev == batch.promptVersion.toString() && it.modelVersion == null })
+    }
+
+    @Test fun anOutputWithNoKnownModelRecordsNothingAndClearsAnOlderRow() = runBlocking<Unit> {
+        claim(listOf("ex1"), "c1", abandonBeforeMs = 0)
+        ExtractSave.saveExtraction(ctx, "p_", output("ex1").copy(model = "old-model"), setOf("ex1"), mapOf("ex1" to "c1"), MemoryTier.SHORT, ReviewState.OK)
+        assertEquals(2, db.modelAttributionDao().count())
+        ExtractSave.saveExtraction(ctx, "p_", output("ex1"), setOf("ex1"), null, MemoryTier.SHORT, ReviewState.OK) // the same ids, written without a model name
+        assertEquals(0, db.modelAttributionDao().count())
+    }
+
     @Test fun frameSourceWritten() = runBlocking<Unit> {
         claim(listOf("ex1", "ex2"), "c1", abandonBeforeMs = 0)
         val out = ExtractOutput(

@@ -44,7 +44,8 @@ abstract class SceneDao : DerivedStaleDao() {
     @Transaction open suspend fun eraseDerived(ids: Collection<String>) = ids.toList().chunked(500).forEach { deleteSceneDerived(it) }
 
     /** Fail-closed fallback of F3 when a plan could not be built: every HIDDEN Scene field (its text is still stored) is erased too. Regenerable by the derive pass. */
-    @Query("DELETE FROM object_derived WHERE objectKind = 'SCENE' AND staleSince IS NOT NULL") abstract suspend fun eraseStaleSceneDerived(): Int
+    @Query("DELETE FROM object_derived WHERE objectKind = 'SCENE' AND staleSince IS NOT NULL") protected abstract suspend fun eraseStaleSceneDerivedRows(): Int
+    @Transaction open suspend fun eraseStaleSceneDerived(): Int { val n = eraseStaleSceneDerivedRows(); deleteGoneDerivedAttribution(); return n }
 
     // --- Activity > Scenes list (read only: names, ids, times and the fresh summary text; no schema change) ---
     /** One keyset page, newest first by start time, strictly after `(afterKey, afterId)`; the first page passes `Cursor.head`. [toMs] is exclusive. */

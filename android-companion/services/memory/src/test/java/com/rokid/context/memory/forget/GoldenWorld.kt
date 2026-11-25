@@ -21,6 +21,7 @@ import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.memory.db.ObjectDerivedEntity
 import com.rokid.context.memory.db.ProposalEntity
 import com.rokid.context.memory.db.ReviewState
+import com.rokid.context.memory.db.ModelAttributionEntity
 import com.rokid.context.memory.db.SceneCentroidEntity
 import com.rokid.context.memory.db.SceneEntity
 import com.rokid.context.memory.db.ScenePartEntity
@@ -115,6 +116,17 @@ class GoldenWorld(val db: ContextDatabase, now: Long = 1_000) {
     suspend fun seedHistory() {
         fun row(id: String, at: Long, frame: String?) = PlaceCardLogEntity(id, at, "wd:Q1", "Site", "PHOTO", null, frame, null, "c$id", "SENT", 0)
         listOf(row("h1", tA, "fA"), row("h2", tB, "fB"), row("h3", tFar, "fFar"), row("h4", tFar + 3_600_000, null)).forEach { db.placeCardLogDao().put(it) }
+    }
+
+    /**
+     * v18 WP11a, called AFTER [seed] and only by the tests that pin `model_attribution`: one row per seeded memory (`mA`, `mD`, `mBatch`, `mMulti`, `mPlace`, `mFar`), the derived SUMMARY of Moment A and the answers `aCite`
+     * and `aKeep`. Names only.
+     */
+    suspend fun seedAttribution() {
+        fun row(kind: String, ref: String) = ModelAttributionEntity(kind, ref, "model-x", null, "3", 1)
+        listOf("mA", "mD", "mBatch", "mMulti", "mPlace", "mFar").forEach { db.modelAttributionDao().upsert(row("MEMORY", it)) }
+        db.modelAttributionDao().upsert(row("DERIVED", "MOMENT:$momA:SUMMARY"))
+        listOf("aCite", "aKeep").forEach { db.modelAttributionDao().upsert(row("ANSWER", it)) }
     }
 
     /**

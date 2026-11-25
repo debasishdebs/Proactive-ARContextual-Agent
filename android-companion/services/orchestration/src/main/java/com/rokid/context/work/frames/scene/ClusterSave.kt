@@ -45,6 +45,7 @@ object ClusterSave {
         val db = MemoryGraph.get(context).db
         val results = out.clusters.filter { it.clusterId in sent }
         val gate = com.rokid.context.provenance.ProvenanceGate(db)
+        val attribution = com.rokid.context.memory.db.ModelAttribution.of(out.model, out.promptRev) // v18 WP11a: the summary, its facts and the captions share the call(s)' model; null = unknown or mixed
         return try {
             db.withTransaction {
                 if (gate.wiped(generation)) throw Rollback(ClusterSaveResult.Wiped)
@@ -73,7 +74,7 @@ object ClusterSave {
                     if (reps.isEmpty()) return@forEachIndexed
                     val summaryId = "rokid_cl_${claimId}_$i"
                     if (!PipelineRecords.appendFact(context, summaryId, reps.first(), c.summary, "cluster_summary", listOf("scene"), 1.0, MemoryTier.LONG, ReviewState.OK,
-                            nowMs, generation, fenceFrameIds = reps, imageDelivered = out.imagesDelivered)) {
+                            nowMs, generation, fenceFrameIds = reps, imageDelivered = out.imagesDelivered, attribution = attribution)) {
                         throw Rollback(if (gate.wiped(generation)) ClusterSaveResult.Wiped else ClusterSaveResult.Stale)
                     }
                     saved += SavedMemory(summaryId, reps, null)
@@ -83,7 +84,7 @@ object ClusterSave {
                         val ids = f.sourceFrameIds.filter { it in reps }.distinct()
                         if (f.text.isBlank() || ids.isEmpty()) return@forEachIndexed
                         val id = "${summaryId}f$n"
-                        if (PipelineRecords.appendFact(context, id, ids.first(), f.text, f.type, f.tags, f.confidence, MemoryTier.SHORT, factReview, nowMs, generation, fenceFrameIds = ids, imageDelivered = out.imagesDelivered)) {
+                        if (PipelineRecords.appendFact(context, id, ids.first(), f.text, f.type, f.tags, f.confidence, MemoryTier.SHORT, factReview, nowMs, generation, fenceFrameIds = ids, imageDelivered = out.imagesDelivered, attribution = attribution)) {
                             saved += SavedMemory(id, ids, n)
                             rows += ids.map { FrameSourceEntity(id, it, c.clusterId, "FACT") }
                         }
@@ -93,7 +94,7 @@ object ClusterSave {
                 out.captions.filter { it.caption.isNotBlank() && it.frameId in clusterOf }.distinctBy { it.frameId }.forEachIndexed { n, c ->
                     val id = "rokid_cl_${claimId}_c$n"
                     if (PipelineRecords.appendFact(context, id, c.frameId, c.caption, "caption", listOf("caption"), 1.0, MemoryTier.LONG, ReviewState.OK, nowMs, generation,
-                            fenceFrameIds = listOf(c.frameId), imageDelivered = out.imagesDelivered)) {
+                            fenceFrameIds = listOf(c.frameId), imageDelivered = out.imagesDelivered, attribution = attribution)) {
                         saved += SavedMemory(id, listOf(c.frameId), null)
                         rows += FrameSourceEntity(id, c.frameId, clusterOf.getValue(c.frameId), "FACT")
                     }

@@ -21,7 +21,7 @@ internal object SideEffectRefs {
 object Families {
     val ALL: List<ForgetFamily> = listOf(
         PhotoFamily, MemoryFamily, MomentFamily, SceneFamily, DerivedFieldFamily, MarkFamily, TraceFamily, RunResultFamily,
-        AnswerFamily, NudgeFamily, ProposalFamily, AudioFamily, PersonFamily, ObjectFamily, MomentLocationFamily, SceneCentroidFamily, PlaceHistoryFamily, PlacePackFamily, PlaceCardFamily, ConfigFamily, ControlFamily,
+        AnswerFamily, NudgeFamily, ProposalFamily, AudioFamily, PersonFamily, ObjectFamily, MomentLocationFamily, SceneCentroidFamily, ModelAttributionFamily, PlaceHistoryFamily, PlacePackFamily, PlaceCardFamily, ConfigFamily, ControlFamily,
     )
 
     fun of(f: Family): ForgetFamily = ALL.first { it.family == f }
@@ -189,6 +189,18 @@ internal object MomentLocationFamily : ForgetFamily {
 internal object SceneCentroidFamily : ForgetFamily {
     override val family = Family.SCENE_CENTROID
     override val tables = listOf("scene_centroid")
+    override val selfDeletes = false
+}
+
+/**
+ * Which model wrote a stored text (v18 WP11a): derived metadata of a memory, a Moment or Scene derived field or an Ask answer; names and a number, never text. A leaf the planner does not enumerate
+ * ([DesignDivergence] MODEL_ATTRIBUTION_NOT_PLANNED). Deleted with its item on every path that deletes the item (`ForgetDao.deleteMemories`, `MemoryRepository.deleteByIds`, the derived-field deletes of
+ * `ObjectDao`, `MomentDao`, `SceneDao` and `DerivedStaleDao`, `ForgetDao.redactAsk*`), by Delete all, and as a net by [com.rokid.context.memory.db.ModelAttributionDao.deleteGone] at the user-Forget choke points.
+ * Expiry follows the item: a memory or derived field that expires takes its row, a photo that expires keeps the caption memory and so its row.
+ */
+internal object ModelAttributionFamily : ForgetFamily {
+    override val family = Family.MODEL_ATTRIBUTION
+    override val tables = listOf("model_attribution")
     override val selfDeletes = false
 }
 

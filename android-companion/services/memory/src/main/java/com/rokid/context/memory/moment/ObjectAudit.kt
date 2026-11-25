@@ -54,9 +54,9 @@ class ObjectAudit(private val dao: ObjectDao, private val clock: () -> Long = Sy
     suspend fun inputSeq(obj: MomentObject): Int = dao.inputSeq(obj.kind, obj.id)
 
     /** The guarded write of a derive result: rejected (nothing written, typed outcome) when the deletion generation moved, the object is gone or its inputs changed since [expectedSeq]. */
-    suspend fun writeDerivedGuarded(obj: MomentObject, field: String, value: String?, ref: String?, builtRev: Int, fence: com.rokid.context.memory.db.DaoFence, expectedSeq: Int): ObjectDao.WriteOutcome {
+    suspend fun writeDerivedGuarded(obj: MomentObject, field: String, value: String?, ref: String?, builtRev: Int, fence: com.rokid.context.memory.db.DaoFence, expectedSeq: Int, attribution: com.rokid.context.memory.db.ModelAttribution? = null): ObjectDao.WriteOutcome {
         require(field in DerivedField.ALL) { "unknown derived field" }
-        return dao.writeDerivedGuardedTx(ObjectDerivedEntity(obj.kind, obj.id, field, value, ref, builtRev, null, clock()), AuditStep.DERIVE, fence, expectedSeq)
+        return dao.writeDerivedGuardedTx(ObjectDerivedEntity(obj.kind, obj.id, field, value, ref, builtRev, null, clock()), AuditStep.DERIVE, fence, expectedSeq, attribution)
     }
 
     /** The derived field, or null when it is absent or STALE (hidden). */

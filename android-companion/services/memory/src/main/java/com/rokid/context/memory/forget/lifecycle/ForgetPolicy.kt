@@ -21,7 +21,7 @@ enum class ForgetChild(val lifecycle: Family?, val fewItems: Boolean = false) {
     MARK(Family.MARK, fewItems = true), TRACE(Family.TRACE), RUN_RESULT(Family.RUN_RESULT),
     ANSWER(Family.ANSWER), NUDGE(Family.NUDGE), PROPOSAL(Family.PROPOSAL),
     AUDIO(Family.AUDIO), PERSON(Family.PERSON), OBJECT(Family.OBJECT),
-    MOMENT_LOCATION(Family.MOMENT_LOCATION), SCENE_CENTROID(Family.SCENE_CENTROID), PLACE_HISTORY(Family.PLACE_HISTORY), PLACE_PACK(Family.PLACE_PACK), PLACE_CARD(Family.PLACE_CARD), CONFIG(Family.CONFIG), CONTROL(Family.CONTROL),
+    MOMENT_LOCATION(Family.MOMENT_LOCATION), SCENE_CENTROID(Family.SCENE_CENTROID), MODEL_ATTRIBUTION(Family.MODEL_ATTRIBUTION), PLACE_HISTORY(Family.PLACE_HISTORY), PLACE_PACK(Family.PLACE_PACK), PLACE_CARD(Family.PLACE_CARD), CONFIG(Family.CONFIG), CONTROL(Family.CONTROL),
     /** memory_vector, frame_vector, embedding_space: today inside PHOTO / MEMORY ([MemoryFamily], [PhotoFamily] tables). */
     EMBEDDING(null),
     /** Frame JPEGs, `.meta.json` sidecars, trace folders and the cached export. There is no separate thumbnail store: thumbnails are rendered from the JPEG (`FrameImages.kt:134`), so they go with it. */
@@ -120,6 +120,9 @@ object ForgetPolicy {
         PolicyRow(ForgetChild.SCENE_CENTROID,
             user = r(F, "FS:313 dropCanvasOutputs deleteStale (not expired); FE:285 the same; FE:342 forgetSpans and MF:285 deleteStale; DSD:101 purgeScenes (a dropped or emptied Scene)"), deleteAll = r(F, "WD:90 DELETE FROM scene_centroid"),
             expiry = r(K, "FS:313 `!expired` guard; expiry never drops a Moment or a Scene, so the row stays"), sweep = r(C, "DSD:101 purgeScenes only: a Scene the sweep empties takes its centroid; a shrunk Scene keeps its (now stale, never read) row"), purge = r(C, "DSD:101 purgeScenes only: a Scene the purge empties takes its centroid; no deleteStale call")),
+        PolicyRow(ForgetChild.MODEL_ATTRIBUTION,
+            user = r(F, "FD:54 deleteMemories and MR:38 deleteByIds (a memory), FD:325 redactAsk and FD:328 redactAskForgotten (an answer), DSD:39 deleteSceneDerived, OD:75 removeObjects and MD:69 eraseDerived (a derived field); FS:312, FE:284 and MF:281 deleteGone (net)"), deleteAll = r(F, "WD:81 DELETE FROM model_attribution"),
+            expiry = r(C, "FD:54 follows the item: an expired memory is deleted by deleteMemories and takes its row; an expired photo keeps its caption memory and so the row (FS:312 `!expired` guard on the net)"), sweep = r(C, "FE:156 follows the item: removeDescriptions deletes memories through FD:54 and derived fields through OD:75"), purge = r(C, "DSD:103 purgeScenes follows the item: a Scene the purge empties takes its derived fields (DSD:39) and their rows; MD:69 for a Moment")),
         PolicyRow(ForgetChild.PLACE_HISTORY,
             user = r(F, "FS:309 dropCanvasOutputs eraseFrames (not expired); FE:281 the same; CS3:97 forgetRangeTx deletePlaceHistoryBetween (every user span, also a photo's radius)"), deleteAll = r(F, "WD:88 DELETE FROM place_card_log"),
             expiry = r(L, "FS:173 expireFrameRows, FE:190 expirePhotos and FE:210 expireOrphanFrames: unlinkExpired sets photoGone = 1 and keeps the frameId (private lineage: a later user Forget of the photo still deletes the row)"),

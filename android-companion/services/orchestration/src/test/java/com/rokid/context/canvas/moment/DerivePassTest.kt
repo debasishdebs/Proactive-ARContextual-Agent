@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.canvas.moment.MomentFixture.Companion.MS
 import com.rokid.context.memory.ProposalRepository
+import com.rokid.context.memory.db.AttributionKind
 import com.rokid.context.memory.db.DaoFence
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.DeletionEpoch
@@ -140,6 +141,24 @@ class DerivePassTest {
         assertNotNull(audit.readDerived(ObjectRef(ObjectKind.MOMENT, mid(0)), DerivedField.SUMMARY))
         val m0 = ObjectRef(ObjectKind.MOMENT, mid(0), 1); assertEquals(audit.inputSeq(m0), audit.readDerived(m0, DerivedField.SUMMARY)?.builtRev) // a Moment records the input revision it was built from
         assertNull("no embedding model yet", audit.readDerived(ObjectRef(ObjectKind.SCENE, sid(0)), DerivedField.EMBEDDING))
+    }
+
+    /** v18 WP11a: a derived field carries the model that wrote it (same transaction); a text source that names none records nothing. */
+    @Test fun aDerivedFieldIsStoredWithTheModelThatWroteItAndAnUnnamedSourceRecordsNothing() = runBlocking<Unit> {
+        photo(0); scenes(); on()
+        val named = object : DeriveText {
+            override suspend fun complete(prompt: String, sources: com.rokid.context.model.PayloadSources, generation: Long): String? = "REPLY"
+            override suspend fun completeAttributed(prompt: String, sources: com.rokid.context.model.PayloadSources, generation: Long): Pair<String, String?>? = "REPLY" to "model-d"
+        }
+        assertTrue(pass(text = named).runIfDue(MS)!!.written >= 2)
+        val dao = db.modelAttributionDao()
+        val ref = AttributionKind.derivedRef(ObjectKind.MOMENT, mid(0), DerivedField.SUMMARY)
+        assertEquals("model-d", dao.get(AttributionKind.DERIVED, ref)!!.model)
+        assertEquals("model-d", dao.get(AttributionKind.DERIVED, AttributionKind.derivedRef(ObjectKind.SCENE, sid(0), DerivedField.CAPTION))!!.model)
+        // a rebuild by a source that names no model (the plain lambda) clears the old name instead of keeping a wrong one
+        audit.markStale(ObjectKind.MOMENT, mid(0))
+        pass().runIfDue(MS + 7 * 3_600_000L)
+        assertNull(dao.get(AttributionKind.DERIVED, ref))
     }
 
     @Test fun theCadenceIsOffByDefaultFourADayAndSeparateFromTheSceneBuildCadence() = runBlocking<Unit> {

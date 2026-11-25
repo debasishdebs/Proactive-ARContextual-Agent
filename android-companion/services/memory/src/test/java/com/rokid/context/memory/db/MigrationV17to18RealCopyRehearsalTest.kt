@@ -68,11 +68,11 @@ class MigrationV17to18RealCopyRehearsalTest {
                 assertEquals(label, "ok", scalar(r, "PRAGMA integrity_check"))
                 val after = counts(r)
                 before.forEach { (t, n) -> assertEquals("$label table $t", n, after[t]) }
-                assertEquals(label, before.keys + setOf("place_card_log", "moment_location", "scene_centroid"), after.keys)
-                assertEquals(label, 0, after["place_card_log"]); assertEquals(label, 0, after["moment_location"]); assertEquals(label, 0, after["scene_centroid"])
+                assertEquals(label, before.keys + setOf("place_card_log", "moment_location", "scene_centroid", "model_attribution"), after.keys)
+                assertEquals(label, 0, after["place_card_log"]); assertEquals(label, 0, after["moment_location"]); assertEquals(label, 0, after["scene_centroid"]); assertEquals(label, 0, after["model_attribution"])
                 val idx = r.rawQuery("SELECT name FROM sqlite_master WHERE type='index'", null).use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
                 assertTrue(idx.toString(), idx.containsAll(setOf("index_place_card_log_at", "index_place_card_log_frameId", "index_moment_location_atMs", "index_moment_location_anchorId")))
-                println("REHEARSAL $label: user_version=18 integrity=ok tables=${after.size} indexes=${idx.size} place_card_log=0 moment_location=0 scene_centroid=0")
+                println("REHEARSAL $label: user_version=18 integrity=ok tables=${after.size} indexes=${idx.size} place_card_log=0 moment_location=0 scene_centroid=0 model_attribution=0")
                 return after
             } finally { r.close() }
         }

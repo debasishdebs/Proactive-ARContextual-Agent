@@ -108,6 +108,16 @@ class QueueDrainReprocessTest {
     }
     private fun summaries() = runBlocking { MemoryGraph.get(ctx).memories.all().filter { it.type == "summary" } }
 
+    /** v18 WP11a: the text summary a reprocess job writes carries the model that wrote it; the source memory it was made from does not. */
+    @Test fun aReprocessSummaryIsStoredWithItsModel() {
+        sourceCarrying("rokid_mem_mb_0", cites = "A", carries = "B")
+        enqueue(QueuePayloads.reprocess("low", listOf("rokid_mem_mb_0")))
+        drain()
+        val dao = MemoryGraph.get(ctx).db.modelAttributionDao()
+        assertEquals("gpt", runBlocking { dao.get("MEMORY", summaries().single().id) }!!.model)
+        assertEquals(1, runBlocking { dao.count() })
+    }
+
     // codex r16 P1-2: the summary inherits its source memories' carried photos, so a later Forget of B reaches it
     @Test fun aReprocessSummaryInheritsItsSourcesCarriedPhotos() {
         sourceCarrying("rokid_mem_ma_0", cites = "A", carries = "B")

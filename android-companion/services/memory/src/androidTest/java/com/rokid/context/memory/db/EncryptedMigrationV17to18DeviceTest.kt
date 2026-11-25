@@ -53,7 +53,7 @@ class EncryptedMigrationV17to18DeviceTest {
 
         val v18 = helper.runMigrationsAndValidate(name, 18, true, MIGRATION_17_18)
         before.forEach { (t, n) -> assertEquals("rows of $t", n, V1Fixture.count(v18, t)) }
-        assertEquals(0, V1Fixture.count(v18, "place_card_log")); assertEquals(0, V1Fixture.count(v18, "moment_location")); assertEquals(0, V1Fixture.count(v18, "scene_centroid"))
+        assertEquals(0, V1Fixture.count(v18, "place_card_log")); assertEquals(0, V1Fixture.count(v18, "moment_location")); assertEquals(0, V1Fixture.count(v18, "scene_centroid")); assertEquals(0, V1Fixture.count(v18, "model_attribution"))
         assertEquals("ok", v18.query("PRAGMA integrity_check").use { it.moveToFirst(); it.getString(0) })
         v18.close()
         assertEncryptedOnDisk()

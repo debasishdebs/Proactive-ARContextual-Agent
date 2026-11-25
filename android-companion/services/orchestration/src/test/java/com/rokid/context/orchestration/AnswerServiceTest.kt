@@ -29,6 +29,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -84,6 +85,18 @@ class AnswerServiceTest {
         assertTrue(r.notice!!, r.notice!!.startsWith(AskActions.SEARCH_FALLBACK_PREFIX))
         assertFalse("never claims the answer's provenance", r.notice!!.contains("answer"))
         assertEquals("an action command is not a no-match", 0, reprocess)
+    }
+
+    /** v18 WP11a: the model that wrote the answer is stored in the ask's own commit; a redacted answer has none. */
+    @Test fun theAnswerIsStoredWithTheModelThatWroteIt() = runBlocking {
+        val mem = MemoryGraph.get(ctx)
+        mem.memories.add(LegacyImporter.toMemory("rokid_mem_1", "short_term", 0.9, 10, "Milk carton nearly empty"))
+        val service = AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() })
+        val r = service.answerOrThrow("add milk", "phone_typed", nowMs = 99)
+        val a = mem.db.modelAttributionDao().get("ANSWER", r.askId)!!
+        assertEquals("gpt", a.model); assertEquals(99L, a.recordedAt); assertNotNull(a.promptRev)
+        mem.db.forgetDao().redactAsk(r.askId, "x") // a Forget erases the answer text: the attribution goes with it
+        assertNull(mem.db.modelAttributionDao().get("ANSWER", r.askId))
     }
 
     @Test fun proposedActionGoesToIntakeAfterCommit() = runBlocking {

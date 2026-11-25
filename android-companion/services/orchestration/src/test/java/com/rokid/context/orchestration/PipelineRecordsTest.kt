@@ -31,6 +31,25 @@ class PipelineRecordsTest {
     private fun frame(id: String, ts: Long, path: String, source: String = "rokid_glasses", payload: String = "p") =
         FrameEntity(id = id, ts = ts, path = path, source = source, payload = payload)
 
+    // v18 WP11a: appendFact is the one memory writer; the model attribution is stored in its transaction and replaced or cleared with the memory
+    @Test fun appendFactRecordsTheModelInTheSameTransactionAndAReWriteWithoutOneClearsIt() = runBlocking {
+        val dao = MemoryGraph.get(ctx).db.modelAttributionDao()
+        assertTrue(PipelineRecords.appendFact(ctx, "rokid_t_0", null, "text", "note", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK, 7, attribution = com.rokid.context.memory.db.ModelAttribution("model-a", null, "2")))
+        val row = dao.get(com.rokid.context.memory.db.AttributionKind.MEMORY, "rokid_t_0")!!
+        assertEquals("model-a", row.model); assertEquals("2", row.promptRev); assertEquals(7L, row.recordedAt)
+        assertTrue(PipelineRecords.appendFact(ctx, "rokid_t_0", null, "text 2", "note", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK, 8))
+        assertEquals(0, dao.count()) // the text was rewritten with no known model: the old name must not stay
+        PipelineRecords.appendFact(ctx, "rokid_t_1", null, "x", "note", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK, 9, attribution = com.rokid.context.memory.db.ModelAttribution("model-a"))
+        PipelineRecords.dropFactsFrom(ctx, "rokid_t_", keep = 0) // the memory is deleted: its row goes with it
+        assertEquals(0, dao.count())
+    }
+
+    @Test fun appendFactRefusedAfterADeleteAllRecordsNoModel() = runBlocking {
+        val dao = MemoryGraph.get(ctx).db.modelAttributionDao()
+        assertFalse(PipelineRecords.appendFact(ctx, "rokid_t_9", null, "t", "note", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK, 7, generation = -1L, attribution = com.rokid.context.memory.db.ModelAttribution("model-a")))
+        assertEquals(0, dao.count())
+    }
+
     @Test fun framesRoundTripAndRejectNonRokidOrMissingPreview() = runBlocking {
         assertTrue(PipelineRecords.appendFrame(ctx, frame("f1", 10, jpg("a.jpg"))))
         assertFalse(PipelineRecords.appendFrame(ctx, frame("f2", 11, jpg("b.jpg"), source = "phone")))

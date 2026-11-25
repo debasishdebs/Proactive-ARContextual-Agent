@@ -254,6 +254,7 @@ class QueueDrainWorker(
         // Codex r10: every upload is re-checked live by the router (a photo forgotten meanwhile drops the call unsent: the job is stale, nothing written)
         val liveness = com.rokid.context.work.frames.FrameLiveness.forApp(applicationContext, generation)
         var delivered = true
+        val models = mutableListOf<String?>(); val revs = mutableListOf<Int?>()
         val facts = seen.flatMap { (frame, image) ->
             val r = try {
                 ExtractSave.extract(ai.runner, listOf(ExtractPhoto(frame.id, "ts=${frame.ts} \u00b7 source=${frame.source} \u00b7 ${frame.payload}", image)),
@@ -262,6 +263,7 @@ class QueueDrainWorker(
                 throw StalePayloadException()
             }
             promptVersion = r.promptVersion
+            models += r.output.model; revs += r.output.promptRev // v18 WP11a
             delivered = delivered && r.output.imagesDelivered
             provenance = provenance && r.output.provenance
             captions += r.output.captions
@@ -281,7 +283,7 @@ class QueueDrainWorker(
         // Each fact is fenced on the photos it cites only: a photo forgotten during the calls drops just its facts.
         // Memories, frame_source rows (and, for pipeline callers, the claim CAS) are saved by saveExtraction in one transaction.
         val saved = ExtractSave.saveExtraction(
-            applicationContext, factPrefix, ExtractOutput(facts, captions = captions, provenance = provenance, imagesDelivered = delivered), seen.map { it.first.id }.toSet(), claims = claims.ifEmpty { null },
+            applicationContext, factPrefix, ExtractOutput(facts, captions = captions, provenance = provenance, imagesDelivered = delivered, model = models.distinct().singleOrNull(), promptRev = revs.distinct().singleOrNull()), seen.map { it.first.id }.toSet(), claims = claims.ifEmpty { null },
             tier = MemoryTier.SHORT, reviewState = if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation,
             // codex r15: one call per photo here, so each memory derives from the one photo its FACT row already cites: nothing else is carried
             carriedOf = { _, _ -> emptySet() },
@@ -318,11 +320,13 @@ class QueueDrainWorker(
         val vars = PromptVars(recentContext = PromptComposer.dataBlock("memories", sources.map { it.text }) +
             "\n" + PromptComposer.dataBlock("critic_notes", listOf(reason)))
         // Codex r10: the photos (and the frame ids in the prompt) are re-checked live by the router inside the call's permit; forgotten meanwhile = stale, unsent.
+        var summaryAttribution: com.rokid.context.memory.db.ModelAttribution? = null // v18 WP11a
         val out = try {
             ai.runner.run(RoleCall(PromptKey.SUMMARIZE, vars, images = FrameInputs.fromFrames(frames, maxImages = 3), fromFrames = true, callClass = com.rokid.context.model.CallClass.EXTRACT,
                 // codex r12: the source memories (also those of expired photos) and the reloaded frames are re-checked, not only the attached images
                 sources = com.rokid.context.model.PayloadSources(frames.map { it.id }.toSet(), sources.map { it.id }.toSet()),
-                liveness = com.rokid.context.work.frames.FrameLiveness.forApp(applicationContext, generation))).output as SummaryOutput
+                liveness = com.rokid.context.work.frames.FrameLiveness.forApp(applicationContext, generation)))
+                .also { summaryAttribution = com.rokid.context.memory.db.ModelAttribution.of(it.reply.model, it.promptVersion) }.output as SummaryOutput
         } catch (f: com.rokid.context.ai.PhotoForgottenException) {
             throw StalePayloadException()
         }
@@ -339,7 +343,7 @@ class QueueDrainWorker(
             if (gate.goneFrames(union, requirePresent = false).isNotEmpty()) return@withTransaction false
             val ok = PipelineRecords.appendFact(applicationContext, summaryId, null, out.summary, "summary", out.entities,
                 out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK,
-                generation = generation, derived = true, sourceIds = srcIds, fenceFrameIds = union.toList(), imageDelivered = false) // a text summary of memories: describes no photo
+                generation = generation, derived = true, sourceIds = srcIds, fenceFrameIds = union.toList(), imageDelivered = false, attribution = summaryAttribution) // a text summary of memories: describes no photo
             // codex r18: a retry upserts the same summary id, so its provenance is REPLACED with the content, never accumulated
             if (ok) { mdb.frameSourceDao().deleteForMemory(summaryId); mdb.frameSourceDao().insertAll(union.map { com.rokid.context.memory.db.FrameSourceEntity(summaryId, it, null, ExtractSave.CARRIED) }) }
             ok
@@ -382,11 +386,13 @@ class QueueDrainWorker(
         val payload = QueuePayloads.parse(job.payload)
         val rawInput = QueuePayloads.string(payload, "raw_input")
         require(rawInput.isNotBlank()) { "Empty explicit write input" }
+        var rememberAttribution: com.rokid.context.memory.db.ModelAttribution? = null // v18 WP11a
         val extracted = (ai.runner.run(RoleCall(PromptKey.EXPLICIT_REMEMBER, PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(rawInput))), callClass = com.rokid.context.model.CallClass.USER,
             // codex r15: the persisted queue payload IS stored user content: the call takes the upload slot and checks the job's captured wipe generation
             // (a Delete all at admission drops it unsent)
             sources = com.rokid.context.model.PayloadSources.stored(emptyList(), emptyList()),
-            liveness = com.rokid.context.work.frames.FrameLiveness.forApp(applicationContext, generation))).output as ExtractOutput)
+            liveness = com.rokid.context.work.frames.FrameLiveness.forApp(applicationContext, generation)))
+            .also { rememberAttribution = com.rokid.context.memory.db.ModelAttribution.of(it.reply.model, it.promptVersion) }.output as ExtractOutput)
             .facts.filter { it.text.isNotBlank() }
         // Fix I1: the user asked to remember this, so an empty reply keeps their own words as one note (no retry: it can
         // come back empty again).
@@ -395,7 +401,8 @@ class QueueDrainWorker(
         PipelineRecords.dropFactsFrom(applicationContext, factPrefix, keep = facts.size)
         val written = facts.withIndex().all { (i, f) ->
             PipelineRecords.appendFact(applicationContext, "$factPrefix$i", null, f.text, f.type, f.tags, f.confidence,
-                if (f.confidence >= 0.80) MemoryTier.LONG else MemoryTier.MEDIUM, ReviewState.OK, generation = generation, imageDelivered = false) // the user's words: no photo
+                if (f.confidence >= 0.80) MemoryTier.LONG else MemoryTier.MEDIUM, ReviewState.OK, generation = generation, imageDelivered = false, // the user's words: no photo
+                attribution = if (extracted.isEmpty()) null else rememberAttribution) // the raw-note fallback was written by no model
         }
         if (!written) return
         EmbeddingWorker.enqueue(applicationContext)

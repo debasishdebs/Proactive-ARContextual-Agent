@@ -71,6 +71,15 @@ class QueueDrainWorkerContractsTest {
         prompts.forEach { p -> assertTrue(p.contains("BEGIN_DATA frames")); assertTrue(("frame_id: f_old" in p) != ("frame_id: f_new" in p)) }
     }
 
+    /** v18 WP11a: every fact and caption of the legacy per-photo extraction carries the model that answered. */
+    @Test fun everyExtractedMemoryIsStoredWithTheModelThatAnswered() {
+        replies = { p -> vision(p, "Milk carton on the counter") }
+        run()
+        val dao = MemoryGraph.get(ctx).db.modelAttributionDao()
+        assertTrue(saved().size >= 4)
+        saved().forEach { assertEquals(it.id, "gpt", runBlocking { dao.get("MEMORY", it.id) }?.model) }
+    }
+
     @Test fun lowConfidenceFactsTheCriticRejectsGoToTheReviewQueue() {
         replies = { p -> if ("verdict" in p) """{"verdict":"fail","reasons":["not visible"]}""" else vision(p, "Maybe a cat", 0.3) }
         run()

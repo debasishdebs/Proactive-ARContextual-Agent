@@ -84,7 +84,7 @@ internal object KeyframeExtract {
         val localTrusted = ExtractFollowUp.locallyTrusted(critic, claimId ?: idPrefix, facts)
         val saved = ExtractSave.saveExtraction(
             app, idPrefix, ExtractOutput(facts, captions = batch.output.captions, provenance = batch.output.provenance, imagesDelivered = batch.output.imagesDelivered,
-                callGroups = batch.output.callGroups), sent.toSet(),
+                callGroups = batch.output.callGroups, model = batch.output.model, promptRev = batch.output.promptRev), sent.toSet(),
             claims = claimId?.let { id -> sent.associateWith { id } }, tier = MemoryTier.SHORT, reviewState = if (localTrusted) ReviewState.OK else ReviewState.NEEDS_REVIEW,
             generation = generation, inTransaction = afterSave?.let { hook -> { memories -> hook(sent.toSet(), memories) } },
         )

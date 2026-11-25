@@ -33,7 +33,10 @@ abstract class DerivedStaleDao {
     @Query("DELETE FROM scene WHERE sceneId IN (:ids)") protected abstract suspend fun deleteSceneRows(ids: List<String>)
     @Query("DELETE FROM scene_centroid WHERE sceneId IN (:ids)") protected abstract suspend fun deleteSceneCentroids(ids: List<String>) // v18 WP10: the centroid lives only while its Scene row does
     @Query("DELETE FROM object_audit WHERE objectKind = 'SCENE' AND objectId IN (:ids)") protected abstract suspend fun deleteSceneAudit(ids: List<String>)
-    @Query("DELETE FROM object_derived WHERE objectKind = 'SCENE' AND objectId IN (:ids)") protected abstract suspend fun deleteSceneDerived(ids: List<String>)
+    @Query("DELETE FROM object_derived WHERE objectKind = 'SCENE' AND objectId IN (:ids)") protected abstract suspend fun deleteSceneDerivedRows(ids: List<String>)
+    /** v18 WP11a: the model attribution of a derived field goes with the field (every derived delete of a Moment or Scene calls it after the rows are gone). */
+    @Query("DELETE FROM model_attribution WHERE kind = 'DERIVED' AND refId NOT IN (SELECT objectKind || ':' || objectId || ':' || field FROM object_derived)") protected abstract suspend fun deleteGoneDerivedAttribution()
+    protected suspend fun deleteSceneDerived(ids: List<String>) { deleteSceneDerivedRows(ids); deleteGoneDerivedAttribution() }
 
     @Query("SELECT COALESCE(MAX(seq), 0) FROM object_audit WHERE objectKind = 'SCENE' AND objectId IN (:ids)") protected abstract suspend fun sceneMaxSeq(ids: List<String>): Int
     @Query("SELECT value FROM canvas_meta WHERE `key` = 'scene_seq_floor'") protected abstract suspend fun sceneSeqFloorValue(): String?

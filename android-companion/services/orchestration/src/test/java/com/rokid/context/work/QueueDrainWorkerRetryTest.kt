@@ -31,6 +31,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -208,7 +210,19 @@ class QueueDrainWorkerRetryTest {
         assertEquals("note", m.type); assertEquals(MemoryTier.MEDIUM, m.tier); assertEquals(ReviewState.OK, m.reviewState)
         assertTrue(m.id.startsWith("rokid_mem_"))
         assertEquals("Explicit write saved (1 fact(s))", runBlocking { PipelineRecords.recentTraces(ctx, 5) }.first { it.summaryId == job.id }.note)
+        assertEquals("v18 WP11a: the user's own words were written by no model: nothing is recorded", 0, runBlocking { MemoryGraph.get(ctx).db.modelAttributionDao().count() })
         assertTrue(androidx.work.WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(com.rokid.context.orchestration.EmbeddingWorker.NAME).get().isNotEmpty())
+    }
+
+    /** v18 WP11a: a fact the EXPLICIT_REMEMBER call extracted is stored with the model that answered. */
+    @Test fun anExplicitFactIsStoredWithTheModelThatExtractedIt() {
+        bind(); behaviour = { """{"facts":[{"text":"Keys on the shelf","type":"note","confidence":0.9,"tags":[]}]}""" }
+        setAsideTheSetUpJob()
+        explicitJob(raw = "remember my keys are on the shelf")
+        runWorker()
+        val m = runBlocking { MemoryGraph.get(ctx).memories.recent(10) }.single()
+        val a = runBlocking { MemoryGraph.get(ctx).db.modelAttributionDao().get("MEMORY", m.id) }!!
+        assertEquals("gpt", a.model); assertNull(a.modelVersion); assertNotNull(a.promptRev)
     }
 
     /** Fix M1: a pause from before the stamp existed still gives every live job a full TTL from resume. */

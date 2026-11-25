@@ -34,6 +34,7 @@ class ForgetPolicyTest {
         ForgetChild.PLACE_CARD to listOf(K, C, K, K, K),
         ForgetChild.MOMENT_LOCATION to listOf(F, F, K, K, K), // v18 WP2: only a user Forget and Delete all delete a Moment's saved location
         ForgetChild.SCENE_CENTROID to listOf(F, F, K, C, C), // v18 WP10: a user Forget and Delete all delete it; expiry keeps it; the sweep and the purge only take it with an emptied Scene (purgeScenes)
+        ForgetChild.MODEL_ATTRIBUTION to listOf(F, F, C, C, C), // v18 WP11a: follows its item on every path
         ForgetChild.PLACE_HISTORY to listOf(F, F, L, K, K), // v18 WP3: a user Forget and Delete all delete the rows; photo expiry only unlinks the photo
         ForgetChild.CONFIG to listOf(K, C, K, K, K),
         ForgetChild.CONTROL to listOf(C, C, C, C, C),

@@ -129,7 +129,8 @@ object ExtractSave {
         }
         return ExtractedBatch(
             ExtractOutput(parts.flatMap { it.output.facts }, captions = parts.flatMap { it.output.captions }, provenance = current, imagesDelivered = parts.all { it.output.imagesDelivered },
-                callGroups = parts.flatMap { it.output.callGroups }),
+                callGroups = parts.flatMap { it.output.callGroups },
+                model = parts.map { it.output.model }.distinct().singleOrNull(), promptRev = parts.map { it.output.promptRev }.distinct().singleOrNull()), // v18 WP11a: one model only when every call agreed
             parts.last().promptVersion,
             attempts.toList(),
             contextIncluded = parts.any { it.contextIncluded },
@@ -151,7 +152,8 @@ object ExtractSave {
         // substituted the context (a supplied but unused `{{context_sources}}` is not in the request)
         val included = contextSources.isNotBlank() && "context_sources" in r.renderedVars
         return ExtractedBatch((r.output as ExtractOutput).copy(imagesDelivered = r.imagesDelivered,
-            callGroups = listOf(photos.map { it.frameId }.toSet() + (if (included) contextProvenance.frameIds else emptySet()))),
+            callGroups = listOf(photos.map { it.frameId }.toSet() + (if (included) contextProvenance.frameIds else emptySet())),
+            model = r.reply.model.takeIf { it.isNotBlank() }, promptRev = r.promptVersion), // v18 WP11a
             r.promptVersion, usageOf(r.replies), contextIncluded = included,
             deliveredPhotos = if (r.imagesDelivered) photos.map { it.frameId }.toSet() else emptySet())
     }
@@ -187,6 +189,7 @@ object ExtractSave {
             return ExtractSaveResult.Undelivered
         }
         val facts = output.facts.filter { it.text.isNotBlank() }
+        val attribution = com.rokid.context.memory.db.ModelAttribution.of(output.model, output.promptRev) // v18 WP11a: null when the model is unknown or mixed: nothing recorded
         return try {
             val gate = com.rokid.context.provenance.ProvenanceGate(db)
             db.withTransaction {
@@ -209,14 +212,14 @@ object ExtractSave {
                     val ids = f.sourceFrameIds.filter { it in sentFrameIds }.distinct().ifEmpty { sentFrameIds.take(1) }
                     val id = "$idPrefix$i"
                     if (PipelineRecords.appendFact(context, id, ids.firstOrNull(), f.text, f.type, f.tags, f.confidence, tier, reviewState,
-                            generation = generation, fenceFrameIds = ids, createdAt = nowMs, imageDelivered = deliveredOf(ids, i))) {
+                            generation = generation, fenceFrameIds = ids, createdAt = nowMs, imageDelivered = deliveredOf(ids, i), attribution = attribution)) {
                         saved += SavedMemory(id, ids, i)
                     }
                 }
                 output.captions.filter { it.caption.isNotBlank() && it.frameId in sentFrameIds }.distinctBy(FrameCaption::frameId).forEachIndexed { i, c ->
                     val id = "${idPrefix}c$i"
                     if (PipelineRecords.appendFact(context, id, c.frameId, c.caption, "caption", listOf("caption"), 1.0, MemoryTier.LONG, ReviewState.OK,
-                            generation = generation, fenceFrameIds = listOf(c.frameId), createdAt = nowMs, imageDelivered = deliveredOf(listOf(c.frameId), null))) {
+                            generation = generation, fenceFrameIds = listOf(c.frameId), createdAt = nowMs, imageDelivered = deliveredOf(listOf(c.frameId), null), attribution = attribution)) {
                         saved += SavedMemory(id, listOf(c.frameId), null)
                     }
                 }

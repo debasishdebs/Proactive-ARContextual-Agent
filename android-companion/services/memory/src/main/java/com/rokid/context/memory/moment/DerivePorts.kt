@@ -8,7 +8,11 @@ data class RebuildReason(val op: String?, val refKind: String?, val refId: Strin
 data class DeriveRequest(val obj: MomentObject, val field: String, val reason: RebuildReason, val fence: com.rokid.context.memory.db.DaoFence, val inputSeq: Int)
 
 /** What a port answers: one derived-field write ([value] for SUMMARY and CAPTION, [ref] for EMBEDDING). */
-data class DerivedWrite(val field: String, val value: String? = null, val ref: String? = null, val builtRev: Int)
+data class DerivedWrite(
+    val field: String, val value: String? = null, val ref: String? = null, val builtRev: Int,
+    /** v18 WP11a: the model that wrote [value] (null = not known: nothing is recorded). The name only, never text. */
+    val model: String? = null,
+)
 
 /** Generic ports of the processing functions. The real adapters (model calls) come later; each takes any Moment-family object and returns a derived-field write or null (nothing to write). */
 fun interface SummarizeInput { suspend fun summarize(req: DeriveRequest): DerivedWrite? }
@@ -52,8 +56,8 @@ class DeriveRunner(private val audit: ObjectAudit, private val registry: DeriveR
         // Forget lifecycle M3: with a read [lease] (the DerivePass holds one over the object and what its text was read from) the write commits THROUGH it: a Forget that reached those inputs while the model
         // ran revoked it and nothing is written (reported as a stale input, like any obsolete answer). The input-revision guard of the write stays as the second line.
         val db = db
-        if (lease == null || db == null) return audit.writeDerivedGuarded(obj, field, answer.value, answer.ref, answer.builtRev, req.fence, req.inputSeq)
-        return when (val c = lease.commit(db, checkLive = false) { audit.writeDerivedGuarded(obj, field, answer.value, answer.ref, answer.builtRev, req.fence, req.inputSeq) }) {
+        if (lease == null || db == null) return audit.writeDerivedGuarded(obj, field, answer.value, answer.ref, answer.builtRev, req.fence, req.inputSeq, com.rokid.context.memory.db.ModelAttribution.of(answer.model))
+        return when (val c = lease.commit(db, checkLive = false) { audit.writeDerivedGuarded(obj, field, answer.value, answer.ref, answer.builtRev, req.fence, req.inputSeq, com.rokid.context.memory.db.ModelAttribution.of(answer.model)) }) {
             is com.rokid.context.memory.forget.lifecycle.Leases.Commit.Committed -> c.value
             com.rokid.context.memory.forget.lifecycle.Leases.Commit.Fenced -> com.rokid.context.memory.db.ObjectDao.WriteOutcome.STALE_INPUT
         }

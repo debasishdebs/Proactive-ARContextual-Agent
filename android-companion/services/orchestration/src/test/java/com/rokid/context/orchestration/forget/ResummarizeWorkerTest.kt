@@ -73,6 +73,20 @@ class ResummarizeWorkerTest {
         assertTrue(prompts.none { "Forgotten diary" in it || "B from A and S" in it || "C from B" in it })
     }
 
+    /** v18 WP11a: the rebuilt summary carries the model that rebuilt it; the replaced one loses its row with it. */
+    @Test fun aRebuiltSummaryIsStoredWithItsModelAndTheReplacedOneLosesItsRow() = runBlocking {
+        mem("A", "Forgotten diary page", derived = false); mem("S", "Sibling source about the desk", derived = false); mem("B", "B from A and S")
+        edge("B", "A"); edge("B", "S")
+        val adao = graph.db.modelAttributionDao()
+        adao.record("MEMORY", "B", com.rokid.context.memory.db.ModelAttribution("old-model"), 1)
+        forget("A")
+        assertTrue(work() is ListenableWorker.Result.Success)
+        val b2 = graph.memories.all().single { it.text == "Rebuilt B" }
+        assertEquals("gpt", adao.get("MEMORY", b2.id)!!.model)
+        assertNull(adao.get("MEMORY", "B"))
+        assertEquals(1, adao.count())
+    }
+
     // codex r17 P1-3: the rebuilt summary inherits its sources' photo provenance. MA cites A and carries X; S from MA/MB; Forget MB; R rebuilt from MA;
     // MA expires; Forget X -> R is invalidated
     @Test fun aRebuiltSummaryInheritsItsSourcesPhotosAndGoesWithThem() = runBlocking {

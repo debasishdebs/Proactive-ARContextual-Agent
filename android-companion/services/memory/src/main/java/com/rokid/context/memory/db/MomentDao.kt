@@ -65,7 +65,8 @@ abstract class MomentDao : DerivedStaleDao() {
     }
     // The audit and the derived fields of a Moment go WITH the Moment, on every path that removes one (Forget cascade, source cleanup, builder removal).
     @Query("DELETE FROM object_audit WHERE objectKind = 'MOMENT' AND objectId IN (:ids)") protected abstract suspend fun deleteAuditRows(ids: List<String>)
-    @Query("DELETE FROM object_derived WHERE objectKind = 'MOMENT' AND objectId IN (:ids)") protected abstract suspend fun deleteDerivedRows(ids: List<String>)
+    @Query("DELETE FROM object_derived WHERE objectKind = 'MOMENT' AND objectId IN (:ids)") protected abstract suspend fun deleteDerivedRowsOnly(ids: List<String>)
+    private suspend fun deleteDerivedRows(ids: List<String>) { deleteDerivedRowsOnly(ids); deleteGoneDerivedAttribution() }
     /** `forgetV2`: the derived fields (SUMMARY, CAPTION, EMBEDDING) of Moments that SURVIVE a Forget but showed a forgotten source are erased, not only hidden; the derive pass writes them again. */
     @Transaction open suspend fun eraseDerived(ids: Collection<String>) = ids.toList().chunked(CHUNK).forEach { deleteDerivedRows(it) }
     private suspend fun deleteObjectRows(ids: List<String>) { deleteAuditRows(ids); deleteDerivedRows(ids) }

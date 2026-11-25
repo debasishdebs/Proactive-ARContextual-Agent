@@ -37,6 +37,8 @@ interface MemoryDao {
     )
     suspend fun search(matchQuery: String, limit: Int): List<MemoryEntity>
     @Query("DELETE FROM memory WHERE id IN (:ids)") suspend fun deleteByIds(ids: List<String>)
+    /** v18 WP11a: the model attribution of memories goes with them ([MemoryRepository.deleteByIds] calls both). */
+    @Query("DELETE FROM model_attribution WHERE kind = 'MEMORY' AND refId IN (:ids)") suspend fun deleteAttributionOf(ids: List<String>)
     /** [escapedPrefix] has `\\`, `%` and `_` escaped with `\\` (MemoryRepository.idsWithPrefix). */
     @Query("SELECT id FROM memory WHERE id LIKE :escapedPrefix || '%' ESCAPE '\\'") suspend fun idsLike(escapedPrefix: String): List<String>
     @Query("SELECT COUNT(*) FROM memory") suspend fun count(): Int

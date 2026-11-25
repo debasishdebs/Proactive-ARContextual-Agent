@@ -106,6 +106,19 @@ class ClusterSaveTest {
         assertEquals(mapOf("g1" to "CLUSTER_REP", "g2" to "CLUSTER_MEMBER"), src.forMemory("rokid_cl_k1_1").filter { it.role != "CARRIED" }.associate { it.frameId to it.role })
     }
 
+    // v18 WP11a: the summary, its facts and the captions of one call share its model; no model on the output records nothing
+    @Test fun theModelThatSummarisedIsRecordedWithTheSummaryTheFactsAndTheCaptions() = runBlocking<Unit> {
+        save(output().copy(model = "vision-x", promptRev = 4))
+        val rows = db.modelAttributionDao().ofPrefix("MEMORY", "rokid_cl_").associateBy { it.refId }
+        assertEquals(memoryIds(), rows.keys)
+        assertTrue(rows.values.all { it.model == "vision-x" && it.promptRev == "4" })
+    }
+
+    @Test fun anOutputWithoutAModelRecordsNone() = runBlocking<Unit> {
+        save()
+        assertEquals(8, memoryIds().size); assertEquals(0, db.modelAttributionDao().count())
+    }
+
     @Test fun casFailureWritesNothing() = runBlocking<Unit> {
         // c2's claim was retaken by another worker: the whole call is dropped, c1 included.
         db.frameClusterDao().upsert(db.frameClusterDao().get("c2")!!.copy(claimId = "other"))

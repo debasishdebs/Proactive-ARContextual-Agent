@@ -186,6 +186,26 @@ class DumpReaderTest {
         assertEquals("nomic-v1.5|d=3", m["embeddingSpaces"]!!.jsonArray.single().jsonObject["name"]!!.jsonPrimitive.content)
     }
 
+    // v18 WP11a: model and modelVersion come from `model_attribution` (null when absent); the manifest stops listing them as absent once rows exist
+    @Test fun modelAndModelVersionComeFromTheAttributionTableAndAreNullWhenAbsent() = runBlocking {
+        seed(5, 6)
+        db.objectDao().upsertDerived(ObjectDerivedEntity("MOMENT", id(5), "CAPTION", "a caption", null, 3, null, 9))
+        db.objectDao().upsertDerived(ObjectDerivedEntity("MOMENT", id(6), "CAPTION", "other caption", null, 3, null, 9))
+        assertTrue("no rows yet: still absent", "model_name" in reader().manifest()["fieldsAbsent"]!!.jsonArray.map { it.jsonPrimitive.content })
+        db.modelAttributionDao().upsert(com.rokid.context.memory.db.ModelAttributionEntity("MEMORY", "m5", "vision-x", "2026-11", "4", 9))
+        db.modelAttributionDao().upsert(com.rokid.context.memory.db.ModelAttributionEntity("DERIVED", "MOMENT:${id(5)}:CAPTION", "text-y", null, null, 9))
+        val items = all().associate { it.json["id"]!!.jsonPrimitive.content to it.json }
+        val mem5 = items.getValue(id(5))["memories"]!!.jsonArray.single().jsonObject
+        assertEquals("vision-x", mem5["model"]!!.jsonPrimitive.content); assertEquals("2026-11", mem5["modelVersion"]!!.jsonPrimitive.content)
+        assertEquals(JsonNull, items.getValue(id(6))["memories"]!!.jsonArray.single().jsonObject["model"]); assertEquals(JsonNull, items.getValue(id(6))["memories"]!!.jsonArray.single().jsonObject["modelVersion"])
+        val d5 = items.getValue(id(5))["derived"]!!.jsonArray.single().jsonObject
+        assertEquals("text-y", d5["model"]!!.jsonPrimitive.content); assertEquals(JsonNull, d5["modelVersion"])
+        assertEquals(JsonNull, items.getValue(id(6))["derived"]!!.jsonArray.single().jsonObject["model"])
+        val m = reader().manifest(); val absent = m["fieldsAbsent"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(listOf("transcript_text"), absent); assertEquals(2, m["counts"]!!.jsonObject["modelAttributions"]!!.jsonPrimitive.content.toInt())
+        assertFalse("the attribution never carries text", m.toString().contains("a caption"))
+    }
+
     @Test fun theLocationAppearsOnlyInTheMomentItemsNeverInTheOtherDumpAnswers() = runBlocking {
         seed(1)
         db.momentLocationDao().insertIfAbsent(loc(id(1), "f1", lat = 41.123456, lon = -73.654321))

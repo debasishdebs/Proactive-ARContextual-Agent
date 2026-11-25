@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 
 /**
  * Forget fact / Forget moment cascade queries (spec §6.1.1, R-77), the extraction lock (`forget_tombstone`) and the
@@ -46,7 +47,11 @@ abstract class ForgetDao {
     @Query("SELECT (SELECT COUNT(*) FROM frame_meta WHERE frameId = :frameId) + (SELECT COUNT(*) FROM frame_vector WHERE frameId = :frameId) + (SELECT COUNT(*) FROM frame_state WHERE frameId = :frameId)")
     abstract suspend fun photoRowCount(frameId: String): Int
     @Query("DELETE FROM frame_source WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameSourcesOfFrames(frameIds: List<String>): Int
-    @Query("DELETE FROM memory WHERE id IN (:ids)") abstract suspend fun deleteMemories(ids: List<String>): Int
+    @Query("DELETE FROM memory WHERE id IN (:ids)") protected abstract suspend fun deleteMemoryRows(ids: List<String>): Int
+    @Query("DELETE FROM model_attribution WHERE kind = 'MEMORY' AND refId IN (:ids)") protected abstract suspend fun deleteMemoryAttribution(ids: List<String>): Int
+    @Query("DELETE FROM model_attribution WHERE kind = 'ANSWER' AND refId = :id") protected abstract suspend fun deleteAnswerAttribution(id: String): Int
+    /** v18 WP11a: the model attribution of a memory goes with it, in the same transaction as the delete. */
+    @Transaction open suspend fun deleteMemories(ids: List<String>): Int { val n = deleteMemoryRows(ids); deleteMemoryAttribution(ids); return n }
     /** Every embedding space, not only the current one. */
     @Query("DELETE FROM memory_vector WHERE memoryId IN (:ids)") abstract suspend fun deleteVectorsFor(ids: List<String>): Int
     @Query("DELETE FROM memory_source WHERE memoryId IN (:ids)") abstract suspend fun deleteEdgesFrom(ids: List<String>): Int
@@ -315,9 +320,12 @@ abstract class ForgetDao {
     /** [likePattern] escapes `\`, `%` and `_` with `\`. It is only a prefilter: the caller parses the JSON exactly. */
     @Query("SELECT * FROM ask WHERE redacted = 0 AND sourcesJson LIKE :likePattern ESCAPE '\\'") abstract suspend fun asksCiting(likePattern: String): List<AskEntity>
     @Query("SELECT * FROM nudge WHERE redacted = 0 AND sourceIdsJson LIKE :likePattern ESCAPE '\\'") abstract suspend fun nudgesCiting(likePattern: String): List<NudgeEntity>
-    @Query("UPDATE ask SET answer = :text, sourcesJson = '[]', redacted = 1 WHERE id = :id") abstract suspend fun redactAsk(id: String, text: String): Int
+    @Query("UPDATE ask SET answer = :text, sourcesJson = '[]', redacted = 1 WHERE id = :id") protected abstract suspend fun redactAskRow(id: String, text: String): Int
+    /** v18 WP11a: a redacted answer has no text left, so the model attribution of the answer goes with it. */
+    @Transaction open suspend fun redactAsk(id: String, text: String): Int { val n = redactAskRow(id, text); deleteAnswerAttribution(id); return n }
     /** M5 (`forgetV2`): the answer is erased, the QUESTION stays, and the source state says why (the row offers "Ask again"). */
-    @Query("UPDATE ask SET answer = :text, sourcesJson = '[]', redacted = 1, sourceStates = :states WHERE id = :id") abstract suspend fun redactAskForgotten(id: String, text: String, states: String): Int
+    @Query("UPDATE ask SET answer = :text, sourcesJson = '[]', redacted = 1, sourceStates = :states WHERE id = :id") protected abstract suspend fun redactAskForgottenRow(id: String, text: String, states: String): Int
+    @Transaction open suspend fun redactAskForgotten(id: String, text: String, states: String): Int { val n = redactAskForgottenRow(id, text, states); deleteAnswerAttribution(id); return n }
     /** M5 prefilter: answers whose `sourceStates` (cited or history ids) may contain an id; the caller parses the JSON exactly. */
     @Query("SELECT * FROM ask WHERE redacted = 0 AND sourceStates LIKE :likePattern ESCAPE '\\'") abstract suspend fun asksCitingStates(likePattern: String): List<AskEntity>
     /** M5 N1 (`forgetV2`): a nudge reached by a dependency is deleted (nudges are time-bound; the proposals are expired and scrubbed by their own family). */

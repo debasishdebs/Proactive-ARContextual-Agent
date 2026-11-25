@@ -35,7 +35,7 @@ class MemoryRepository(private val dao: MemoryDao) {
         val r = DayBucket.bounds(date, zone)
         return dao.between(r.first, r.last + 1)
     }
-    suspend fun deleteByIds(ids: List<String>) = ids.forEachChunk { dao.deleteByIds(it) }
+    suspend fun deleteByIds(ids: List<String>) = ids.forEachChunk { dao.deleteByIds(it); dao.deleteAttributionOf(it) }
     /** Ids starting with [prefix], literally (LIKE wildcards escaped; startsWith re-checks LIKE's ASCII case folding). */
     suspend fun idsWithPrefix(prefix: String): List<String> = dao.idsLike(escapeLike(prefix)).filter { it.startsWith(prefix) }
 

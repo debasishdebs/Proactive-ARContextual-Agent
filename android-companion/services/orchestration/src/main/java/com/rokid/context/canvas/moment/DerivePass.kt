@@ -33,12 +33,19 @@ import kotlin.coroutines.cancellation.CancellationException
  * [sources] (codex r12/r13): the memories and photos the prompt's notes were read from, and [generation] the wipe generation read in the SAME snapshot;
  * the router re-checks both before the call leaves (a Forget or Delete all after the snapshot drops it unsent).
  */
-fun interface DeriveText { suspend fun complete(prompt: String, sources: com.rokid.context.model.PayloadSources, generation: Long): String? }
+fun interface DeriveText {
+    suspend fun complete(prompt: String, sources: com.rokid.context.model.PayloadSources, generation: Long): String?
+    /** v18 WP11a: the reply with the model that wrote it. The default has no model name (a fake or a source that does not know one): nothing is recorded then. */
+    suspend fun completeAttributed(prompt: String, sources: com.rokid.context.model.PayloadSources, generation: Long): Pair<String, String?>? = complete(prompt, sources, generation)?.let { it to null }
+}
 
 /** Production [DeriveText]: the app's existing router and the user's SUMMARIZE binding (no new client). Background priority; a short, cool, capped request. */
 class RouterDeriveText(private val model: com.rokid.context.model.LanguageModel, private val liveness: (Long) -> com.rokid.context.model.PhotoLiveness) : DeriveText {
     override suspend fun complete(prompt: String, sources: com.rokid.context.model.PayloadSources, generation: Long): String? =
-        model.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest(prompt, temperature = 0.2, maxTokens = 160, sources = sources, liveness = liveness(generation)) }.text
+        completeAttributed(prompt, sources, generation)?.first
+
+    override suspend fun completeAttributed(prompt: String, sources: com.rokid.context.model.PayloadSources, generation: Long): Pair<String, String?>? =
+        model.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest(prompt, temperature = 0.2, maxTokens = 160, sources = sources, liveness = liveness(generation)) }.let { it.text to it.model.takeIf { m -> m.isNotBlank() } }
 }
 
 /**
@@ -151,10 +158,10 @@ class TextDerivePorts(private val inputs: DeriveInputs, private val text: Derive
         val what = if (req.obj.kind == ObjectKind.SCENE) "this scene" else "this moment"
         inputs.testBeforeSend?.invoke()
         // codex r13: the provenance and generation of THIS snapshot travel with the text; the router re-checks them inside the permit
-        val reply = text.complete(prompt(task, what, lines), snap.sources, snap.generation) ?: return null
+        val (reply, modelName) = text.completeAttributed(prompt(task, what, lines), snap.sources, snap.generation) ?: return null
         if (!gate.stillOn()) return null // switched off while the model ran: nothing is written
         val clean = reply.replace(Regex("\\s+"), " ").trim().take(max)
-        return if (clean.isEmpty()) null else DerivedWrite(field, value = clean, builtRev = req.inputSeq)
+        return if (clean.isEmpty()) null else DerivedWrite(field, value = clean, builtRev = req.inputSeq, model = modelName)
     }
 
     fun registerIn(r: DeriveRegistry) { listOf(ObjectKind.MOMENT, ObjectKind.SCENE).forEach { r.register(it, summarize = this, caption = this) } }

@@ -824,7 +824,7 @@ res_table_count() { # table count
 }
 
 check_trip_db() { # serial: only a COPY, only when the app's own flag says plaintext
-  local s="$1" d hdr enc mode uv ic d_cnt_ml d_cnt_pc d_cnt_sc
+  local s="$1" d hdr enc mode uv ic d_cnt_ml d_cnt_pc d_cnt_sc d_cnt_ma
   [ -n "$TMP" ] || { res UNKNOWN "db version" "no temp dir"; return; }
   d="$TMP/db"; mkdir -p "$d"
   A "$s" exec-out run-as "$PHONE_PKG" cat databases/context.db > "$d/context.db" 2>/dev/null || true
@@ -850,6 +850,8 @@ check_trip_db() { # serial: only a COPY, only when the app's own flag says plain
   res_table_count moment_location "$d_cnt_ml"
   res_table_count place_card_log "$d_cnt_pc"
   res_table_count scene_centroid "$d_cnt_sc"
+  d_cnt_ma="$(sqlite3 "$d/context.db" 'SELECT COUNT(*) FROM model_attribution;' 2>/dev/null | tr -d '\r[:space:]')" || d_cnt_ma=""
+  res_table_count model_attribution "$d_cnt_ma"
   if [ "$ic" = ok ]; then res PASS "db integrity" "integrity_check ok (copy)"
   elif [ -z "$ic" ]; then res UNKNOWN "db integrity" "integrity_check gave no answer"
   else res FAIL "db integrity" "integrity_check on the copy did not say ok"; fi

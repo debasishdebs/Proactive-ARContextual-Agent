@@ -31,6 +31,8 @@ data class ExtractOutput(
     val imagesDelivered: Boolean = false,
     /** Codex r16, in memory only: the photos of each model call behind this output (one set per call); a memory is derived from the calls that saw its photos. */
     val callGroups: List<Set<String>> = emptyList(),
+    /** v18 WP11a, in memory only: the model that answered (every call behind this output agreed), and the prompt version. Null = not known or mixed; the saver then records no attribution. */
+    val model: String? = null, val promptRev: Int? = null,
 ) : ContractOutput
 /**
  * A PLACE_MATCH result: [choice] is the candidate number the model picked or "NONE" (the caller maps it back and treats anything outside the sent set as NONE), [confidence] clamped to 0..1.
