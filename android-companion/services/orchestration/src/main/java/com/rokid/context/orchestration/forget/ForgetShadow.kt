@@ -50,6 +50,22 @@ object DeveloperFlags {
     fun packMoments(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PACK_MOMENTS, false) }.getOrDefault(false)
     fun setPackMoments(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PACK_MOMENTS, on).apply(); if (!on) com.rokid.context.work.frames.place.ShadowCaches.clearAll() }
 
+    /**
+     * Canvas v2.1 Test run (design 2026-11-24): stored-window and trace sources, the per-node inspector, the E2E record and the bounded live tap. Every Test run is a dry-run (no send, no delivery, no publish, no
+     * write to user data; Save only through `CanvasRunSave`). Needs Developer mode as well. OFF by default (also OFF when the prefs cannot be read); no extra UI beyond the Developer row.
+     */
+    const val CANVAS_TEST_RUN = "canvasTestRun"
+    fun canvasTestRun(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(CANVAS_TEST_RUN, false) }.getOrDefault(false)
+    fun setCanvasTestRun(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(CANVAS_TEST_RUN, on).apply() }
+
+    /**
+     * Canvas v2.2 model, classifier, router and rule nodes (design 2026-11-24 section 2). OFF by default (also OFF when the prefs cannot be read): the new node types do not appear in the palette and the validator
+     * refuses a graph that holds one. Needs Developer mode as well. Offline only is always honoured: no remote model call.
+     */
+    const val CANVAS_MODEL_NODES = "canvasModelNodes"
+    fun canvasModelNodes(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(CANVAS_MODEL_NODES, false) }.getOrDefault(false)
+    fun setCanvasModelNodes(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(CANVAS_MODEL_NODES, on).apply() }
+
     /** Place fixes (spec 2026-11-24 section 2): each is ON by default and has no UI; OFF restores the older behaviour. */
     const val PLACE_PIN_FIRST = "placePinFirst"
     const val PLACE_FIX_REUSE = "placeFixReuse"
