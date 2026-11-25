@@ -54,6 +54,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                         { HubGraph.get(app); com.rokid.context.canvas.moment.MomentLocationGraph.zonesNow() }, { MemoryWipe.generation.get() },
                     ),
                 ),
+                dump = dumpRoutes(app, devMode),
                 sender = { HubGraph.get(app); HubGraph.planSender }, collect = { HubGraph.get(app); HubGraph.collectSession },
                 importer = TraceImport(dao, com.rokid.context.canvas.trace.FencedFiles(db, app.filesDir), fence, onImported = com.rokid.context.canvas.moment.MomentTriggers.get(app)::onTraceImported),
                 stagingRoot = { app.getExternalFilesDir(null)?.let { File(it, com.rokid.context.canvas.trace.FencedFiles.STAGING_DIR).also(File::mkdirs) } },
@@ -76,6 +77,16 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             )
         }
 
+        /** The Developer dump routes over the real stores (gate: Developer mode and the paired session the router already demands; nothing else is switched). */
+        internal fun dumpRoutes(app: Context, devMode: StateFlow<Boolean>): com.rokid.context.phone.canvas.api.DumpRoutes {
+            val reader = com.rokid.context.canvas.dump.DumpReader(
+                MemoryGraph.get(app).db,
+                pinSource = { com.rokid.context.memory.place.UserPinStore(app.getSharedPreferences(com.rokid.context.memory.place.UserPinStore.PREFS, Context.MODE_PRIVATE)).pins() },
+                appVersion = com.rokid.context.BuildConfig.VERSION_NAME,
+            )
+            return com.rokid.context.phone.canvas.api.DumpRoutes(devMode::value, reader)
+        }
+
         /** The pure assembly, so a test can pass its own dao, replay service and hub references. */
         fun build(
             dao: com.rokid.context.memory.db.CanvasSlice3Dao, replay: ReplayService, devMode: StateFlow<Boolean>, startup: suspend () -> Unit,
@@ -96,6 +107,8 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             momentRepair: (suspend (Long) -> com.rokid.context.canvas.moment.MomentRepair.Report)? = null,
             /** v18 WP5: `POST /api/moments/locations/import`, the GPS backfill import; null = not registered (404). */
             momentLocationImport: com.rokid.context.phone.canvas.api.MomentLocationRoutes? = null,
+            /** v1.7 Developer dump API: the read-only `GET /api/dump/...` routes (Developer mode and the paired session); null = not registered (404). */
+            dump: com.rokid.context.phone.canvas.api.DumpRoutes? = null,
             /** v0.9.7 A: the signal configuration store (`/api/signals`); null = the routes are not registered. */
             signals: com.rokid.context.phone.ui.settings.capture.SignalConfigStore? = null,
             /** v0.9.8 slice D: the device capability store (`/api/devices`); null = the routes are not registered. */
@@ -116,6 +129,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 add(ApiExtra(planRoutes::handle))
                 if (moments != null) MomentRoutes(devMode::value, moments, scenes = momentScenes, repair = momentRepair).let { add(ApiExtra(it::handle)) }
                 momentLocationImport?.let { add(ApiExtra(it::handle)) }
+                dump?.let { add(ApiExtra(it::handle)) }
                 add(ApiExtra(com.rokid.context.phone.canvas.api.ExprRoutes()::handle))
                 signals?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.SignalRoutes(it, signalTry)::handle)) }
                 devices?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.DeviceRoutes(it)::handle)) }

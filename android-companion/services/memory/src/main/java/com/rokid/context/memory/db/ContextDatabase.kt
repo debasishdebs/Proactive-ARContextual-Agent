@@ -61,6 +61,8 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun sceneDao(): SceneDao
     abstract fun placeCardLogDao(): PlaceCardLogDao
     abstract fun momentLocationDao(): MomentLocationDao
+    /** Developer dump API: read-only SELECTs only. */
+    abstract fun dumpDao(): DumpDao
 }
 
 /**

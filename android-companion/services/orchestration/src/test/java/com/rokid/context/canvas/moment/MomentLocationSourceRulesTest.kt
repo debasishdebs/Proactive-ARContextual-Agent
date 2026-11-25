@@ -19,6 +19,9 @@ class MomentLocationSourceRulesTest {
         "ForgetService.kt", "ForgetExecutor.kt", "CanvasSlice3Dao.kt", "MomentForget.kt", "WipeDao.kt", "Families.kt", "Ref.kt", "ForgetPolicy.kt", "DeletionGraph.kt", "DesignDivergence.kt",
         // WP4 and WP5
         "MomentLocationRecorder.kt", "MomentLocationGraph.kt", "MomentLocationImport.kt", "MomentLocationRoutes.kt", "CanvasExtras.kt", "HubGraph.kt", "PrivacySettings.kt",
+        // v1.7 Developer dump API (design 2026-11-26): the owner's ONE explicit exception. He asked to pull the saved location of his own Moments to his own laptop for offline experiments, behind Developer mode, the devDump
+        // switch and a 10-minute arming. DumpReader is the single reader; its route (DumpRoutes.kt) only carries the JSON it builds and never names the store (pinned below). Every other path stays forbidden.
+        "DumpReader.kt",
     )
 
     @Test fun momentLocationDaoEntityAndTableAppearOnlyInTheAllowList() {
@@ -48,5 +51,24 @@ class MomentLocationSourceRulesTest {
         val exportFiles = mains.filter { it.name in setOf("ExportDao.kt", "MemoryExport.kt", "ConfigExport.kt", "DiagnosticsExport.kt") }
         assertTrue(exportFiles.size >= 3)
         for (f in exportFiles) { val c = code(f); assertTrue(f.name, tokens.none { it.lowercase() in c.lowercase() } && "MomentLocation" !in c) }
+    }
+
+    @Test fun dumpExceptionIsExactlyOneReaderAndItsRouteNeverNamesTheStore() {
+        val dump = mains.filter { it.path.contains("/canvas/dump/") || it.name.startsWith("Dump") }
+        assertTrue("the dump sources are seen", dump.any { it.name == "DumpReader.kt" } && dump.any { it.name == "DumpRoutes.kt" })
+        val naming = dump.filter { f -> val c = code(f); tokens.any { it in c } }.map { it.name }
+        assertEquals("only the dump reader names the location store", listOf("DumpReader.kt"), naming)
+        // the route, the arming and the source interface never touch the DAO, the entity or the table, and no DAO of the dump package writes
+        val daoCode = code(mains.first { it.name == "DumpDao.kt" })
+        assertTrue("DumpDao is SELECT only", Regex("@(Insert|Update|Delete|Upsert)\\b").find(daoCode) == null && !Regex("(?i)\\b(INSERT|UPDATE|DELETE)\\b").containsMatchIn(daoCode.lines().filter { it.contains("@Query") }.joinToString("\n")))
+        assertTrue("DumpDao does not read the location table", tokens.none { it.lowercase() in daoCode.lowercase() })
+    }
+
+    @Test fun dumpReaderIsNotInAnyBannedPathAndNoOtherRouteMayServeTheLocation() {
+        // the allow-list entry must not leak into the banned set: the reader lives outside ai, connectors, ask, prompt, export and the canvas API files
+        val reader = mains.first { it.name == "DumpReader.kt" }
+        assertTrue(!reader.path.contains("/services/ai/") && !reader.path.contains("/connectors/") && !reader.path.contains("/ask/") && !reader.name.contains("Ask") && !reader.name.contains("Prompt"))
+        val servingLocation = mains.filter { f -> f.path.contains("/phone/canvas/") && f.name != "CanvasExtras.kt" && f.name != "MomentLocationRoutes.kt" && code(f).let { c -> tokens.any { it in c } } }.map { it.name }
+        assertEquals("no canvas route file other than the import route names the location store", emptyList<String>(), servingLocation)
     }
 }
