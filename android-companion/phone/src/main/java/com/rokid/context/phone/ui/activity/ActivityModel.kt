@@ -41,7 +41,7 @@ data class PeriodWindow(val period: Period, val start: LocalDate, val endExclusi
     }
 }
 
-data class Tiles(val frames: Int, val memories: Int, val answers: Int, val nudges: Int)
+data class Tiles(val frames: Int, val memories: Int, val answers: Int, val nudges: Int, val scenes: Int = 0)
 data class TimelineRow(val memoryId: String, val time: String, val text: String, val confidence: Double, val framePath: String?, val frameId: String?, val atMs: Long = 0L)
 data class TimelineSection(val label: String, val rows: List<TimelineRow>)
 data class DayBar(val date: LocalDate, val label: String, val count: Int)
@@ -243,4 +243,6 @@ data class ActivityUiState(
     val sort: ActivitySort = ActivitySort.DEFAULT,
     /** The marks of the period, newest first (read-only). */
     val marks: List<MarkRowUi> = emptyList(),
+    /** The level the page browses (Photos, Moments, Scenes); the default is the page as it always was. */
+    val granularity: Granularity = Granularity.DEFAULT,
 )

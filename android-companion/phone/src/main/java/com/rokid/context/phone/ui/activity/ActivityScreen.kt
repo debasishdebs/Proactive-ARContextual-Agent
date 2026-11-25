@@ -30,6 +30,7 @@ import androidx.compose.material.icons.outlined.CalendarToday
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Lightbulb
+import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.MaterialTheme
@@ -69,9 +70,13 @@ fun ActivityScreen(
     onOpenList: (ListKind, Period) -> Unit,
     onOpenDay: (LocalDate) -> Unit,
     onSelectSort: (ActivitySort) -> Unit = {},
+    /** The level chips (Photos, Moments, Scenes). */
+    onSelectGranularity: (Granularity) -> Unit = {},
     /** Opens "Find a photo" (wave 3). */
     onSearchPhotos: () -> Unit = {},
 ) {
+    /** The default level keeps the tag the page always had. */
+    val seeAllTag = if (state.granularity.isDefault) "moments_all" else "level_all"
     LazyColumn(Modifier.fillMaxSize().background(PcColors.Surface).testTag("activity_list")) {
         item { GradientHeader("Activity", "What your glasses noticed") {
             IconButton(onClick = onSearchPhotos, modifier = Modifier.clip(CircleShape).background(PcColors.Surface).testTag("photo_search")) {
@@ -93,10 +98,23 @@ fun ActivityScreen(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
         }
+        item {
+            SegmentedSwitch(
+                Granularity.entries.map { it.label }, selectedIndex = state.granularity.ordinal, onSelect = { onSelectGranularity(Granularity.entries[it]) },
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp).testTag("granularity"),
+            )
+        }
         item { Text(state.header, style = MaterialTheme.typography.titleMedium, color = PcColors.Ink, modifier = Modifier.padding(start = 20.dp, top = 8.dp, bottom = 8.dp)) }
         item {
             // Each card opens the list of its kind over that period's ids; an empty kind opens its empty state, never a dead tap.
             val open = { kind: ListKind -> onOpenList(kind, state.period) }
+            // A level other than the default adds its own summary card above the tiles; the default page is unchanged.
+            if (!state.granularity.isDefault) {
+                val g = state.granularity
+                Row(Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
+                    MetricTile(if (g == Granularity.SCENES) Icons.Outlined.Movie else Icons.Outlined.Image, PcColors.ChipAmber, "${g.count(state.tiles)}", g.label, Modifier.weight(1f).testTag("level_card"), onClick = { open(g.list) })
+                }
+            }
             Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 MetricTile(Icons.Outlined.Image, PcColors.ChipMint, "${state.tiles.frames}", "Frames", Modifier.weight(1f), onClick = { open(ListKind.FRAMES) })
                 MetricTile(Icons.Outlined.Psychology, PcColors.ChipViolet, "${state.tiles.memories}", "Memories", Modifier.weight(1f), onClick = { open(ListKind.MEMORIES) })
@@ -116,9 +134,12 @@ fun ActivityScreen(
         if (state.period == Period.TODAY) {
             if (state.sections.isNotEmpty()) {
                 timelineItems(state.sections) { onPreview(listOf(PreviewRef.of(RefKind.MEMORY, it))) }
-                item { SeeAll("See all moments", "moments_all") { onOpenList(ListKind.MOMENTS, state.period) } }
+                item { SeeAll(state.granularity.seeAll, seeAllTag) { onOpenList(state.granularity.list, state.period) } }
             }
-            else if (state.today != null) item { Hint("Nothing captured yet today") }
+            else if (state.today != null) {
+                item { Hint("Nothing captured yet today") }
+                if (!state.granularity.isDefault) item { SeeAll(state.granularity.seeAll, seeAllTag) { onOpenList(state.granularity.list, state.period) } }
+            }
         } else {
             item {
                 SoftCard(Modifier.padding(16.dp).fillMaxWidth()) {
@@ -137,6 +158,7 @@ fun ActivityScreen(
             items(state.dayRows, key = { it.date.toString() }) { row ->
                 ChipRow(Icons.Outlined.CalendarToday, PcColors.ChipSky, row.title, row.subtitle, onClick = { onOpenDay(row.date) })
             }
+            if (!state.granularity.isDefault) item { SeeAll(state.granularity.seeAll, seeAllTag) { onOpenList(state.granularity.list, state.period) } }
         }
         item { Spacer(Modifier.height(24.dp)) }
     }
