@@ -172,6 +172,9 @@ class AppShellTest {
     @Test fun everyPhaseFourRouteOpensItsScreen() {
         launch(Routes.HOME)
         compose.runOnIdle { nav.navigate(Routes.activity(Period.WEEK)) }
+        // The level chips sit above the header, so a small test screen scrolls to it.
+        waitForText("Today")
+        compose.onNodeWithTag("activity_list").performScrollToNode(hasText("Week of", substring = true))
         waitForText("Week of", substring = true)
         val today = deps.today()
         compose.runOnIdle { nav.navigate(Routes.day(today)) }
