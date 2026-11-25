@@ -1,5 +1,6 @@
 package com.rokid.context.phone.ui.preview
 
+import com.rokid.context.memory.SceneCard
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
@@ -13,7 +14,7 @@ import com.rokid.context.phone.ui.activity.MarkRowUi
 class PrefilledActivityData(
     private val base: ActivityData,
     private val memories: List<MemoryEntity> = emptyList(), private val frames: List<FrameEntity> = emptyList(), private val marks: List<MarkRowUi> = emptyList(),
-    private val asks: List<AskEntity> = emptyList(), private val nudges: List<NudgeEntity> = emptyList(),
+    private val asks: List<AskEntity> = emptyList(), private val nudges: List<NudgeEntity> = emptyList(), private val scenes: List<SceneCard> = emptyList(),
 ) : ActivityData by base {
     private suspend fun <T> serve(ids: List<String>, have: List<T>, id: (T) -> String, rest: suspend (List<String>) -> List<T>): List<T> {
         val known = have.associateBy(id)
@@ -25,4 +26,5 @@ class PrefilledActivityData(
     override suspend fun marks(ids: List<String>) = serve(ids, marks, { it.labelId }, base::marks)
     override suspend fun asks(ids: List<String>) = serve(ids, asks, { it.id }, base::asks)
     override suspend fun nudges(ids: List<String>) = serve(ids, nudges, { it.id }, base::nudges)
+    override suspend fun scenes(ids: List<String>) = serve(ids, scenes, { it.scene.sceneId }, base::scenes)
 }

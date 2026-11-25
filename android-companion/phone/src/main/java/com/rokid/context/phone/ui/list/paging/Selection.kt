@@ -18,7 +18,7 @@ object SelectionKinds {
         ListKind.FRAMES -> Family.PHOTO
         ListKind.MEMORIES, ListKind.MOMENTS -> Family.MEMORY
         ListKind.MARKS -> Family.MARK
-        ListKind.ANSWERS, ListKind.NUDGES -> null
+        ListKind.ANSWERS, ListKind.NUDGES, ListKind.SCENES -> null
     }
     fun supports(kind: ListKind): Boolean = familyOf(kind) != null
     /** The refs of [ids] of [kind]: one family, nothing else (kind scoping). Empty for an unsupported kind. */

@@ -35,7 +35,8 @@ enum class ListKind(val title: String, val searchHint: String, val empty: String
     ANSWERS("Answers", "Search answers", "No answers here yet", RefKind.ASK),
     NUDGES("Nudges", "Search nudges", "No nudges here yet", RefKind.NUDGE),
     MARKS("Marks", "Search marks", "No marks yet. A tap or a voice mark on your glasses will show up here.", RefKind.MARK),
-    MOMENTS("Moments", "Search moments", "No moments here yet", RefKind.MEMORY);
+    MOMENTS("Moments", "Search moments", "No moments here yet", RefKind.MEMORY),
+    SCENES("Scenes", "Search scenes", "No scenes here yet", RefKind.SCENE);
 
     companion object {
         fun parse(raw: String?): ListKind? = entries.firstOrNull { it.name.equals(raw?.trim(), ignoreCase = true) }

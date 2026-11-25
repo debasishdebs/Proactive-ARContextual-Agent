@@ -3,7 +3,10 @@ package com.rokid.context.phone.ui.preview
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
+import com.rokid.context.memory.SceneMember
 import com.rokid.context.memory.db.NudgeEntity
+import com.rokid.context.memory.db.SceneEntity
+import com.rokid.context.memory.db.SceneRule
 import com.rokid.context.memory.forget.ForgetTarget
 import com.rokid.context.phone.ui.Fixtures
 import com.rokid.context.phone.ui.Fixtures.TODAY
@@ -51,6 +54,12 @@ class PreviewMomentTest {
             Fixtures.nudge("n2", t).copy(sourceIdsJson = """["m1","gone"]"""),
             Fixtures.nudge("n3", t, why = "secret why").copy(sourceIdsJson = """["m1"]""", redacted = true),
         ),
+        scenes = listOf(com.rokid.context.memory.SceneCard(SceneEntity("s1", 1, t, t, t + 240_000, SceneRule.CAP_5_MIN, activity = "HEAD_MOVING", membershipRev = 1, builtAt = t), "Sorting keys at the door", 2)),
+        members = mapOf("s1" to listOf(
+            SceneMember("0000000a", t, listOf("m1"), listOf("f1"), emptyList()),
+            SceneMember("0000000b", t + 60_000, emptyList(), listOf("f2"), emptyList()),
+            SceneMember("0000000c", t + 120_000, emptyList(), emptyList(), listOf("k3")),
+        )),
     )
     private fun ctx(withDay: Boolean = true) = PreviewCtx(data, Fixtures.ZONE, TODAY, withDay)
     private fun one(kind: RefKind, id: String): Previewable = runBlocking { Previewables.forRef(kind).load(listOf(id), ctx()).single() }
@@ -184,7 +193,7 @@ class PreviewMomentTest {
         val opened = mutableListOf<String>()
         val rows = mapOf(
             ListKind.FRAMES to listOf("f1", "f2"), ListKind.MEMORIES to listOf("m1", "m2"), ListKind.MOMENTS to listOf("m1"), ListKind.MARKS to listOf("k1", "k3"),
-            ListKind.ANSWERS to listOf("a1", "a2"), ListKind.NUDGES to listOf("n1"),
+            ListKind.ANSWERS to listOf("a1", "a2"), ListKind.NUDGES to listOf("n1"), ListKind.SCENES to listOf("s1"),
         )
         rows.forEach { (kind, ids) ->
             val src = RecordListSource(kind, ids, data, { Fixtures.ZONE }, { TODAY }, onPreview = { opened += it })
@@ -194,10 +203,39 @@ class PreviewMomentTest {
             items.forEach { src.actionFor(it)!!.run { } }
         }
         assertEquals(listOf("frame:f2", "frame:f1"), opened.take(2))
+        assertTrue("scene:s1" in opened)
         assertTrue("mark:k3" in opened && "memory:m2" in opened && "ask:a1" in opened && "nudge:n1" in opened)
         // An empty kind: no rows (the list shows its empty state) and no read.
         assertEquals(emptyList<Any>(), RecordListSource(ListKind.NUDGES, emptyList(), data, { Fixtures.ZONE }, { TODAY }, {}).load())
         assertEquals("a moment row says whether a photo goes with it", true, RecordListSource(ListKind.MOMENTS, listOf("m1"), data, { Fixtures.ZONE }, { TODAY }, {}).load().single().subtitle!!.endsWith("with photo"))
+    }
+
+    // Scenes (Activity > Scenes list) ---------------------------------------------------------------------------------------------------------------------------
+
+    @Test fun aSceneRowSaysWhenWhatAndHowManyAndNeverHoldsAPlace() = runBlocking<Unit> {
+        val row = RecordListSource(ListKind.SCENES, listOf("s1"), data, { Fixtures.ZONE }, { TODAY }, {}).load().single()
+        assertEquals("Sorting keys at the door", row.title)
+        assertEquals("Today 09:00 to 09:04 \u00b7 Head moving \u00b7 2 moments", row.subtitle)
+        assertEquals("a scene with no words says its activity, never an empty row", "Scene: Walking",
+            ScenePreview("x", com.rokid.context.memory.SceneCard(SceneEntity("x", 1, t, t, t + 1000, SceneRule.HOUR_END, activity = "WALKING", membershipRev = 1, builtAt = t), null, 1), emptyList(), ctx()).summary().title)
+        assertEquals("a Scene that vanished keeps its row slot", "This Scene is no longer available", ScenePreview("gone", null, emptyList(), ctx()).summary().subtitle)
+    }
+
+    @Test fun aSceneOpensItsSummaryTimeAndMemberMomentsAndHasNoForgetOfItsOwn() {
+        val p = one(RefKind.SCENE, "s1")
+        assertEquals(listOf("TextSection", "ConfigSection", "SourcesSection"), kinds(p))
+        assertEquals(null, p.forgetTarget())
+        val cfg = p.sections().filterIsInstance<ConfigSection>().single().entries.toMap()
+        assertEquals("4 min", cfg["Length"]); assertEquals("Head moving", cfg["Activity"]); assertEquals("2", cfg["Moments"]); assertEquals("5 minute limit", cfg["Cut by"])
+        val members = p.sections().filterIsInstance<PreviewSection.SourcesSection>().single().items
+        assertEquals("a tap opens the existing memory preview, else the photo, else the mark", listOf("memory:m1", "frame:f2", "mark:k3"), members.map { it.ref })
+        assertEquals("the list reads no members", emptyList<Any>(), runBlocking { Previewables.forRef(RefKind.SCENE).load(listOf("s1"), ctx(withDay = false)).single().sections().filterIsInstance<PreviewSection.SourcesSection>() })
+    }
+
+    @Test fun sceneWordsAreFixedAndPlain() {
+        assertEquals("Head moving", SceneWords.activity("HEAD_MOVING")); assertEquals(null, SceneWords.activity(" ")); assertEquals(null, SceneWords.activity(null))
+        assertEquals("40 s", SceneWords.length(0, 40_000)); assertEquals("5 min", SceneWords.length(0, 299_999)); assertEquals("0 s", SceneWords.length(5, 1))
+        assertEquals("Other", SceneWords.rule("NEW_RULE_FROM_THE_FUTURE"))
     }
 
     /** A Month-sized list: the route carries a short key, not 20,000 ids, and the rows are read 200 at a time. */

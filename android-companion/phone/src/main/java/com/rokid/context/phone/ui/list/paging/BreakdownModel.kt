@@ -121,7 +121,7 @@ class BreakdownModel(
     private fun pagerFor(day: LongRange, e: HourNode): HourPager<PagedRow> {
         val whole = if (e.earlier) Long.MIN_VALUE..(e.endMs - 1) else e.startMs..(e.endMs - 1)
         val hour = clip(whole) ?: RangeFilter.NONE
-        return HourPager(Cursor.head(hour), { it.cursor }, HourPager.PAGE_SIZE) { after, n -> summarize(data.momentHourPage(day, hour, after, n)) }
+        return HourPager(Cursor.head(hour), { it.cursor }, HourPager.PAGE_SIZE) { after, n -> summarize(if (kind == ListKind.SCENES) data.page(kind, hour, after, n) else data.momentHourPage(day, hour, after, n)) }
     }
 
     /** Recomputes everything the tree shows from the latest counts: the days, the hours of the expanded days (re-read when [reloadDays]) and the open pages. */
@@ -137,7 +137,7 @@ class BreakdownModel(
             if (reloadDays || d !in entries) {
                 val dr = DayBucket.bounds(d, z)
                 val inside = clip(dr)
-                entries[d] = DayHourTree.hours(d, z, if (inside == null) emptyList() else data.momentTimes(inside), data.pauses(dr))
+                entries[d] = DayHourTree.hours(d, z, if (inside == null) emptyList() else if (kind == ListKind.SCENES) data.sceneTimes(inside) else data.momentTimes(inside), data.pauses(dr))
             }
         }
         entries.keys.retainAll(days.toSet()); dayEntries = entries
