@@ -7,13 +7,13 @@ import org.junit.Test
 
 class LocalModelsTest {
     @Test fun catalogEntriesArePinnedAndWellFormed() {
-        val pinned = Regex("^https://[^/]+/.+/resolve/[0-9a-f]{40}/[^/]+$")
+        val pinned = Regex("^https://[^/]+/.+/resolve/[0-9a-f]{40}/.+$")
         for (m in LocalModels.all) {
             assertTrue(m.id, m.url.startsWith("https://"))
             assertTrue(m.id, pinned.matches(m.url))
             assertTrue(m.id, Regex("^[0-9a-f]{64}$").matches(m.sha256))
             assertTrue(m.id, m.bytes > 0)
-            assertTrue(m.id, m.url.endsWith("/" + m.file))
+            assertTrue(m.id, m.files.size > 1 || m.url.endsWith("/" + m.file))
             assertEquals(m, LocalModels.byId(m.id))
         }
         assertEquals(LocalModels.all.size, LocalModels.all.map { it.id }.toSet().size)
@@ -66,5 +66,21 @@ class LocalModelsTest {
         assertEquals(90, m.ramEstimateMb)
         assertTrue(m.license.startsWith("MIT"))
         assertNull(m.note)
+    }
+
+    @Test fun siglip2IsListedOptInWithSizeAndNeverTheDefault() {
+        val m = LocalModels.byId("siglip2-base-p16-224")!!
+        assertEquals(false, m.bindable)
+        assertEquals(listOf("siglip2-base-p16-224.vision_model_quantized.onnx", "siglip2-base-p16-224.text_model_quantized.onnx", "siglip2-base-p16-224.tokenizer.model"), m.files.map { it.file })
+        assertEquals(m.file, m.files.first().file)
+        assertEquals(94_553_333L + 283_438_275L + 4_241_003L, m.totalBytes)
+        assertEquals("5f2b401c1a4fc095702a5d45348e17ad46c4f87064085365b43c6e8eaa5c0070", m.files[0].sha256)
+        assertEquals("3a0603d3a00c05a80a6ded4743c16aaac7b1e62cdcc7e362e7ce418659b96400", m.files[1].sha256)
+        assertEquals("61a7b147390c64585d6c3543dd6fc636906c9af3865a5548f27f31aee1d4c8e2", m.files[2].sha256)
+        assertEquals("Apache-2.0", m.license)
+        // Listed after the existing entries, which keep their order; the others stay bindable and Nomic stays the only "Recommended".
+        assertEquals(listOf("bge-small-en-v1.5-q8", "nomic-embed-v1.5", "siglip2-base-p16-224"), LocalModels.all.map { it.id })
+        assertEquals(listOf("nomic-embed-v1.5"), LocalModels.all.filter { it.note == "Recommended" }.map { it.id })
+        assertTrue(LocalModels.all.filter { it.id != m.id }.all { it.bindable })
     }
 }

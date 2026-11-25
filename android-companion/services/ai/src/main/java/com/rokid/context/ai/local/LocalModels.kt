@@ -18,6 +18,8 @@ data class LocalModel(
     val note: String? = null,
     /** Every file of the bundle; defaults to the single file described by [file]/[url]/[sha256]/[bytes] (the primary file, the one a llama.cpp endpoint loads). */
     val files: List<ModelFile> = listOf(ModelFile(file, url, sha256, bytes)),
+    /** False for a model that is downloaded here but never bound as the Embeddings endpoint (SigLIP 2: ONNX towers read by the shadow embedder only); the page then offers Download and Delete, no "Use for Embeddings". */
+    val bindable: Boolean = true,
 ) {
     val totalBytes: Long get() = files.sumOf { it.bytes }
 }
@@ -65,6 +67,42 @@ object LocalModels {
                     bytes = 96_745_606L,
                 ),
             ),
+        ),
+        // SigLIP 2 (1.4.4 shadow embedder): opt-in only, never the default and never bound as Embeddings ([LocalModel.bindable] = false). The three file names are the ones SigLipBundle opens; url/sha256/bytes are the
+        // values recorded in SigLipImageEmbedder / SigLipTextEmbedder / SigLipTokenizer. The tokenizer is pinned to the google repo commit its sha256 was recorded against (same 4,241,003 bytes as the ONNX export).
+        LocalModel(
+            id = "siglip2-base-p16-224",
+            title = "SigLIP 2 base (photo matching, experimental)",
+            file = "siglip2-base-p16-224.vision_model_quantized.onnx",
+            url = "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/onnx/vision_model_quantized.onnx",
+            sha256 = "5f2b401c1a4fc095702a5d45348e17ad46c4f87064085365b43c6e8eaa5c0070",
+            bytes = 94_553_333L,
+            languages = "Images + text",
+            dims = 768,
+            ramEstimateMb = 380,
+            license = "Apache-2.0",
+            note = "Developer shadow only",
+            files = listOf(
+                ModelFile(
+                    file = "siglip2-base-p16-224.vision_model_quantized.onnx",
+                    url = "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/onnx/vision_model_quantized.onnx",
+                    sha256 = "5f2b401c1a4fc095702a5d45348e17ad46c4f87064085365b43c6e8eaa5c0070",
+                    bytes = 94_553_333L,
+                ),
+                ModelFile(
+                    file = "siglip2-base-p16-224.text_model_quantized.onnx",
+                    url = "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/onnx/text_model_quantized.onnx",
+                    sha256 = "3a0603d3a00c05a80a6ded4743c16aaac7b1e62cdcc7e362e7ce418659b96400",
+                    bytes = 283_438_275L,
+                ),
+                ModelFile(
+                    file = "siglip2-base-p16-224.tokenizer.model",
+                    url = "https://huggingface.co/google/siglip2-base-patch16-224/resolve/75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2/tokenizer.model",
+                    sha256 = "61a7b147390c64585d6c3543dd6fc636906c9af3865a5548f27f31aee1d4c8e2",
+                    bytes = 4_241_003L,
+                ),
+            ),
+            bindable = false,
         ),
     )
 

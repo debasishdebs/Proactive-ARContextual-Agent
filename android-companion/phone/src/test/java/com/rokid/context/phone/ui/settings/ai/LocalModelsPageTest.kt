@@ -249,6 +249,21 @@ class LocalModelsPageTest {
         assertEquals(1, reindexes)
     }
 
+    @Test fun siglipOffersDeleteNeverUseForEmbeddings() = runBlocking {
+        val sig = LocalModels.byId("siglip2-base-p16-224")!!
+        val s = LocalModelsSource(listOf(bge, nomic, sig), gateway, ai, { reindexes++ }, mobile, abiSupported = true)
+        gateway.set(sig, LocalModelState.Ready)
+        val item = s.load().first { it.id == sig.id }
+        val action = s.actionFor(item)!!
+        assertTrue(action.confirmTitle!!.startsWith("Delete"))
+        assertTrue(s.moreActionsFor(item).isEmpty())
+        assertTrue(s.useForEmbeddings(sig) is ActionResult.Failed)
+        assertNull(ai.bindings.get(Role.EMBED))
+        assertEquals(0, reindexes)
+        assertEquals("${(sig.totalBytes + 500_000) / 1_000_000} MB", LocalModelsSource.size(sig))
+        assertEquals("382 MB", LocalModelsSource.size(sig))
+    }
+
     /** Roll back after a Nomic swap: bge is rebound and reactivated, the Nomic space is retired (its vectors kept for the grace). */
     @Test fun rollbackAfterNomicSwapRebindsBge() = runBlocking {
         val s = nomicSource()

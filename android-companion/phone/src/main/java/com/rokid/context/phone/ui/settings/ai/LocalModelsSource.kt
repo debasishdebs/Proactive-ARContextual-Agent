@@ -185,7 +185,7 @@ class LocalModelsSource(
             is LocalModelState.Downloading -> watchAction(r.model)
             LocalModelState.Ready -> when {
                 r.failures >= RELOAD_AFTER -> if (abiSupported) downloadAction(r.model, again = true) else deleteAction(r)
-                r.bound -> deleteAction(r)
+                r.bound || !r.model.bindable -> deleteAction(r)
                 else -> useAction(r.model)
             }
         }
@@ -194,7 +194,7 @@ class LocalModelsSource(
     override fun moreActionsFor(item: ListItem): List<NamedAction> {
         val r = rows[item.id] ?: return emptyList()
         if (r.state != LocalModelState.Ready) return emptyList()
-        val primaryIsDelete = r.bound && r.failures < RELOAD_AFTER || (r.failures >= RELOAD_AFTER && !abiSupported)
+        val primaryIsDelete = (r.bound || !r.model.bindable) && r.failures < RELOAD_AFTER || (r.failures >= RELOAD_AFTER && !abiSupported)
         return if (primaryIsDelete) emptyList() else listOf(NamedAction("Delete", deleteAction(r)))
     }
 
@@ -261,6 +261,7 @@ class LocalModelsSource(
      * change: a new binding, or a new model file for the bound endpoint (a new space). The same binding again is a no-op.
      */
     suspend fun useForEmbeddings(m: LocalModel): ActionResult {
+        if (!m.bindable) return ActionResult.Failed("${m.title} can't be used for Embeddings")
         val outcome = withContext(io) {
             // A bundle (Nomic: text GGUF + vision ONNX) is never bound with a file missing: the swap could not start without both.
             if (m.files.size > 1 && !m.files.all { File(gateway.fileFor(m).parentFile, it.file).isFile }) return@withContext UseOutcome.FAILED
