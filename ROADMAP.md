@@ -63,6 +63,7 @@ Code for the first eight tasks is built behind OFF flags in `:nexus-port`, `:nex
 - [ ] ⚪ **v2.3** (DESIGNED 26 Nov: `docs/superpowers/plans/2026-11-26-canvas-v2-3-detection-nodes-design.md`; ~23 agent-h) detection nodes: tier (a) "list objects and people" prompt preset, tier (b) on-device detector (person, object); recognition of identity stays unbuilt (needs its own spec and threat model).
 - [ ] ⚪ **v2.4** (DESIGNED 26 Nov: `docs/superpowers/plans/2026-11-26-canvas-v2-4-nl-tools-design.md`; ~30 agent-h) natural-language tools (`tool.draft`): describe a tool in plain English, generated and verified in an isolated container, shipped as a reviewed patch.
 - [ ] ⚪ **v2.5** (DESIGNED 26 Nov: `docs/superpowers/plans/2026-11-26-canvas-v2-5-plugin-skill-nodes-design.md`; ~27 agent-h, skill part gated by the Nexus 1.11 bridge) canvas nodes that call other plugins' skills; watch-run route; scene-building flows.
+- [ ] ⚪ **1.9.x catalogue update 26 Nov**: embed/vision/PoI/seed/geo/scene nodes designed (typed ports with privacy labels, location local only, presets, coverage of every existing pipeline; ~47.5 agent-h): `docs/superpowers/plans/2026-11-26-canvas-revamp-node-catalogue-design.md`.
 
 ## v3
 
