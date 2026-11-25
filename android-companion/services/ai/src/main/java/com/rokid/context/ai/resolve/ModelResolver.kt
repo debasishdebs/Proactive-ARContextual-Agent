@@ -11,8 +11,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 
-/** What a consumer asks for. The role maps to a binding per backend; [PLACE_EMBED] is reserved for slice 1.4.4 (no factory is registered yet, so it resolves as not bound). */
-enum class ResolverRole { PLACE_CONFIRM, PLACE_EMBED }
+/** What a consumer asks for. The role maps to a binding per backend; [PLACE_EMBED] is reserved for slice 1.4.4 (no factory is registered yet, so it resolves as not bound). The CANVAS_* roles (v2.2) are declared for the canvas model nodes; no factory is registered, they resolve as not bound, and the canvas executors reach models through the router (one choke point). */
+enum class ResolverRole { PLACE_CONFIRM, PLACE_EMBED, CANVAS_TEXT, CANVAS_VISION, CANVAS_EMBED }
 
 /**
  * How one (role, backend) pair is made. [bound] and [fingerprint] must be cheap and never load a model; [create] is the expensive part and runs at most once per fingerprint (single-flight, cached).

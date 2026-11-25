@@ -242,7 +242,7 @@ class CanvasBackendImpl(
 
     // ---- registry ----
 
-    override fun nodeTypes(): JsonArray = JsonArray(NodeTypes.all.map { t ->
+    override fun nodeTypes(): JsonArray = JsonArray(NodeTypes.available().map { t ->
         buildJsonObject {
             put("type", t.type)
             put("label", t.label)
