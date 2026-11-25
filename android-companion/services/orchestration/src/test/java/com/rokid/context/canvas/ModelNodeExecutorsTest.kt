@@ -67,6 +67,17 @@ class ModelNodeExecutorsTest {
     }
     private fun exec(type: String) = checkNotNull(ModelNodeExecutors.all()[type])
 
+    @Test fun theSeededLevelSendsSeedAndTemperatureZeroAndALiveRunSendsNeither() = runBlocking<Unit> {
+        val c = ctx { """{"label":"indoor","confidence":0.9}""" }
+        exec(ModelNodeTypes.CLASSIFY).run(cls(), listOf(item("f1")), c)
+        assertEquals(null, requests.last().seed); assertEquals(null, requests.last().temperature)
+        exec(ModelNodeTypes.CLASSIFY).run(cls(), listOf(item("f1")), c.withSeed(11))
+        assertEquals(11, requests.last().seed); assertEquals(0.0, requests.last().temperature)
+        val pn = PipelineNode("p", NodeTypes.PROMPT, "t", buildJsonObject { put("role", "ANSWER"); put("name", "intent"); put("images", false); put("template", "Decide. {{recent_context}} {{context_sources}}"); put("schema", """{"type":"object"}""") })
+        checkNotNull(com.rokid.context.canvas.Executors.all()[NodeTypes.PROMPT]).run(pn, listOf(item("f1")), c.withSeed(12))
+        assertEquals("the generic Prompt node is seeded too", 12, requests.last().seed)
+    }
+
     @Test fun classifyReturnsLabelBranchAndCountsOneCall() = runBlocking<Unit> {
         val c = ctx { """{"label":"indoor","confidence":0.9}""" }
         val r = exec(ModelNodeTypes.CLASSIFY).run(cls(), listOf(item("f1")), c).single()

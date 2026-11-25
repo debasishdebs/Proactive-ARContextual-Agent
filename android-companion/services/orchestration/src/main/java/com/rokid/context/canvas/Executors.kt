@@ -240,7 +240,7 @@ object PromptExecutor : NodeExecutor {
                     val plan = StructuredOutput.plan(e, schemaObj, name)
                     // a photo prompt never falls back to text (codex r9 P1-2); its photo carries its ref and the run's liveness (codex r10)
                     ModelRequest(prompt + plan.promptSuffix, if (images) listOf(it.photo.image.copy(ref = it.photo.frameId)) else emptyList(), format = plan.format,
-                        requireImages = images, sources = sourcesOf(it), liveness = ctx.liveness) // the frame line is photo metadata even without the image (codex r11)
+                        requireImages = images, sources = sourcesOf(it), liveness = ctx.liveness, seed = ctx.seed, temperature = ctx.requestTemperature) // the frame line is photo metadata even without the image (codex r11)
                 }
                 val meta = ownerMeta(reply.latencyMs, listOf(reply).asUsage(), null, batchId)
                 val json = ModelJson.parse(reply.text) ?: return@mapIndexed NodeResult(it.frameId, null, error = "NOT_JSON", meta = meta, calls = 1)
@@ -305,7 +305,7 @@ object SummaryExecutor : NodeExecutor {
             try {
                 val reply = ctx.model.complete(Role.SUMMARIZE, ctx.callClass) { e ->
                     val plan = StructuredOutput.plan(e, SummaryNode.schema, "summary")
-                    ModelRequest(prompt + plan.promptSuffix, emptyList(), format = plan.format, sources = sourcesOf(it), liveness = ctx.liveness) // codex r12: upstream facts/captions/text
+                    ModelRequest(prompt + plan.promptSuffix, emptyList(), format = plan.format, sources = sourcesOf(it), liveness = ctx.liveness, seed = ctx.seed, temperature = ctx.requestTemperature) // codex r12: upstream facts/captions/text
                 }
                 val meta = ownerMeta(reply.latencyMs, listOf(reply).asUsage(), null, batchId)
                 val json = ModelJson.parse(reply.text) ?: return@map NodeResult(it.frameId, null, error = "NOT_JSON", meta = meta, calls = 1)

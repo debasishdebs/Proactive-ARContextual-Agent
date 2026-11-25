@@ -500,7 +500,7 @@ class CanvasRunner(
     )
 
     /** Throws [Busy] when a run is active, [IllegalArgumentException] for a bad or expired token or more than [MAX_PHOTOS] photos. Returns the runId; the run continues in [scope]. */
-    suspend fun start(p: Pipeline, pipelineId: String, version: Int?, frameIds: List<String>, confirmToken: String, scope: CoroutineScope): String {
+    suspend fun start(p: Pipeline, pipelineId: String, version: Int?, frameIds: List<String>, confirmToken: String, scope: CoroutineScope, replay: com.rokid.context.canvas.window.RunReplay? = null): String {
         if (!lock.tryLock()) throw Busy()
         var launched = false
         try {
@@ -519,7 +519,7 @@ class CanvasRunner(
             // ATOMIC: the body runs (and its finally releases the runner) even if the scope is cancelled before the job starts.
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
-                    execute(runId, p, ids)
+                    execute(runId, p, ids, replay = replay)
                 } catch (c: CancellationException) {
                     throw c
                 } catch (t: Throwable) {
@@ -654,13 +654,13 @@ class CanvasRunner(
     private fun markLineageOfAll(momentByKey: Map<String, Moment>, sceneByKey: Map<String, SceneRunItem>): List<String> = momentByKey.values.flatMap { markLineage(it) } + sceneByKey.values.flatMap { it.markIds }
 
     /** Runs one run to a terminal row and returns the status it wrote ("DONE", "CANCELLED", "STOPPED_HOT", "FAILED"). Rethrows cancellation of the scope. */
-    private suspend fun execute(runId: String, p: Pipeline, ids: List<String>, sel: MomentSel? = null, ssel: SceneSel? = null, wsel: WatchSel? = null): String {
+    private suspend fun execute(runId: String, p: Pipeline, ids: List<String>, sel: MomentSel? = null, ssel: SceneSel? = null, wsel: WatchSel? = null, replay: com.rokid.context.canvas.window.RunReplay? = null): String {
         var calls = 0
         var failures = 0
         var status = "DONE"
         var lease: com.rokid.context.memory.forget.lifecycle.Leases.Lease? = null
         try {
-            val ctx = context(runId)
+            val ctx = context(runId).withSeed(replay?.seed)
             val gen = generation() // captured BEFORE the photos are loaded: every write below is fenced on it (S24)
             // Forget lifecycle M3 (design 2.3, C1): ONE read lease for the whole run. It covers every photo of the run (a photo run's peers too), the member photos, marks and memories of its Moments and Scenes;
             // a Forget that reaches any of them revokes it and every flush below then writes nothing (the run ends CANCELLED). Opened before the loads, extended with what was read.
@@ -805,7 +805,7 @@ class CanvasRunner(
                 val conflicts = gathered.conflicts
                 for (id in conflicts.sortedBy { order[it] }) write(node.id, id, NodeResult(id, null, error = "merge_conflict"))
                 if (!flush()) { status = "CANCELLED"; break@stop }
-                val ex = executors[node.type]
+                val ex = executors[node.type].let { e -> if (replay != null) replay.wrap(node, e) else e }
                 // codex r17: an item's sources come with the value along the edge that delivered it (ItemFlow), never from another branch
                 val queue = inputs.entries.sortedBy { order[it.key] }.map {
                     CanvasItem(it.key, photoById[it.key] ?: NO_PHOTO, it.value, (gathered.sources[it.key] ?: com.rokid.context.model.PayloadSources.NONE) + (itemSources[it.key] ?: com.rokid.context.model.PayloadSources.NONE))

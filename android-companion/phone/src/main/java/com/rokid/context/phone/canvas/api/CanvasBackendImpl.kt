@@ -708,7 +708,37 @@ class CanvasBackendImpl(
 
     override fun busy(): Boolean = runner.active.value != null
     override fun offlineOnly(): Boolean = com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() == com.rokid.context.core.net.ModelPrivacy.OFFLINE_ONLY
-    override suspend fun start(pipelineId: String, version: Int?, frameIds: List<String>, token: String): String = startRun(pipelineId, version, frameIds, token)
+    override suspend fun replaySourceAvailable(runId: String): Boolean = com.rokid.context.canvas.window.DaoRecordedSource(dao, runId).available()
+
+    override suspend fun start(pipelineId: String, version: Int?, frameIds: List<String>, token: String, replay: TestRunPort.ReplayAsk?): String {
+        if (replay == null) return startRun(pipelineId, version, frameIds, token)
+        val p = loadPipeline(pipelineId, version) ?: throw IllegalArgumentException("invalid_pipeline")
+        val source = replay.fromRunId?.let { com.rokid.context.canvas.window.DaoRecordedSource(dao, it) }
+        // the prompt version and the binding's model are what the executors record on their rows, so they are what a recorded row must have been made with
+        val rr = com.rokid.context.canvas.window.RunReplay(source, replay.onMissLive, replay.seed) { n ->
+            (NodeTypes.byType(n.type)?.promptKey?.let { ai.prompts.active(it).version }) to roleOf(n)?.let { ai.bindings.get(it)?.model }
+        }
+        return runner.start(p, pipelineId, version, scoped(p, frameIds), token, scope, rr)
+    }
+
+    override suspend fun determinism(replayRunId: String, sourceRunId: String): JsonObject? {
+        val src = dao.run(sourceRunId) ?: return null
+        dao.run(replayRunId) ?: return null
+        val order = PipelineJson.decode(src.pipelineJson).getOrNull()?.let { topoOrder(it) } ?: return null
+        val r = com.rokid.context.canvas.window.DeterminismReport.of(dao.items(sourceRunId), dao.items(replayRunId), order)
+        return buildJsonObject {
+            put("items", r.items); put("identical", r.identical); put("line", r.line)
+            put("drifted", buildJsonObject { r.driftedNodes.toSortedMap().forEach { (k, v) -> put(k, v) } })
+        }
+    }
+
+    /** Kahn order of the pipeline's nodes (ties by listed order): the first node whose row differs is where an item drifted. */
+    private fun topoOrder(p: Pipeline): List<String> {
+        val indeg = p.nodes.associate { it.id to p.edges.count { e -> e.to == it.id } }.toMutableMap()
+        val out = ArrayList<String>(); val ready = ArrayDeque(p.nodes.map { it.id }.filter { indeg[it] == 0 })
+        while (ready.isNotEmpty()) { val n = ready.removeFirst(); out += n; for (e in p.edges.filter { it.from == n }) { indeg[e.to] = indeg.getValue(e.to) - 1; if (indeg[e.to] == 0) ready.addLast(e.to) } }
+        return out + p.nodes.map { it.id }.filter { it !in out }
+    }
 
     override suspend fun estimateAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>): Estimate {
         val pa = loadPipeline(a.pipelineId, a.version) ?: return Estimate.Refused(listOf("pipeline is not readable"))

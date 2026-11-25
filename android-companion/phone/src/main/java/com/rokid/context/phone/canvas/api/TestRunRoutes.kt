@@ -41,8 +41,15 @@ interface TestRunPort {
     /** True when the zone state cannot be read or a pause zone is held now (fail closed). */
     suspend fun zoneHeldOrUnknown(): Boolean = true
     suspend fun estimate(pipelineId: String, version: Int?, frameIds: List<String>): Estimate
-    /** The existing dry-run photo run. Throws [CanvasRunner.Busy]. */
-    suspend fun start(pipelineId: String, version: Int?, frameIds: List<String>, token: String): String
+    /** What a run asks for beyond live: serve model nodes from [fromRunId]'s rows (REPLAYED), and/or send [seed] (SEEDED). [onMissLive] false = a miss is the item error `not_recorded`. */
+    data class ReplayAsk(val fromRunId: String?, val onMissLive: Boolean, val seed: Int?)
+
+    /** True while the source run of a replay still exists (pruned or Forgotten = false: the replay is refused, never run live). */
+    suspend fun replaySourceAvailable(runId: String): Boolean = false
+    /** The existing dry-run photo run, optionally replaying and/or seeded. Throws [CanvasRunner.Busy]. */
+    suspend fun start(pipelineId: String, version: Int?, frameIds: List<String>, token: String, replay: ReplayAsk? = null): String
+    /** `{items, identical, drifted:{node:n}, line}` of [replayRunId] against [sourceRunId] (read-only, from the two runs' own rows); null = either run is gone. */
+    suspend fun determinism(replayRunId: String, sourceRunId: String): JsonObject? = null
     /** Starts a bounded live tap and returns its run id; null = the tap driver is not built on this phone (the route answers 501). */
     suspend fun startTap(pipelineId: String, version: Int?, maxMin: Int, maxFrames: Int, maxPhotosSent: Int, token: String): String? = null
     /** Ends a tap cleanly; false = no such tap. */
@@ -72,8 +79,10 @@ class TestRunRoutes(
             path == "/api/e2e" -> Kind.E2E
             path == "/api/runs/tap" -> Kind.TAP
             STOP.matches(path) -> Kind.STOP
+            DETERMINISM.matches(path) -> Kind.DETERMINISM
             else -> return null
         }
+        if (kind == Kind.DETERMINISM) return determinism(req)
         if (!req.method.equals("POST", true)) return if (kind == Kind.E2E || kind == Kind.TAP || kind == Kind.STOP) HttpResponse.error(405, "bad_request", "Method not allowed.") else null
         val body: JsonObject? = if (req.bodyTooLarge || req.body.size > MAX_BYTES) null
         else runCatching { Json.parseToJsonElement(String(req.body, Charsets.UTF_8)) as? JsonObject }.getOrNull()
@@ -89,7 +98,7 @@ class TestRunRoutes(
                 Kind.START -> start(body)
                 Kind.E2E -> e2e(body)
                 Kind.TAP -> tap(body)
-                Kind.STOP -> bad()
+                Kind.STOP, Kind.DETERMINISM -> bad()
             }
         } catch (e: BadRequest) { bad()
         } catch (e: NoSuchElementException) { HttpResponse.error(404, "not_found", "Not found.")
@@ -98,7 +107,7 @@ class TestRunRoutes(
         } catch (e: Throwable) { PcLog.i("test_run", "failed (${e.javaClass.simpleName})"); HttpResponse.error(500, "internal", "Something went wrong.") }
     }
 
-    private enum class Kind { ESTIMATE, START, E2E, TAP, STOP }
+    private enum class Kind { ESTIMATE, START, E2E, TAP, STOP, DETERMINISM }
     private class BadRequest : Exception()
     private fun bad() = HttpResponse.error(400, "bad_request", "Bad request.")
     private fun refused(token: String) = HttpResponse.error(422, "refused", "This test run is not allowed.", listOf(token))
@@ -131,6 +140,27 @@ class TestRunRoutes(
         return Picked(src, WindowFramePicker.pick(frames, from, to, mode, n, seed), facts, frames, traceId) to null
     }
 
+    /** `replay: {fromRunId, onMiss: "error"|"live"}` and/or `modelSeed: 1..2147483647`; null when the run asks for neither. A vanished source is refused here, before the token is spent. */
+    private suspend fun replayAsk(b: JsonObject): Pair<TestRunPort.ReplayAsk?, HttpResponse?> {
+        val r = b["replay"]?.takeIf { it !is JsonNull }?.let { it as? JsonObject ?: throw BadRequest() }
+        val seed = b["modelSeed"]?.takeIf { it !is JsonNull }?.let { b.intOf("modelSeed").also { v -> if (v < 1) throw BadRequest() } }
+        if (r == null && seed == null) return null to null
+        val from = r?.idStr("fromRunId")
+        val miss = r?.optStr("onMiss") ?: "error"
+        if (miss != "error" && miss != "live") throw BadRequest()
+        if (from != null && !port.replaySourceAvailable(from)) return null to refused("replay_source_gone")
+        return TestRunPort.ReplayAsk(from, miss == "live", seed) to null
+    }
+
+    private suspend fun determinism(req: HttpRequest): HttpResponse {
+        if (!req.method.equals("GET", true)) return HttpResponse.error(405, "bad_request", "Method not allowed.")
+        if (!devMode() || !flag()) return HttpResponse.error(403, "developer_mode_off", if (devMode()) "Test run is switched off." else "Developer mode is off.")
+        val id = DETERMINISM.matchEntire(req.path)!!.groupValues[1]
+        val against = req.query["against"]?.takeIf { ID.matches(it) } ?: return bad()
+        return try { HttpResponse.json(200, port.determinism(id, against) ?: return HttpResponse.error(404, "not_found", "Not found.")) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) { PcLog.i("test_run", "determinism failed (${e.javaClass.simpleName})"); HttpResponse.error(500, "internal", "Something went wrong.") }
+    }
+
     private fun pickJson(p: Picked): JsonObject = buildJsonObject {
         put("picked", p.pick.ids.size); put("of", p.pick.of); put("note", p.pick.note); put("seed", p.pick.seed)
         put("excluded", buildJsonObject { put("tombstoned", p.pick.excludedTombstoned); put("noPhoto", p.pick.excludedNoPhoto); put("retention", p.pick.excludedRetention); put("nearDup", p.pick.excludedNearDup) })
@@ -155,8 +185,9 @@ class TestRunRoutes(
         p!!
         if (p.pick.ids.isEmpty()) return refused("no_frames")
         // the same deterministic pick as the estimate: the token binds exactly these ids, so a different pick is refused by the runner
-        val runId = port.start(b.idStr("pipelineId"), b.optVersion(), p.pick.ids, b.tokenStr())
-        PcLog.i("test_run", "start picked=${p.pick.ids.size}")
+        val (ask, askRefusal) = replayAsk(b); if (askRefusal != null) return askRefusal
+        val runId = port.start(b.idStr("pipelineId"), b.optVersion(), p.pick.ids, b.tokenStr(), ask)
+        PcLog.i("test_run", "start picked=${p.pick.ids.size} replay=${ask?.fromRunId != null} seeded=${ask?.seed != null}")
         return HttpResponse.json(200, JsonObject(mapOf("runId" to JsonPrimitive(runId)) + pickJson(p)))
     }
 
@@ -173,7 +204,8 @@ class TestRunRoutes(
             out["join"] = buildJsonObject { put("matched", j.matched); put("notStored", j.notStored); put("unusedFrames", j.unusedFrames); put("neverCaptured", j.neverCaptured); put("toleranceMs", E2eJoin.TOLERANCE_MS) }
         }
         val token = b["confirmToken"]?.let { b.tokenStr() }
-        if (token != null && p.pick.ids.isNotEmpty()) out["runId"] = JsonPrimitive(port.start(b.idStr("pipelineId"), b.optVersion(), p.pick.ids, token))
+        val (ask, askRefusal) = replayAsk(b); if (askRefusal != null) return askRefusal
+        if (token != null && p.pick.ids.isNotEmpty()) out["runId"] = JsonPrimitive(port.start(b.idStr("pipelineId"), b.optVersion(), p.pick.ids, token, ask))
         PcLog.i("test_run", "e2e picked=${p.pick.ids.size} run=${token != null}")
         return HttpResponse.json(200, JsonObject(out))
     }
@@ -210,6 +242,7 @@ class TestRunRoutes(
     companion object {
         const val MAX_BYTES = 4_096
         private val ID = Regex("^[A-Za-z0-9:_-]{1,64}$")
+        private val DETERMINISM = Regex("^/api/runs/([A-Za-z0-9:_-]{1,64})/determinism$")
         private val STOP = Regex("^/api/runs/([A-Za-z0-9:_-]{1,64})/stop$")
         private val OK = buildJsonObject { put("ok", true) }
     }

@@ -75,7 +75,7 @@ class ModelClassifyExecutor(override val type: String) : NodeExecutor {
                     ctx.model.complete(role, ctx.callClass) { e ->
                         val plan = StructuredOutput.plan(e, schema, "classify")
                         ModelRequest(prompt + plan.promptSuffix, if (images) listOf(item.photo.image.copy(ref = item.photo.frameId)) else emptyList(), format = plan.format,
-                            requireImages = images, sources = sourcesOf(item), liveness = ctx.liveness)
+                            requireImages = images, sources = sourcesOf(item), liveness = ctx.liveness, seed = ctx.seed, temperature = ctx.requestTemperature)
                     }
                 } ?: return@map NodeResult(item.frameId, null, error = "TIMEOUT", meta = CallMeta((System.nanoTime() - started) / 1_000_000, null, null, null, null, batchId, calls = 1), calls = 1)
                 val meta = ownerMeta(reply.latencyMs, listOf(reply).asUsage(), null, batchId)
