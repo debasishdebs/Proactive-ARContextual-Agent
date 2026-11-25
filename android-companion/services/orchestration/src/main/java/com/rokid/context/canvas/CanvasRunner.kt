@@ -94,6 +94,8 @@ class CanvasRunner(
     private val scenes: SceneRunSource? = null,
     /** The recent watch values of the phone hub a watch run uses (estimate, start and again right after the fence capture); null = no watch runs. */
     private val watch: WatchRunSource? = null,
+    /** Canvas v2.2: extra estimate refusals of a pipeline (fixed tokens, for example `offline_only` for a model node that needs a remote endpoint under Offline only). Empty = none. Photo estimates only; every model node checks again at call time. */
+    private val preflight: suspend (Pipeline) -> List<String> = { emptyList() },
 ) {
     /** Room v16: a pass-through keeps its input's caption proof only while the captions are exactly those the proved call wrote. */
     private fun sameCaptions(input: CanvasValue, output: CanvasValue?): Boolean =
@@ -272,7 +274,7 @@ class CanvasRunner(
         val ids = frameIds.distinct()
         if (takesMoments(p) || takesScenes(p) || takesWatch(p)) return Estimate.Refused(listOf("pipeline needs moments, scenes or watch values"))
         val c = price(p, ids, labels)
-        val reasons = refusals(PipelineValidator.validate(p).isNotEmpty(), ids, c.nominal)
+        val reasons = refusals(PipelineValidator.validate(p).isNotEmpty(), ids, c.nominal) + preflight(p)
         if (reasons.isNotEmpty()) return Estimate.Refused(reasons)
         val token = tokens.issue(PipelineHash.of(p), ids)
         synchronized(modelsByToken) { modelsByToken[token] = listOf(modelsJson(c.models)) }

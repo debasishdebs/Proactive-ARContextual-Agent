@@ -175,13 +175,20 @@ class CanvasBackendImpl(
             val repo = CanvasRepository(dao, { key -> ai.prompts.active(key).template }, clock)
             val publisher = sharedPublisher ?: CanvasPublisher(dao, ai.prompts, { key, draft -> ai.testBed.compatibility(key, draft) }, clock, CanvasPublisher.inTransaction(MemoryGraph.get(app).db), { com.rokid.context.orchestration.DeliveryEnvironment.caps() })
             val momentResolver = com.rokid.context.canvas.moment.MomentResolver(com.rokid.context.canvas.moment.DaoMomentSource(dao, MemoryGraph.get(app).db.canvasSlice3Dao(), MemoryGraph.get(app).db.momentDao()))
+            // Canvas v2.2: the model, classifier, router and rule node types exist only while Developer mode AND the flag canvasModelNodes are on (both default OFF; unreadable = OFF)
+            NodeTypes.modelNodesEnabled = {
+                val dev = app.getSharedPreferences(com.rokid.context.phone.canvas.DeveloperModeStore.PREFS, android.content.Context.MODE_PRIVATE).getBoolean(com.rokid.context.phone.canvas.DeveloperModeStore.KEY, false)
+                dev && com.rokid.context.orchestration.forget.DeveloperFlags.canvasModelNodes(app)
+            }
             val runner = CanvasRunner(
                 dao, photos, composeExecutors(extraExecutors),
                 // codex r10: every photo upload of a run is re-checked live by the router (liveness read at the run's start: a Delete all since then drops it)
-                { runId -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.work.frames.FrameLiveness.forApp(app)) },
+                { runId -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.work.frames.FrameLiveness.forApp(app),
+                    modelPrivacy = { com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() }, boundBackend = { role -> boundBackendOf(ai, role) }) },
                 ConfirmTokens(clock), hot, clock, log = log, moments = momentResolver, scenes = com.rokid.context.canvas.moment.DaoSceneRunSource(MemoryGraph.get(app).db, momentResolver),
                 // the hub's recent watch values, read at the time of a watch run (null hub = none); no route or page starts a watch run yet
                 watch = com.rokid.context.canvas.WatchRunSource { from, to -> com.rokid.context.phone.hub.HubGraph.contextHub?.watchRing?.recent(from, to).orEmpty() },
+                preflight = { p -> com.rokid.context.canvas.ModelNodePreflight.reasons(p, { com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() }, { role -> boundBackendOf(ai, role) }) },
             )
             val askDebug = lazy {
                 AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos),
@@ -190,9 +197,16 @@ class CanvasBackendImpl(
             return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, lazy { com.rokid.context.canvas.RetrieveDebug(answers(), live = { ids -> com.rokid.context.memory.forget.ForgetFence.liveIds(MemoryGraph.get(app).db, ids) }) }, thumbnailer, plans, helperJobs, momentResolver, evalAsk ?: { q -> com.rokid.context.orchestration.AskActions.askFrom(app, q, com.rokid.context.orchestration.AskActions.EVAL_SOURCE) })
         }
 
-        /** The built-in executors plus [extra]; an extra executor never replaces a built-in node type. */
+        /** Canvas v2.2: Offline/online kind of the endpoint [role] is bound to now (null = none or unreadable: fail closed). A local llama.cpp model is OFFLINE; every other kind is ONLINE (the router still refuses remote reach under Offline only). */
+        internal suspend fun boundBackendOf(ai: AiGraph, role: Role): com.rokid.context.core.net.Backend? = try {
+            ai.bindings.get(role)?.let { b -> ai.endpoints.byId(b.endpointId) }?.let { e ->
+                if (e.kind == com.rokid.context.ai.EndpointKind.LLAMACPP_LOCAL) com.rokid.context.core.net.Backend.OFFLINE else com.rokid.context.core.net.Backend.ONLINE
+            }
+        } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (e: Exception) { null }
+
+        /** The built-in executors plus the v2.2 model-node executors (their types resolve only while the flag is on) plus [extra]; an extra executor never replaces a built-in node type. */
         internal fun composeExecutors(extra: Map<String, NodeExecutor>): Map<String, NodeExecutor> {
-            val base = Executors.all()
+            val base = Executors.all() + com.rokid.context.canvas.ModelNodeExecutors.all()
             require(extra.keys.none { it in base }) { "an extra executor may not replace a built-in node" }
             return base + extra
         }
@@ -597,6 +611,7 @@ class CanvasBackendImpl(
     private fun roleOf(n: PipelineNode): Role? {
         NodeTypes.byType(n.type)?.promptKey?.let { return it.role }
         if (n.type == NodeTypes.SUMMARY) return Role.SUMMARIZE // the fixed-text node runs on the same text role as an image-less Prompt
+        if (n.type == com.rokid.context.ai.canvas.ModelNodeTypes.CLASSIFY || n.type == com.rokid.context.ai.canvas.ModelNodeTypes.ROUTE) return if ((n.params["images"] as? JsonPrimitive)?.takeIf { !it.isString }?.content == "true") Role.VISION_EXTRACT else Role.SUMMARIZE
         if (n.type != NodeTypes.PROMPT) return null
         val named = (n.params["role"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.let { s -> Role.entries.firstOrNull { it.name == s } }
         val images = (n.params["images"] as? JsonPrimitive)?.takeIf { !it.isString }?.content == "true"
