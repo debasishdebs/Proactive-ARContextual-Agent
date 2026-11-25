@@ -84,4 +84,31 @@ class MatchCalibrationTest {
         assertEquals(600, t.scores.single { it.first == "A" }.second)
         assertEquals(CandidateScorer.score(q, refs.map { (id, v) -> CandidateScorer.Candidate(id, imageRefs = v) }).ranked.associate { it.id to it.milli }, t.scores.toMap())
     }
+
+    @Test fun `centroid and medoid are built from synthetic vectors`() {
+        val c = MatchCalibration.centroid(listOf(floatArrayOf(1f, 0f), floatArrayOf(0f, 1f)))!!
+        assertEquals(c[0], c[1], 1e-6f); assertEquals(1.0, Math.sqrt((c[0] * c[0] + c[1] * c[1]).toDouble()), 1e-5)
+        val m = MatchCalibration.medoid(listOf(floatArrayOf(1f, 0f), floatArrayOf(0.9f, 0.1f), floatArrayOf(0f, 1f)))!!
+        assertEquals(0.9f / Math.sqrt(0.82).toFloat(), m[0], 1e-5f) // the middle vector is closest to both
+        assertNull(MatchCalibration.centroid(emptyList())); assertNull(MatchCalibration.medoid(listOf(floatArrayOf(0f, 0f))))
+    }
+
+    @Test fun `leave-one-out centroid beats a bad single reference and never scores a probe against itself`() {
+        // Pin A: the reference points off to the side (axis 3), the probes cluster on axis 0. Pin B is on axis 1.
+        val groups = mapOf(
+            "A" to listOf(floatArrayOf(0.2f, 0f, 0f, 1f), floatArrayOf(1f, 0.1f, 0f, 0f), floatArrayOf(1f, -0.1f, 0f, 0f), floatArrayOf(0.9f, 0f, 0.1f, 0f)),
+            "B" to listOf(floatArrayOf(0f, 1f, 0f, 0f), floatArrayOf(0.1f, 1f, 0f, 0f), floatArrayOf(0f, 0.9f, 0.1f, 0f)),
+        )
+        val none = listOf(floatArrayOf(0f, 0f, 0f, 1f))
+        val single = MatchCalibration.evaluate(MatchCalibration.looTrials(groups, none, MatchCalibration.RefMode.SINGLE))
+        val cen = MatchCalibration.evaluate(MatchCalibration.looTrials(groups, none, MatchCalibration.RefMode.CENTROID))
+        val med = MatchCalibration.evaluate(MatchCalibration.looTrials(groups, none, MatchCalibration.RefMode.MEDOID))
+        assertEquals(5, single.probesWithTruth); assertEquals(6, single.probes) // 3 + 2 pin probes + 1 none, same for every mode
+        assertEquals(6, cen.probes); assertEquals(6, med.probes)
+        assertTrue(cen.positives.p50 > single.positives.p50)
+        assertTrue(cen.top1Correct >= single.top1Correct); assertEquals(5, cen.top1Correct); assertEquals(5, med.top1Correct)
+        // leave-one-out: a pin with one probe and one ref, the probe held out leaves the ref alone, never the probe itself
+        val tiny = MatchCalibration.looTrials(mapOf("A" to listOf(floatArrayOf(1f, 0f), floatArrayOf(0f, 1f))), emptyList(), MatchCalibration.RefMode.CENTROID)
+        assertEquals(0, tiny.single().scores.single().second) // the probe (0,1) vs the ref alone (1,0)
+    }
 }

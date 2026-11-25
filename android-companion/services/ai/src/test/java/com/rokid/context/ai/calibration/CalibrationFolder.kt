@@ -35,11 +35,20 @@ class CalibrationFolder(val refs: Map<String, List<File>>, val probes: List<Pair
         fun insideGitTree(f: File): Boolean { var d: File? = f.absoluteFile.canonicalFile; while (d != null) { if (File(d, ".git").exists()) return true; d = d.parentFile }; return false }
     }
 
-    /** Embeds every ref and probe with [embed] (bytes -> L2 vector) and runs the calibration for one space. */
+    /** Embeds every ref and probe with [embed] (bytes -> L2 vector) and runs the calibration for one space: the single-reference report first, then the leave-one-out centroid and medoid variants. */
     suspend fun run(spaceName: String, embed: suspend (ByteArray) -> FloatArray): Pair<MatchCalibration.Result, String> {
         val refVecs = refs.mapValues { (_, files) -> files.map { embed(it.readBytes()) } }
-        val probeObjs = probes.mapIndexed { i, (f, truth) -> MatchCalibration.Probe("probe$i", embed(f.readBytes()), truth) }
+        val probeVecs = probes.map { (f, truth) -> embed(f.readBytes()) to truth }
+        val probeObjs = probeVecs.mapIndexed { i, (v, truth) -> MatchCalibration.Probe("probe$i", v, truth) }
         val result = MatchCalibration.evaluate(MatchCalibration.trials(probeObjs, refVecs))
-        return result to MatchCalibration.report(spaceName, result)
+        // Variants: per pin, vector 0 = the first ref, then any further refs and the pin's probes.
+        val groups = refVecs.mapValues { (pin, rv) -> rv + probeVecs.filter { it.second == pin }.map { it.first } }
+        val none = probeVecs.filter { it.second == null }.map { it.first }
+        val text = StringBuilder(MatchCalibration.report(spaceName, result))
+        for (mode in listOf(MatchCalibration.RefMode.SINGLE, MatchCalibration.RefMode.CENTROID, MatchCalibration.RefMode.MEDOID)) {
+            val r = MatchCalibration.evaluate(MatchCalibration.looTrials(groups, none, mode))
+            text.append(MatchCalibration.report("$spaceName loo-ref=${mode.name.lowercase()}", r))
+        }
+        return result to text.toString()
     }
 }

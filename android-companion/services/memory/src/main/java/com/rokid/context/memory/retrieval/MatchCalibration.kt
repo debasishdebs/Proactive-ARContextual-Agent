@@ -41,6 +41,49 @@ object MatchCalibration {
         }.sortedBy { it.first })
     }
 
+
+    /** How a pin's single place vector is built for the reference-variant comparison (owner idea, 26 Nov: cluster centre as place reference). */
+    enum class RefMode { SINGLE, CENTROID, MEDOID }
+
+    /** Mean of the L2-normalised vectors, then L2. Null when [vs] has no usable vector. */
+    fun centroid(vs: List<FloatArray>): FloatArray? {
+        val u = vs.filter { it.all(Float::isFinite) && VectorMath.usable(it) }.map { VectorMath.l2(it) }
+        if (u.isEmpty()) return null
+        val sum = FloatArray(u[0].size)
+        for (v in u) if (v.size == sum.size) for (i in sum.indices) sum[i] += v[i]
+        return VectorMath.l2(sum)
+    }
+
+    /** The member with the highest summed cosine to the others (ties: the first). With one member it is that member. */
+    fun medoid(vs: List<FloatArray>): FloatArray? {
+        val u = vs.filter { it.all(Float::isFinite) && VectorMath.usable(it) }.map { VectorMath.l2(it) }
+        if (u.isEmpty()) return null
+        return u.maxByOrNull { a -> u.sumOf { b -> if (b === a) 0.0 else VectorMath.cosine(a, b).toDouble() } }
+    }
+
+    /**
+     * Leave-one-out trials for one reference variant. [groups]: pin -> its vectors, index 0 = the attached Moment photo (the reference), the rest = probes of that pin. [none]: vectors where no pin is right.
+     * The scored probes are the same for every mode (every non-reference vector, plus [none]) so the modes compare on equal ground. SINGLE: the pin's reference is vector 0. CENTROID / MEDOID: the pin's
+     * reference is built from its vectors MINUS the probe being scored (reference + the other probes), so a probe never scores against itself; other pins use all their vectors.
+     */
+    fun looTrials(groups: Map<String, List<FloatArray>>, none: List<FloatArray>, mode: RefMode): List<Trial> {
+        fun build(vs: List<FloatArray>): FloatArray? = when (mode) { RefMode.SINGLE -> vs.firstOrNull(); RefMode.CENTROID -> centroid(vs); RefMode.MEDOID -> medoid(vs) }
+        val full = groups.mapValues { (_, vs) -> build(vs) }
+        val probes = ArrayList<Pair<FloatArray, String?>>(); val heldOut = HashMap<Int, Pair<String, FloatArray?>>()
+        for ((pin, vs) in groups) vs.drop(1).forEachIndexed { i, v ->
+            val others = vs.filterIndexed { j, _ -> j != i + 1 }
+            probes += v to pin
+            heldOut[probes.size - 1] = pin to build(others)
+        }
+        none.forEach { probes += it to null }
+        return probes.mapIndexed { idx, (v, truth) ->
+            val q = VectorMath.l2(v)
+            val refs = full.toMutableMap()
+            heldOut[idx]?.let { (pin, ref) -> refs[pin] = ref }
+            Trial(truth, refs.mapNotNull { (pin, r) -> r?.takeIf { it.size == q.size }?.let { pin to Math.round(VectorMath.cosine(q, VectorMath.l2(it)) * 1000.0).toInt() } }.sortedBy { it.first })
+        }
+    }
+
     fun evaluate(trials: List<Trial>, targetPrecision: Double = 0.98): Result {
         val pos = ArrayList<Int>(); val neg = ArrayList<Int>()
         for (t in trials) for ((pin, s) in t.scores) if (pin == t.truthPin) pos += s else neg += s
