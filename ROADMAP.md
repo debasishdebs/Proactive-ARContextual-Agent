@@ -60,9 +60,9 @@ Code for the first eight tasks is built behind OFF flags in `:nexus-port`, `:nex
 
 - [ ] ⚪ **v2.1** live end-to-end test on the canvas (DESIGNED 24 Nov: `docs/superpowers/plans/2026-11-24-canvas-v2-1-live-e2e-and-v2-2-model-nodes-design.md`: Test run over a stored day/window/trace or a bounded live tap, per-node inspector, dry-run only, no Room change; about 11-14 agent-days after Sikkim, only the live tap needs the glasses) (run a pipeline over stored or live traces, see every node's output).
 - [ ] ⚪ **v2.2** (designed in the same doc) model nodes on top of the resolver (online/offline), classifier and router presets, rule/condition node sets.
-- [ ] ❌ **v2.3** detection nodes: tier (a) "list objects and people" prompt preset, tier (b) on-device detector (person, object); recognition of identity stays unbuilt (needs its own spec and threat model).
-- [ ] ❌ **v2.4** natural-language tools (`tool.draft`): describe a tool in plain English, generated and verified in an isolated container, shipped as a reviewed patch.
-- [ ] ❌ **v2.5** canvas nodes that call other plugins' skills; watch-run route; scene-building flows.
+- [ ] ⚪ **v2.3** (DESIGNED 26 Nov: `docs/superpowers/plans/2026-11-26-canvas-v2-3-detection-nodes-design.md`; ~23 agent-h) detection nodes: tier (a) "list objects and people" prompt preset, tier (b) on-device detector (person, object); recognition of identity stays unbuilt (needs its own spec and threat model).
+- [ ] ⚪ **v2.4** (DESIGNED 26 Nov: `docs/superpowers/plans/2026-11-26-canvas-v2-4-nl-tools-design.md`; ~30 agent-h) natural-language tools (`tool.draft`): describe a tool in plain English, generated and verified in an isolated container, shipped as a reviewed patch.
+- [ ] ⚪ **v2.5** (DESIGNED 26 Nov: `docs/superpowers/plans/2026-11-26-canvas-v2-5-plugin-skill-nodes-design.md`; ~27 agent-h, skill part gated by the Nexus 1.11 bridge) canvas nodes that call other plugins' skills; watch-run route; scene-building flows.
 
 ## v3
 
