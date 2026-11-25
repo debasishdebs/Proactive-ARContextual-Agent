@@ -51,7 +51,9 @@ import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.ui.banner.BannerAction
 import com.rokid.context.phone.ui.banner.BannerHost
 import com.rokid.context.phone.ui.list.ListItemCard
+import com.rokid.context.phone.ui.list.FilterChipRow
 import com.rokid.context.phone.ui.list.ListKind
+import com.rokid.context.phone.ui.list.RangeFilterDialog
 import com.rokid.context.phone.ui.preview.MarkPreview
 import com.rokid.context.phone.ui.preview.PreviewRef
 import com.rokid.context.phone.ui.preview.RefKind
@@ -72,10 +74,16 @@ fun ActivityScreen(
     onSelectSort: (ActivitySort) -> Unit = {},
     /** The level chips (Photos, Moments, Scenes). */
     onSelectGranularity: (Granularity) -> Unit = {},
+    /** The Range chip's dialog: Apply (false when the start is after the end) and Clear (back to the period chips). */
+    onSelectRange: (java.time.LocalDateTime, java.time.LocalDateTime) -> Boolean = { _, _ -> false },
+    onClearRange: () -> Unit = {},
     /** Opens "Find a photo" (wave 3). */
     onSearchPhotos: () -> Unit = {},
 ) {
     /** The default level keeps the tag the page always had. */
+    var showRange by remember { mutableStateOf(false) }
+    if (showRange) RangeFilterDialog(state.range, onApply = onSelectRange, onClear = onClearRange, onDismiss = { showRange = false })
+    val dayView = state.period == Period.TODAY && state.range == null
     val seeAllTag = if (state.granularity.isDefault) "moments_all" else "level_all"
     LazyColumn(Modifier.fillMaxSize().background(PcColors.Surface).testTag("activity_list")) {
         item { GradientHeader("Activity", "What your glasses noticed") {
@@ -94,10 +102,12 @@ fun ActivityScreen(
         }
         item {
             SegmentedSwitch(
-                listOf("Today", "Week", "Month"), selectedIndex = state.period.ordinal, onSelect = { onSelectPeriod(Period.entries[it]) },
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                listOf("Today", "Week", "Month", "Range"), selectedIndex = if (state.range != null) RANGE_INDEX else state.period.ordinal,
+                onSelect = { if (it == RANGE_INDEX) showRange = true else onSelectPeriod(Period.entries[it]) },
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).testTag("period_switch"),
             )
         }
+        state.range?.let { r -> item { FilterChipRow(r, onClearRange) } }
         item {
             SegmentedSwitch(
                 Granularity.entries.map { it.label }, selectedIndex = state.granularity.ordinal, onSelect = { onSelectGranularity(Granularity.entries[it]) },
@@ -131,7 +141,7 @@ fun ActivityScreen(
             ListItemCard(MarkPreview.item(row), onClick = { onPreview(listOf(PreviewRef.of(RefKind.MARK, row.labelId))) }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp).testTag("mark_row"))
         }
         if (state.marks.isNotEmpty()) item { SeeAll("See all marks", "marks_all") { onOpenList(ListKind.MARKS, state.period) } }
-        if (state.period == Period.TODAY) {
+        if (dayView) {
             if (state.sections.isNotEmpty()) {
                 timelineItems(state.sections) { onPreview(listOf(PreviewRef.of(RefKind.MEMORY, it))) }
                 item { SeeAll(state.granularity.seeAll, seeAllTag) { onOpenList(state.granularity.list, state.period) } }
@@ -153,7 +163,7 @@ fun ActivityScreen(
             }
             item { SectionLabel("By day") }
             if (state.dayRows.isEmpty()) {
-                item { Hint(if (state.period == Period.WEEK) "No activity this week" else "No activity this month") }
+                item { Hint(when { state.range != null -> "No activity in this range"; state.period == Period.WEEK -> "No activity this week"; else -> "No activity this month" }) }
             }
             items(state.dayRows, key = { it.date.toString() }) { row ->
                 ChipRow(Icons.Outlined.CalendarToday, PcColors.ChipSky, row.title, row.subtitle, onClick = { onOpenDay(row.date) })
@@ -194,3 +204,6 @@ private fun SeeAll(text: String, tag: String, onClick: () -> Unit) {
 private fun Hint(text: String) {
     Text(text, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
 }
+
+/** The fourth segment of the period switch. */
+private const val RANGE_INDEX = 3
