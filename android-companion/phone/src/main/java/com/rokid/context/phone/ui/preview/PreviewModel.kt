@@ -1,6 +1,8 @@
 package com.rokid.context.phone.ui.preview
 
 import com.rokid.context.memory.Cursor
+import com.rokid.context.memory.SceneCard
+import com.rokid.context.memory.SceneMember
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
@@ -13,7 +15,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import java.time.LocalDate
 
 /** What an id string names. The id handed to [previewMoment] is `<prefix>:<id>`, so one entry point can open any kind of item. */
-enum class RefKind(val prefix: String, val title: String) { MEMORY("memory", "Memory"), FRAME("frame", "Photos"), MARK("mark", "Mark"), ASK("ask", "Answer"), NUDGE("nudge", "Heads up") }
+enum class RefKind(val prefix: String, val title: String) { MEMORY("memory", "Memory"), FRAME("frame", "Photos"), MARK("mark", "Mark"), ASK("ask", "Answer"), NUDGE("nudge", "Heads up"), SCENE("scene", "Scene") }
 
 data class PreviewRef(val kind: RefKind, val id: String) {
     /** The string [previewMoment] takes. */
@@ -84,6 +86,12 @@ interface ActivityData {
     suspend fun marks(ids: List<String>): List<MarkRowUi>
     suspend fun asks(ids: List<String>): List<AskEntity>
     suspend fun nudges(ids: List<String>): List<NudgeEntity>
+    /** The Scenes named by [ids] (read only: the row, its fresh words and its Moment count). Nothing by default. */
+    suspend fun scenes(ids: List<String>): List<SceneCard> = emptyList()
+    /** The Moments of one Scene, by reference (ids and times only). Nothing by default. */
+    suspend fun sceneMembers(sceneId: String): List<SceneMember> = emptyList()
+    /** The start time of every Scene that starts in [range]: the hour counts of the Scenes breakdown. Nothing by default. */
+    suspend fun sceneTimes(range: LongRange): List<Long> = emptyList()
     /** The photos of [date], oldest first. */
     suspend fun dayFrames(date: LocalDate): List<FrameEntity>
     /**

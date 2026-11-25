@@ -61,6 +61,7 @@ object Previewables {
         ListKind.MARKS to MarkPreview,
         ListKind.ANSWERS to AnswerPreview,
         ListKind.NUDGES to NudgePreview,
+        ListKind.SCENES to ScenePreview,
     )
 
     fun factory(kind: ListKind): PreviewableFactory = registry.getValue(kind)

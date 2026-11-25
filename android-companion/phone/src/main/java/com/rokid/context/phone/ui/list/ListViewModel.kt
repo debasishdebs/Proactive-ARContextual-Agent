@@ -21,7 +21,7 @@ enum class ListViewMode { LIST, BREAKDOWN }
 /**
  * Holds the paged list of one Activity route (activity pagination A4). It is scoped to the navigation back-stack entry, so opening a preview and coming back keeps the loaded pages and the scroll position
  * (a plain `remember` lost both); the first visible row, the window top, the view and the expanded days and hours live in the [SavedStateHandle], so a process death restores the position with one read.
- * The broken-down view (A5) exists for the Moments of a period only (user ruling proposed by the design: Moments first).
+ * The broken-down view (A5) exists for the Moments and the Scenes of a period only (user ruling proposed by the design: Moments first).
  */
 class ListViewModel(
     kind: ListKind, ids: List<String>, scope: ListScope?, data: ActivityData, private val zone: () -> ZoneId, private val today: () -> LocalDate,
@@ -35,8 +35,8 @@ class ListViewModel(
     val canFilter: Boolean = scope != null
     val source = RecordListSource(kind, ids, data, zone, today, onPreview = { openPreview(it) }, scope = scope)
 
-    /** The broken-down view of a period's Moments; null for every other list. */
-    val breakdown: BreakdownModel? = if (kind == ListKind.MOMENTS && scope != null) {
+    /** The broken-down view of a period's Moments or Scenes; null for every other list. */
+    val breakdown: BreakdownModel? = if ((kind == ListKind.MOMENTS || kind == ListKind.SCENES) && scope != null) {
         BreakdownModel(kind, data, scope.millis(zone()), zone, today, source::summarize, object : StateStore {
             override fun get(key: String) = saved.get<String>(key)
             override fun set(key: String, value: String) { saved[key] = value }

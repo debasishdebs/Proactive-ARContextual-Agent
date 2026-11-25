@@ -22,6 +22,7 @@ data class Cursor(val key: Long, val id: String) {
         fun of(t: NudgeEntity) = Cursor(t.ts, t.id)
         fun of(t: MomentDao.MarkRow) = Cursor(t.atMs, t.labelId)
         fun of(t: MomentRow) = Cursor(t.shownAt, t.memory.id)
+        fun of(t: com.rokid.context.memory.db.SceneEntity) = Cursor(t.startMs, t.sceneId)
 
         /** List order of every kind but marks: newest first, then id DESC. A negative result: [a] is listed before [b]. */
         val NEWEST_FIRST: Comparator<Cursor> = compareByDescending<Cursor> { it.key }.thenByDescending { it.id }
