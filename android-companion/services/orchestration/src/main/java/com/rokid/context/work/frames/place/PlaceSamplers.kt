@@ -94,7 +94,7 @@ object PlaceSamplers {
     ): PlaceSampler {
         val keyframes = KeyframeGraph.get(app)
         val share = SharedPhoto { id -> FramePhotos.load(app, listOf(id)).photos.singleOrNull() } // ONE loaded photo for the model call and the shadow
-        val shadowOf by lazy { shadowFor(app, zoneBlocked, share::get) }
+        val shadowOf by lazy { shadowCompareFor(app, zoneBlocked, share::get) }
         return PlaceSampler(
             scope = scope, store = RoomPlaceFrameStore { MemoryGraph.get(app).db }, fix = fix,
             candidates = { lat, lon, up ->
@@ -111,7 +111,7 @@ object PlaceSamplers {
             generation = { MemoryWipe.generation.get() }, flight = flight, zones = zones, fence = fence, ledger = PlaceMemory.ledger(app),
             log = { PcLog.i(TAG, it) }, // literal text and an outcome name only
             // LAZY: with the flag off the shadow, its caches and the reference-vector cache are never allocated (the lambda is only reached behind shadowEnabled()).
-            shadow = { id, hits, live -> shadowOf.score(id, hits, live) },
+            shadow = { id, hits, live -> shadowOf.score(id, hits, live) }, // Nomic, plus SigLIP 2 beside it only behind its own Developer flag (default OFF)
             shadowEnabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowScore(app).also { on -> if (!on) ShadowCaches.clearAll() } }, // the flag going OFF empties the in-memory vectors at the next attempt (the setter does it at once)
             onAttemptEnd = share::clear,
             history = { e -> PlaceGraph.history(app).add(e) }, historyOn = { DeveloperFlags.placeCardHistory(app) }, historyAuthority = { PlaceGraph.history(app).capture() },
@@ -133,9 +133,10 @@ object PlaceSamplers {
             log = { PcLog.i(TAG, it) },
         )
 
-    /** The shadow scorer over the ACTIVE image-text space (today only the on-device Nomic bundle, and only when the user bound it); absent space = `shadow=na`. Reads the flag on every attempt. */
-    internal fun shadowFor(app: Context, zoneBlocked: suspend () -> Boolean, photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?): PlaceShadow {
-        val spaces by lazy { com.rokid.context.work.frames.scene.SpaceImageSpaces(MemoryGraph.get(app).spaces, AiGraph.get(app).embedders) }
+    /** One shadow scorer plus the reference-vector cache it owns (so a caller can register both for the eager clears). */
+    internal class Built(val shadow: PlaceShadow, val refs: PinReferenceVectors)
+
+    private fun build(app: Context, zoneBlocked: suspend () -> Boolean, photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?, embedder: suspend () -> com.rokid.context.memory.ImageTextEmbedder?): Built {
         val db = { MemoryGraph.get(app).db }
         val gate = { com.rokid.context.provenance.ProvenanceGate(db()) }
         // One reference-vector cache per shadow, in memory only (see PinReferenceVectors). The shadow itself is created lazily by [create], so with the flag off none of this is ever allocated.
@@ -146,16 +147,62 @@ object PlaceSamplers {
             mayEmbed = { KeyframeGraph.get(app).power.mayRunBackground(com.rokid.context.work.budget.BackgroundWork.IMAGE_VECTORS) },
             zoneBlocked = zoneBlocked, generation = { MemoryWipe.generation.get() }, scope = refScope, elapsed = android.os.SystemClock::elapsedRealtime,
         )
-        ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[0], refs::clear)
-        return PlaceShadow(
-            embedder = { spaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } },
+        val shadow = PlaceShadow(
+            embedder = embedder,
             photo = { id ->
                 if (zoneBlocked() || gate().goneFrames(setOf(id), requirePresent = false).isNotEmpty()) null
                 else photoOf(id)?.let { android.util.Base64.decode(it.image.base64Data, android.util.Base64.DEFAULT) }
             },
             imageRefs = refs::vectorsForAll, refsStillValid = refs::stillValid,
             elapsed = android.os.SystemClock::elapsedRealtime, generation = { MemoryWipe.generation.get() },
-        ).also { ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[1], it::clear) }
+        )
+        return Built(shadow, refs)
+    }
+
+    /** The shadow scorer over the ACTIVE image-text space (today only the on-device Nomic bundle, and only when the user bound it); absent space = `shadow=na`. Reads the flag on every attempt. */
+    internal fun shadowFor(app: Context, zoneBlocked: suspend () -> Boolean, photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?): PlaceShadow {
+        val spaces by lazy { com.rokid.context.work.frames.scene.SpaceImageSpaces(MemoryGraph.get(app).spaces, AiGraph.get(app).embedders) }
+        val b = build(app, zoneBlocked, photoOf) { spaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } }
+        ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[0], b.refs::clear)
+        ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[1], b.shadow::clear)
+        return b.shadow
+    }
+
+    /**
+     * Nomic (as [shadowFor]) plus SigLIP 2 as a second, separate space behind the `placeShadowSiglip` Developer flag (default OFF). The SigLIP side has its OWN caches (never mixed with Nomic's: different space id)
+     * and registers into the SAME [ShadowCaches] items, so every deletion path empties both. Files come from the app's sideload folder only ([com.rokid.context.ai.embed.siglip.SigLipBundle]); nothing is downloaded and
+     * nothing leaves the phone, so Offline only changes nothing here.
+     */
+    internal fun shadowCompareFor(app: Context, zoneBlocked: suspend () -> Boolean, photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?): SiglipShadowCompare {
+        val nomicSpaces by lazy { com.rokid.context.work.frames.scene.SpaceImageSpaces(MemoryGraph.get(app).spaces, AiGraph.get(app).embedders) }
+        val n = build(app, zoneBlocked, photoOf) { nomicSpaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } }
+        val sigHolder = SiglipHolder(app)
+        val s = build(app, zoneBlocked, photoOf) { sigHolder.get() }
+        ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[0]) { n.refs.clear(); s.refs.clear() }
+        ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[1]) { n.shadow.clear(); s.shadow.clear() }
+        return SiglipShadowCompare(
+            nomic = n.shadow::score, siglip = s.shadow::score,
+            enabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowSiglip(app) },
+            scope = refScope, log = { PcLog.i(TAG, it) }, // no afterSiglip release: closing an ORT session under an in-flight (non-cancellable) run is unsafe; the towers stay resident while the flag is on
+            
+            siglipSpace = { sigHolder.peekSpaceId() }, nomicSpace = { "nomic" },
+        )
+    }
+
+    /** The process-wide SigLIP 2 embedder over the sideloaded files, opened on first use; null (and retried at most every [RETRY_MS]) while the vision file is missing. */
+    private class SiglipHolder(private val app: Context) {
+        @Volatile private var e: com.rokid.context.ai.embed.siglip.SigLipImageTextEmbedder? = null
+        @Volatile private var lastTry = Long.MIN_VALUE
+        fun get(): com.rokid.context.memory.ImageTextEmbedder? = e ?: synchronized(this) {
+            e ?: run {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (lastTry != Long.MIN_VALUE && now - lastTry < RETRY_MS) return null
+                lastTry = now
+                com.rokid.context.ai.embed.siglip.SigLipBundle.open(com.rokid.context.data.models.LocalModelStore.modelsDir(app)).also { e = it }
+            }
+        }
+        fun peekSpaceId(): String = e?.spaceId ?: "siglip2"
+        private companion object { const val RETRY_MS = 60_000L }
     }
 
     /** Where a missing reference vector is embedded (one at a time, bounded by [PinReferenceVectors]); it outlives one attempt so a slow first embed still lands in the cache. */

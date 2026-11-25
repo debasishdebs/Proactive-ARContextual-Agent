@@ -34,6 +34,14 @@ object DeveloperFlags {
     fun placeShadowScore(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_SHADOW_SCORE, false) }.getOrDefault(false)
     fun setPlaceShadowScore(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_SHADOW_SCORE, on).apply(); if (!on) com.rokid.context.work.frames.place.ShadowCaches.clearAll() } // OFF: the in-memory shadow vectors go at once
 
+    /**
+     * Place Guide SigLIP 2 shadow (1.4.4): a SECOND image-text space scored next to Nomic and compared in one counts-only `place shadow2` log line. Needs [PLACE_SHADOW_SCORE] ON as well (it rides on the
+     * same hook) and the sideloaded SigLIP files (see SigLipBundle); without them it logs `sig=na`. Never changes a card, a call or anything the user sees. OFF by default (also OFF when the prefs cannot be read); no UI.
+     */
+    const val PLACE_SHADOW_SIGLIP = "placeShadowSiglip"
+    fun placeShadowSiglip(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_SHADOW_SIGLIP, false) }.getOrDefault(false)
+    fun setPlaceShadowSiglip(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_SHADOW_SIGLIP, on).apply(); if (!on) com.rokid.context.work.frames.place.ShadowCaches.clearAll() }
+
     /** Place fixes (spec 2026-11-24 section 2): each is ON by default and has no UI; OFF restores the older behaviour. */
     const val PLACE_PIN_FIRST = "placePinFirst"
     const val PLACE_FIX_REUSE = "placeFixReuse"
