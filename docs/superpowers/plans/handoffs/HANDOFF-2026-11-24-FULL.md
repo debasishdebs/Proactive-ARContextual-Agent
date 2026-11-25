@@ -109,3 +109,9 @@ Order of work for the next session (cheapest first): check disk/devices -> insta
 - Open user decisions: "go" for install; "push" of the branch to the personal GitHub backup; rulings listed in section 5; whether to keep pca-phone-pre-* rehearsal copies (4.9 GB).
 - Known unresolved limits (documented in open-backlog-2026-11-21.md): data saver FREE->costly flip without network binding, LAN classification from the URL; retry-supersede of trailing facts (pre-existing); false-DONE wording for photo-file cleanup; FallbackParkCap persistence; glasses app closes ~10% capture loss.
 - Memory pointer for any session on this Mac: ~/.claude/projects/-Users-debasishkanhar/memory/handoff-2026-11-24-full.md.
+
+## 0k. STATUS 25 Nov ~07:00 (supersedes the chain list in 0j)
+WP3-WP9 DONE and committed on feat/v101-ask-eval: WP3 6a7338fd+7e44692a, WP4 4d960d0b, WP5 aad27ae4, WP6+7 dc3fb28f, WP9 29bbc527, WP8 87dc5a3a, timeout 20 min 49b19876, Codex round 1 fix 98039244 (review: docs/superpowers/reviews/2026-11/codex-v18-wp1-9.md, NO P1; P2 #3 imported-photo export after retention is a documented known limit).
+verify_final: 14/15 green on 87dc5a3a, orchestration release rerun green with the 20 min task timeout. Not yet rerun after 98039244 (its two modules pass).
+LEFT: (a) rerun verify_final on the final tip once; (b) fallback rel-1.5 APK staged by Fri 27 18:00; (c) Sat 28 migration over a FRESH phone pull + emulator rehearsal (needs user pull); (d) Sun 29 ~18:00 install on explicit go; (e) Mon 30 go/no-go; embeddings 1.7 calibration Sat. Nothing installed; no device touched.
+MORNING MESSAGE MUST LEAD WITH: offline vision spike yes/no; fresh phone pull for Saturday.
