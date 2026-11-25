@@ -72,10 +72,10 @@ class SceneRunTest {
             items.map { seen += it.value; NodeResult(it.frameId, CanvasValue.Json(JsonObject(mapOf("ok" to JsonPrimitive(true))))) }
     }
     private fun resolver() = MomentResolver(DaoMomentSource(h.dao, h.dao3))
-    private fun runner() = CanvasRunner(
+    private fun runner(preflight: suspend (Pipeline) -> List<String> = { emptyList() }) = CanvasRunner(
         h.dao, { f -> PhotoLoad(f.map(h::photo), emptySet()) }, mapOf(NodeTypes.PROMPT to recorder),
         { id -> val ai = com.rokid.context.orchestration.TestAi.graph(app) { "" }; RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) },
-        h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, moments = resolver(), scenes = DaoSceneRunSource(h.db, resolver()),
+        h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, moments = resolver(), scenes = DaoSceneRunSource(h.db, resolver()), preflight = preflight,
     )
     private fun pipeline() = Pipeline(2, "sp", "P", listOf(
         PipelineNode("scenes", NodeTypes.INPUT_SCENES, "scenes", JsonObject(emptyMap())),
@@ -140,5 +140,13 @@ class SceneRunTest {
         assertTrue(r.estimateScenes(pipeline(), emptyList(), label) is Estimate.Refused)
         assertTrue("an unknown Scene", r.estimateScenes(pipeline(), listOf("S" + mid(900)), label) is Estimate.Refused)
         assertTrue(runCatching { r.estimateScenes(pipeline(), listOf("nope"), label) }.exceptionOrNull() is IllegalArgumentException)
+    }
+
+    @Test fun theSceneEstimateAppliesTheOfflineOnlyPreflightLikeThePhotoEstimate() = runBlocking<Unit> {
+        seed()
+        val ids = listOf(sid(0), sid(400))
+        val refused = runner(preflight = { listOf("offline_only") }).estimateScenes(pipeline(), ids, label)
+        assertTrue(refused is Estimate.Refused && "offline_only" in refused.reasons)
+        assertEquals("the default preflight changes nothing", 2, estimate(runner(), ids).photos)
     }
 }

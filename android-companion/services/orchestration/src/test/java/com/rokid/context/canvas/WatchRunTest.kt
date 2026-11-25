@@ -40,14 +40,14 @@ class WatchRunTest {
     @Before fun setUp() { h = PyFnRunHarness(app) }
     @After fun tearDown() { h.close() }
 
-    private fun runner() = CanvasRunner(
+    private fun runner(preflight: suspend (Pipeline) -> List<String> = { emptyList() }) = CanvasRunner(
         h.dao, { f -> PhotoLoad(f.map(h::photo), emptySet()) },
         mapOf(NodeTypes.AGG_WINDOW to WindowAggregateExecutor, NodeTypes.COMPARE to CompareExecutor),
         { id ->
             val ai = com.rokid.context.orchestration.TestAi.graph(app) { modelCalls.incrementAndGet(); "" }
             RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive)
         },
-        h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, watch = WatchRunSource { f, t -> ring.recent(f, t) },
+        h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, watch = WatchRunSource { f, t -> ring.recent(f, t) }, preflight = preflight,
     )
     private fun pipeline(op: String = "max", window: Int = 2) = Pipeline(2, "wp", "W", listOf(
         PipelineNode("watch", NodeTypes.SRC_WATCH_MOTION, "Watch", JsonObject(emptyMap())),
@@ -115,5 +115,12 @@ class WatchRunTest {
         val e = r.estimateWatch(noWatch, 0, 10, label)
         assertTrue(e is Estimate.Refused && e.reasons.any { it.contains("does not take watch") })
         assertTrue(r.estimateWatch(pipeline(), 10, 0, label) is Estimate.Refused)
+    }
+
+    @Test fun theWatchEstimateAppliesTheOfflineOnlyPreflightLikeThePhotoEstimate() = runBlocking<Unit> {
+        put(1000L to WatchState.WALKING)
+        val refused = runner(preflight = { listOf("offline_only") }).estimateWatch(pipeline(), 0, 10_000, label)
+        assertEquals(listOf("offline_only"), (refused as Estimate.Refused).reasons)
+        assertTrue("the default preflight changes nothing", runner().estimateWatch(pipeline(), 0, 10_000, label) is Estimate.Ok)
     }
 }

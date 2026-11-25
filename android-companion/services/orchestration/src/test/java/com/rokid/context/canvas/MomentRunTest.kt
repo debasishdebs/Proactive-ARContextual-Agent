@@ -59,12 +59,12 @@ class MomentRunTest {
             return h.dao.momentFrames(fromMs, toMs, limit).map { com.rokid.context.canvas.moment.MomentFrame(it.id, it.ts, it.rev) }
         }
     })
-    private fun runner(py: NodeExecutor = h.py) = CanvasRunner(
+    private fun runner(py: NodeExecutor = h.py, preflight: suspend (Pipeline) -> List<String> = { emptyList() }) = CanvasRunner(
         h.dao, { f -> PhotoLoad(f.map(h::photo), emptySet()) }, mapOf(NodeTypes.PROMPT to h.prompt, py.type to py), { id ->
             val ai = com.rokid.context.orchestration.TestAi.graph(app) { "" }
             RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive)
         },
-        h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, moments = resolver(),
+        h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, moments = resolver(), preflight = preflight,
     )
 
     private fun pipeline(id: String = "mp") = Pipeline(
@@ -292,5 +292,12 @@ class MomentRunTest {
     private suspend fun assertMoved(block: suspend () -> Unit) {
         val e = runCatching { block() }.exceptionOrNull()
         assertTrue("expected MomentsMoved, got $e", e is CanvasRunner.MomentsMoved)
+    }
+
+    @Test fun theMomentEstimateAppliesTheOfflineOnlyPreflightLikeThePhotoEstimate() = runBlocking<Unit> {
+        seed()
+        val refused = runner(preflight = { listOf("offline_only") }).estimateMoments(pipeline(), listOf(m0, m1), label)
+        assertEquals(listOf("offline_only"), (refused as Estimate.Refused).reasons)
+        assertTrue("the default preflight changes nothing", estimate(runner()).photos == 2)
     }
 }
