@@ -79,6 +79,10 @@ fun ActivityScreen(
     onClearRange: () -> Unit = {},
     /** Opens "Find a photo" (wave 3). */
     onSearchPhotos: () -> Unit = {},
+    /** The List / Map toggle. */
+    onSelectViewMode: (ActivityViewMode) -> Unit = {},
+    /** The map view, shown in place of the list below the toggle (the shell supplies it; empty in previews). */
+    mapContent: @Composable (ActivityUiState) -> Unit = {},
 ) {
     /** The default level keeps the tag the page always had. */
     var showRange by remember { mutableStateOf(false) }
@@ -114,6 +118,13 @@ fun ActivityScreen(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp).testTag("granularity"),
             )
         }
+        item {
+            SegmentedSwitch(
+                ActivityViewMode.entries.map { it.label }, selectedIndex = state.viewMode.ordinal, onSelect = { onSelectViewMode(ActivityViewMode.entries[it]) },
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp).testTag("view_mode"),
+            )
+        }
+        if (state.viewMode == ActivityViewMode.MAP) { item(key = "heat_map") { mapContent(state) }; return@LazyColumn }
         item { Text(state.header, style = MaterialTheme.typography.titleMedium, color = PcColors.Ink, modifier = Modifier.padding(start = 20.dp, top = 8.dp, bottom = 8.dp)) }
         item {
             // Each card opens the list of its kind over that period's ids; an empty kind opens its empty state, never a dead tap.

@@ -71,6 +71,33 @@ object MomentLocationGraph {
         val d = MemoryGraph.get(app).db.momentLocationDao(); val a = d.firstAt(); val b = d.lastAt(); if (a != null && b != null) a to b else null
     } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
 
+    /** Activity map view (read only, bounded by [MAP_MAX_ROWS]): every saved location with its Moment id in [range]; empty when unreadable. The caller must never log them. */
+    suspend fun located(app: Context, range: LongRange): List<com.rokid.context.memory.db.LocatedMoment> =
+        try { MemoryGraph.get(app).db.momentLocationDao().located(range.first, range.last, MAP_MAX_ROWS) } catch (e: CancellationException) { throw e } catch (e: Exception) { emptyList() }
+
+    /** The same per Scene starting in [range], in member order (the caller takes the first row of each Scene). */
+    suspend fun sceneLocated(app: Context, range: LongRange): List<com.rokid.context.memory.db.SceneLocatedMoment> =
+        try { MemoryGraph.get(app).db.momentLocationDao().sceneLocated(range.first, range.last + 1, MAP_MAX_ROWS) } catch (e: CancellationException) { throw e } catch (e: Exception) { emptyList() }
+
+    /** What the named Moments hold (a memory, a photo, a mark), by reference only, oldest first, with the time of their saved location; a Moment that is gone is absent. */
+    suspend fun members(app: Context, momentIds: List<String>): List<com.rokid.context.memory.SceneMember> = try {
+        val db = MemoryGraph.get(app).db
+        val ids = momentIds.distinct()
+        val held = ids.chunked(500).flatMap { db.momentDao().partsOf(it) }.groupBy { it.momentId }
+        val at = db.momentLocationDao().of(ids).associate { it.momentId to it.atMs }
+        ids.filter { it in held || it in at }.map { id ->
+            val mine = held[id].orEmpty()
+            com.rokid.context.memory.SceneMember(
+                id, at[id] ?: 0L,
+                mine.filter { it.kind == com.rokid.context.memory.db.MomentPartKind.MEMORY }.map { it.refId },
+                mine.filter { it.kind == com.rokid.context.memory.db.MomentPartKind.FRAME }.map { it.refId },
+                mine.filter { it.kind == com.rokid.context.memory.db.MomentPartKind.MARK }.map { it.refId },
+            )
+        }.sortedWith(compareBy({ it.atMs }, { it.momentId }))
+    } catch (e: CancellationException) { throw e } catch (e: Exception) { emptyList() }
+
+    const val MAP_MAX_ROWS = 20_000
+
     /** "Delete saved locations": removes every `moment_location` row, under the delete side of the data-operation gate. Returns the number of rows removed. */
     suspend fun deleteAll(app: Context): Int = DataOpGate.shared.delete { MemoryGraph.get(app).db.momentLocationDao().deleteAllMomentLocations() }
 }

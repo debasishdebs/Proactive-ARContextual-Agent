@@ -62,6 +62,7 @@ class PhoneDeps(
     val activitySort: com.rokid.context.phone.ui.activity.ActivitySortStore = com.rokid.context.phone.ui.activity.InMemoryActivitySort(),
     /** Activity's level choice (Photos, Moments, Scenes); persisted by [create]. */
     val activityGranularity: com.rokid.context.phone.ui.activity.GranularityStore = com.rokid.context.phone.ui.activity.InMemoryGranularity(),
+    val activityViewMode: com.rokid.context.phone.ui.activity.ViewModeStore = com.rokid.context.phone.ui.activity.InMemoryViewMode(),
     /** G7: Android Battery Saver (asks are paused while it is on). */
     val batterySaver: Flow<Boolean> = flowOf(false),
     /** Retention v3 (K5): the one-time notice that clean-up no longer deletes text. */
@@ -121,6 +122,7 @@ class PhoneDeps(
                 onMicGranted = voice::onForeground,
                 activitySort = com.rokid.context.phone.ui.activity.PrefsActivitySort(app),
                 activityGranularity = com.rokid.context.phone.ui.activity.PrefsGranularity(app),
+                activityViewMode = com.rokid.context.phone.ui.activity.PrefsViewMode(app),
                 batterySaver = com.rokid.context.orchestration.BatterySaver.observe(app),
                 retentionNotice = RetentionNoticeControl.prefs(app),
                 limitedMode = com.rokid.context.phone.ui.home.PrefsLimitedMode.forApp(app),

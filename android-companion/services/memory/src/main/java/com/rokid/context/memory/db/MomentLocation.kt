@@ -36,6 +36,12 @@ data class MomentAnchor(val anchorId: String, val atMs: Long)
 /** One saved location as the map density layer reads it: a position and a time, nothing that names the Moment (map zones P3, read only). */
 data class MomentPoint(val lat: Double, val lon: Double, val atMs: Long)
 
+/** One saved location with the Moment it belongs to, for the Activity map view (read only; the caller must never log it). */
+data class LocatedMoment(val momentId: String, val lat: Double, val lon: Double, val atMs: Long)
+
+/** The same, tagged with the Scene whose member Moment it is (rows come in member order: partTimeMs, refId). */
+data class SceneLocatedMoment(val sceneId: String, val momentId: String, val lat: Double, val lon: Double, val atMs: Long)
+
 @Dao
 abstract class MomentLocationDao {
     @Query("SELECT * FROM moment_location WHERE momentId IN (:ids)") protected abstract suspend fun ofChunk(ids: List<String>): List<MomentLocationEntity>
@@ -45,6 +51,13 @@ abstract class MomentLocationDao {
     /** Saved positions inside the box and the time range (both inclusive), oldest first, at most [limit]. */
     @Query("SELECT lat AS lat, lon AS lon, atMs AS atMs FROM moment_location WHERE atMs BETWEEN :from AND :to AND lat BETWEEN :south AND :north AND lon BETWEEN :west AND :east ORDER BY atMs LIMIT :limit")
     abstract suspend fun pointsIn(south: Double, west: Double, north: Double, east: Double, from: Long, to: Long, limit: Int): List<MomentPoint>
+    // --- Activity map view (read only, no schema change). ---
+    /** Every saved location with its Moment id whose time is in [from]..[to] (inclusive), oldest first, at most [limit]. */
+    @Query("SELECT momentId AS momentId, lat AS lat, lon AS lon, atMs AS atMs FROM moment_location WHERE atMs BETWEEN :from AND :to ORDER BY atMs, momentId LIMIT :limit")
+    abstract suspend fun located(from: Long, to: Long, limit: Int): List<LocatedMoment>
+    /** The saved locations of the member Moments of the Scenes starting in [from] until [to] (exclusive), per Scene in member order; Moments without a location are simply absent. */
+    @Query("SELECT p.sceneId AS sceneId, p.refId AS momentId, l.lat AS lat, l.lon AS lon, l.atMs AS atMs FROM scene s JOIN scene_part p ON p.sceneId = s.sceneId AND p.kind = 'MOMENT' JOIN moment_location l ON l.momentId = p.refId WHERE s.startMs >= :from AND s.startMs < :to ORDER BY s.startMs, p.sceneId, p.partTimeMs, p.refId LIMIT :limit")
+    abstract suspend fun sceneLocated(from: Long, to: Long, limit: Int): List<SceneLocatedMoment>
     @Query("SELECT MIN(atMs) FROM moment_location") abstract suspend fun firstAt(): Long?
     @Query("SELECT MAX(atMs) FROM moment_location") abstract suspend fun lastAt(): Long?
 

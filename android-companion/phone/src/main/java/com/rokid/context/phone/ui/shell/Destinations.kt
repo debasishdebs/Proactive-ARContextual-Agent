@@ -60,13 +60,19 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
 
     composable(Routes.ACTIVITY, arguments = listOf(navArgument("period") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
         val period = Period.parse(entry.arguments?.getString("period"))
-        val vm = viewModel { ActivityViewModel(period, deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.memory.marks, deps.clock, deps.storagePct, deps.zone, index = deps.index, sort = deps.activitySort, granularity = deps.activityGranularity, scenes = deps.memory.scenes) }
+        val vm = viewModel { ActivityViewModel(period, deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.memory.marks, deps.clock, deps.storagePct, deps.zone, index = deps.index, sort = deps.activitySort, granularity = deps.activityGranularity, viewMode = deps.activityViewMode, scenes = deps.memory.scenes) }
         val state by vm.state.collectAsStateWithLifecycle()
         ActivityScreen(
             state, onSelectPeriod = vm::selectPeriod, onSelectSort = vm::selectSort, onSelectGranularity = vm::selectGranularity, onSelectRange = vm::selectRange, onClearRange = vm::clearRange, onTogglePause = vm::togglePause, onBannerAction = { a -> bannerNav(a, vm::onBannerAction) },
             onPreview = { ids -> nav.navigate(previewMoment(ids, PreviewMode.OPEN).route) }, onOpenList = { kind, period -> nav.navigate(listView(kind, period, deps.today(), state.range)) },
             onOpenDay = { nav.navigate(Routes.day(it)) },
             onSearchPhotos = { nav.navigate(Routes.photos()) },
+            onSelectViewMode = vm::selectViewMode,
+            mapContent = { s ->
+                val ctx = androidx.compose.ui.platform.LocalContext.current.applicationContext
+                val mapVm = viewModel { com.rokid.context.phone.ui.activity.ActivityMapViewModel(com.rokid.context.phone.ui.activity.AppMomentMapSource(ctx), deps.memory.timeline) }
+                com.rokid.context.phone.ui.activity.ActivityMapPanel(mapVm, s, deps.zone(), { com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineMapGraph.get(ctx).deps() }, onPreview = { ids -> nav.navigate(previewMoment(ids, PreviewMode.OPEN).route) })
+            },
         )
     }
 

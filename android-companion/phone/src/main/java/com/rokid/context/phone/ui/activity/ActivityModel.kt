@@ -247,4 +247,6 @@ data class ActivityUiState(
     val granularity: Granularity = Granularity.DEFAULT,
     /** The custom date and time range (the Range chip), or null for the period. With one, [header] names it and the page shows its days like a Week or a Month. */
     val range: com.rokid.context.phone.ui.list.DateTimeRange? = null,
+    /** List (the page as it always was) or Map (the Moments heat-map). Remembered per viewer like [granularity]. */
+    val viewMode: ActivityViewMode = ActivityViewMode.DEFAULT,
 )

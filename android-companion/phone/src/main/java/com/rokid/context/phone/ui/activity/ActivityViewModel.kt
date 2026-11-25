@@ -41,6 +41,7 @@ class ActivityViewModel(
     index: Flow<IndexState> = flowOf(IndexState.NONE),
     private val sort: ActivitySortStore = InMemoryActivitySort(),
     private val granularity: GranularityStore = InMemoryGranularity(),
+    private val viewMode: ViewModeStore = InMemoryViewMode(),
     /** The read-only Scenes source (the Scenes card); null counts none. */
     private val scenes: com.rokid.context.memory.SceneRepository? = null,
 ) : ViewModel() {
@@ -93,7 +94,7 @@ class ActivityViewModel(
 
     private companion object { const val MAX_BAR_DAYS = 62 }
 
-    val state: StateFlow<ActivityUiState> = combine(content, StatusUi.flow(glasses, pipeline, clock, storagePct, index), granularity.level) { c, s, g -> c.copy(status = s, granularity = g) }
+    val state: StateFlow<ActivityUiState> = combine(content, StatusUi.flow(glasses, pipeline, clock, storagePct, index), granularity.level, viewMode.mode) { c, s, g, m -> c.copy(status = s, granularity = g, viewMode = m) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ActivityUiState(period = initial))
 
     /** A period chip: it also ends a custom range, so the chips are the way back. */
@@ -106,6 +107,7 @@ class ActivityViewModel(
     fun clearRange() { range.value = null }
     fun selectSort(o: ActivitySort) = sort.set(o)
     fun selectGranularity(g: Granularity) = granularity.set(g)
+    fun selectViewMode(m: ActivityViewMode) = viewMode.set(m)
     fun togglePause() = pipeline.toggle()
     fun onBannerAction(action: BannerAction) = BannerActions.apply(action, glasses, pipeline)
 }
