@@ -35,6 +35,10 @@ class PlaceShadow(
     private val elapsed: () -> Long,
     /** The wipe generation (production: `MemoryWipe.generation`); a change empties the text cache. */
     private val generation: () -> Long = { 0L },
+    /** 1.4.6: the Developer flag `packMoments` (read per score). ON = pack places are matched as pack Moments (richer text anchor) and [onMoments] is told the counts. Shadow only; default OFF. */
+    private val packMoments: () -> Boolean = { false },
+    /** Counts only: (pack candidates, pin candidates) of one score, called only when [packMoments] is ON. */
+    private val onMoments: (pack: Int, pin: Int) -> Unit = { _, _ -> },
 ) {
     private val cache = object : LinkedHashMap<String, FloatArray>(16, 0.75f, true) { override fun removeEldestEntry(e: MutableMap.MutableEntry<String, FloatArray>?) = size > CACHE_MAX }
     private var cacheGen = Long.MIN_VALUE
@@ -52,14 +56,15 @@ class PlaceShadow(
         val t0 = elapsed()
         val q = e.embedImage(jpeg)
         if (!live()) return ShadowOutcome.DROPPED // before the text batch and the cache
-        val texts = anchors(e, hits)
+        val packOn = try { packMoments() } catch (_: Exception) { false }
+        val moments = MomentCandidates.of(hits, packOn)
+        if (packOn) try { onMoments(moments.count { it.origin == MomentOrigin.PACK }, moments.count { it.origin == MomentOrigin.PIN }) } catch (_: Exception) { }
+        val texts = anchors(e, moments)
         // The pins' reference vectors are asked together, so one cold miss costs one wait, not one per pin. Any failure of one pin leaves only that pin without an image channel.
         val pins = hits.map { it.first }.filter { UserPlace.isUserId(it.id) }
         val refs: Map<String, List<FloatArray>> = if (pins.isEmpty()) emptyMap() else try { imageRefs(pins, e, live) } catch (c: CancellationException) { throw c } catch (_: Exception) { emptyMap() }
         if (!live()) return ShadowOutcome.DROPPED
-        val cands = hits.map { (p, d) ->
-            CandidateScorer.Candidate(p.id, imageRefs = refs[p.id].orEmpty(), textAnchor = texts[p.id], edgeGapM = (d - p.radiusM).coerceAtLeast(0.0), distanceM = d)
-        }
+        val cands = moments.map { m -> m.toScorer(refs[m.id].orEmpty(), texts[m.id]) }
         val result = CandidateScorer.score(q, cands)
         if (!live()) return ShadowOutcome.DROPPED
         // The last word before a score leaves: the reference photos are asked about once more, so a Forget that landed since they were read (single Moment, link change, wipe) drops this score.
@@ -68,25 +73,25 @@ class PlaceShadow(
     }
 
     /** id -> text vector. Cached pack places are not embedded again; the rest go out in ONE batch; a failed batch leaves them without a text channel. */
-    private suspend fun anchors(e: ImageTextEmbedder, hits: List<Pair<PlaceEntity, Double>>): Map<String, FloatArray> {
+    private suspend fun anchors(e: ImageTextEmbedder, hits: List<MomentCandidate>): Map<String, FloatArray> {
         val out = HashMap<String, FloatArray>()
-        val missing = ArrayList<PlaceEntity>()
+        val missing = ArrayList<MomentCandidate>()
         synchronized(cache) {
             val g = generation()
             if (g != cacheGen || e.spaceId != cacheSpace) { cache.clear(); cacheGen = g; cacheSpace = e.spaceId }
-            for ((p, _) in hits) { val v = if (UserPlace.isUserId(p.id)) null else cache[key(p)]; if (v != null) out[p.id] = v else missing += p }
+            for (p in hits) { val v = if (!p.cacheableText) null else cache[key(p)]; if (v != null) out[p.id] = v else missing += p }
         }
         if (missing.isEmpty()) return out
-        val vecs = try { e.embedTexts(missing.map(::anchorText)) } catch (c: CancellationException) { throw c } catch (_: Exception) { return out }
+        val vecs = try { e.embedTexts(missing.map { it.anchorText ?: "" }) } catch (c: CancellationException) { throw c } catch (_: Exception) { return out }
         if (vecs.size != missing.size) return out
         synchronized(cache) {
             val same = generation() == cacheGen && e.spaceId == cacheSpace
-            missing.forEachIndexed { i, p -> out[p.id] = vecs[i]; if (same && !UserPlace.isUserId(p.id)) cache[key(p)] = vecs[i] }
+            missing.forEachIndexed { i, p -> out[p.id] = vecs[i]; if (same && p.cacheableText) cache[key(p)] = vecs[i] }
         }
         return out
     }
 
-    private fun key(p: PlaceEntity) = "${p.id}|${p.name}|${p.kind}"
+    private fun key(p: MomentCandidate) = "${p.id}|${p.anchorText}"
 
     companion object {
         const val CACHE_MAX = 64

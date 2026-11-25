@@ -332,6 +332,10 @@ fun DiagnosticsScreen(
     /** Map zones P1: the new full-height Map zones screen. Default OFF (the shipped Pause zones screen); shown only with [developerMode]. */
     mapZonesV2: Boolean = false,
     onMapZonesV2: (Boolean) -> Unit = {},
+    /** 1.4.6 pack Moments (shadow only, counts in the log): Developer toggle plus one count line. Default OFF; shown only with [developerMode]. */
+    packMoments: Boolean = false,
+    onPackMoments: (Boolean) -> Unit = {},
+    packMomentsCount: String = "",
     /** WP8: the Developer "test place and test photos" section (null = not available). Shown only with [developerMode]. */
     testPlace: (@Composable () -> Unit)? = null,
     /** Room v16 suspect descriptions: mark one, mark every one, undo the last marking. */
@@ -454,6 +458,14 @@ fun DiagnosticsScreen(
                             Text("Off (default): Settings > Privacy > Pause zones is the screen you know. On: the new full-height map where you draw an area and choose Pause or Seed. Pause zones are saved, checked and enforced exactly the same either way.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
                         }
                         Switch(checked = mapZonesV2, onCheckedChange = onMapZonesV2, modifier = Modifier.testTag("map_zones_v2_switch"))
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Pack Moments (shadow)", style = MaterialTheme.typography.titleSmall)
+                            Text("Off (default). On (needs the place shadow score switch): places from the offline and online place pack are matched like pins, in the log only. Nothing you see changes and nothing is sent.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                            if (packMoments) Text(packMomentsCount, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft, modifier = Modifier.testTag("pack_moments_count"))
+                        }
+                        Switch(checked = packMoments, onCheckedChange = onPackMoments, modifier = Modifier.testTag("pack_moments_switch"))
                     }
                     ChoiceRow("Record raw glasses sensors", rates.map { if (it == 0) "Off" else "$it Hz" }, rates.indexOf(sensorRecHz).coerceAtLeast(0), { onSensorRecHz(rates[it]) }, tag = "sensor_rec_rate")
                     if (sensorRecHz > 0) NoticeText(SensorRecCopy.warning(sensorRecHz), error = true, tag = "sensor_rec_warning")
