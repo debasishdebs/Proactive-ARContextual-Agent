@@ -62,6 +62,15 @@ object MomentLocationGraph {
     /** The number of Moments with a saved location (0 when unreadable). */
     suspend fun count(app: Context): Int = try { MemoryGraph.get(app).db.momentLocationDao().count() } catch (e: CancellationException) { throw e } catch (e: Exception) { 0 }
 
+    /** Map zones P3 density layer (read only): the saved positions in [south..north] x [west..east] between [from] and [to], at most [limit]; empty when unreadable. The caller must never log them. */
+    suspend fun pointsIn(app: Context, south: Double, west: Double, north: Double, east: Double, from: Long, to: Long, limit: Int): List<com.rokid.context.memory.db.MomentPoint> =
+        try { MemoryGraph.get(app).db.momentLocationDao().pointsIn(south, west, north, east, from, to, limit) } catch (e: CancellationException) { throw e } catch (e: Exception) { emptyList() }
+
+    /** The first and last time of any saved location, or null when there is none or it is unreadable. */
+    suspend fun timeRange(app: Context): Pair<Long, Long>? = try {
+        val d = MemoryGraph.get(app).db.momentLocationDao(); val a = d.firstAt(); val b = d.lastAt(); if (a != null && b != null) a to b else null
+    } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+
     /** "Delete saved locations": removes every `moment_location` row, under the delete side of the data-operation gate. Returns the number of rows removed. */
     suspend fun deleteAll(app: Context): Int = DataOpGate.shared.delete { MemoryGraph.get(app).db.momentLocationDao().deleteAllMomentLocations() }
 }

@@ -83,6 +83,14 @@ object DeveloperFlags {
     const val MAP_ZONES_V2 = "mapZonesV2"
     fun mapZonesV2(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MAP_ZONES_V2, false) }.getOrDefault(false)
     fun setMapZonesV2(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(MAP_ZONES_V2, on).apply() }
+    /** Map zones P2 and P3 tools (undo, snap, coordinates, Also seed, Show cells, Moments density). Nested under [MAP_ZONES_V2]: has no effect while that is off. Default OFF, also on a prefs error. */
+    const val MAP_ZONES_P23 = "mapZonesP23"
+    fun mapZonesP23(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MAP_ZONES_P23, false) }.getOrDefault(false)
+    fun setMapZonesP23(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(MAP_ZONES_P23, on).apply() }
+    /** "Show my Moments on the map" (P3): default OFF, and a read error means OFF. */
+    const val MAP_MOMENTS_DENSITY = "mapMomentsDensity"
+    fun mapMomentsDensity(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MAP_MOMENTS_DENSITY, false) }.getOrDefault(false)
+    fun setMapMomentsDensity(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(MAP_MOMENTS_DENSITY, on).apply() }
 
     fun pauseRetention(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PAUSE_RETENTION, true) }.getOrDefault(true)
     fun setPauseRetention(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PAUSE_RETENTION, on).apply() }

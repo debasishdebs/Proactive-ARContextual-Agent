@@ -49,6 +49,12 @@ data class MapZonesUiState(
     val locationGranted: Boolean = true,
     /** The draft a save in flight was submitted from; its completion is matched against this, never against whatever draft is on screen by then. */
     val submitted: SubmittedDraft? = null,
+    /** P2 (flag mapZonesP23): undo and redo of the draft shape. Dropped with the draft. */
+    val history: DraftHistory = DraftHistory(),
+    /** P2: per stored pause zone, whether it may be reshaped now (from its live state row). null = the guard is off (P1 behaviour); with a map, a zone missing from it counts as blocked. */
+    val editGuard: Map<String, ZoneEditPolicy.Block>? = null,
+    /** P2: the refusal text of the "Edit coordinates" fields. */
+    val coordError: String? = null,
 ) {
     val box: DoubleArray? get() = shape?.let { ShapeEdit.box(it) }
     val hasDraft: Boolean get() = shape != null
@@ -66,7 +72,7 @@ internal fun MapZonesUiState.afterSave(sub: SubmittedDraft, zoneName: String, te
     val done = copy(saving = false, submitted = null)
     return if (text == null) {
         val msg = "Zone \"$zoneName\" saved." + if (locationGranted) "" else " Location is not allowed yet: until it is, capture stays paused (fail closed)."
-        if (same) MapZonesUiState(layers = layers, locationGranted = locationGranted, savedTick = savedTick + 1, message = msg)
+        if (same) MapZonesUiState(layers = layers, locationGranted = locationGranted, savedTick = savedTick + 1, message = msg, editGuard = editGuard)
         else done.copy(savedTick = savedTick + 1, message = msg, messageIsError = false)
     } else if (same) done.copy(sheetError = text)
     else done.copy(message = "Zone \"$zoneName\" was not saved. $text", messageIsError = true)
@@ -76,6 +82,7 @@ class MapZonesViewModel(
     private val editor: ZoneEditor,
     private val newId: () -> String = { "zone-" + System.currentTimeMillis().toString(36) },
     private val work: CoroutineDispatcher = Dispatchers.Default,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     private val _state = MutableStateFlow(MapZonesUiState())
     val state: StateFlow<MapZonesUiState> = _state
@@ -102,20 +109,53 @@ class MapZonesViewModel(
                 DrawnShape.Circle(c.lat, c.lon, r).takeIf { ShapeEdit.box(it) != null }
             }
         }
-        if (next == null) s.copy(kind = kind) else s.copy(kind = kind, shape = next)
+        if (next == null) s.copy(kind = kind) else s.copy(kind = kind, shape = next, history = s.history.record(shape, clock()))
     }
 
     /** A new shape from a long-press drag or the "+ Draw area" default. Anything unusable is ignored. */
     fun place(shape: DrawnShape?) = edit { s ->
         if (shape == null || ShapeEdit.box(shape) == null) s.copy(drawing = false, message = "That area is too small. Drag a larger one.", messageIsError = true)
-        else s.copy(shape = shape, kind = shape.kind, drawing = false, sheet = SheetMode.NONE, selected = null, sheetError = null, message = null)
+        else s.copy(shape = shape, kind = shape.kind, drawing = false, sheet = SheetMode.NONE, selected = null, sheetError = null, message = null, history = s.history.record(s.shape, clock()), coordError = null)
     }
 
     /** A handle or body drag on the draft. */
-    fun reshape(shape: DrawnShape) = edit { s -> if (s.shape != null && ShapeEdit.box(shape) != null) s.copy(shape = shape, sheetError = null) else s }
+    fun reshape(shape: DrawnShape) = edit { s -> if (s.shape != null && ShapeEdit.box(shape) != null && shape != s.shape) s.copy(shape = shape, sheetError = null, coordError = null, history = s.history.record(s.shape, clock())) else s }
+
+    // --- P2 (flag mapZonesP23): undo, redo, exact coordinates, Also seed. Every one of them changes the DRAFT only. ---
+    fun undo() = edit { s -> val cur = s.shape; val r = if (cur == null) null else s.history.undo(cur); if (r == null) s else s.copy(shape = r.first, kind = r.first.kind, history = r.second, sheetError = null, coordError = null) }
+    fun redo() = edit { s -> val cur = s.shape; val r = if (cur == null) null else s.history.redo(cur); if (r == null) s else s.copy(shape = r.first, kind = r.first.kind, history = r.second, sheetError = null, coordError = null) }
+
+    /** Places the draft from typed numbers (a rectangle: south, west, north, east; a circle: latitude, longitude, radius). A bad entry changes nothing and says why. */
+    fun applyCoordinates(t: CoordText) = edit { s ->
+        val cur = s.shape ?: return@edit s.copy(coordError = "Draw an area first.")
+        val r = if (cur is DrawnShape.Circle) CoordinateFields.parseCircle(t.a, t.b, t.c) else CoordinateFields.parseRect(t.a, t.b, t.c, t.d)
+        when (r) {
+            is CoordResult.Error -> s.copy(coordError = r.text)
+            is CoordResult.Ok -> if (r.shape == cur) s.copy(coordError = null) else s.copy(shape = r.shape, coordError = null, sheetError = null, history = s.history.record(cur, clock()))
+        }
+    }
+
+    /** Which stored zones may be reshaped right now, from the screen's live rows (null turns the guard off). Called on every state change. */
+    fun setEditGuard(blocks: Map<String, ZoneEditPolicy.Block>?) = _state.update { if (it.editGuard == blocks) it else it.copy(editGuard = blocks) }
+
+    private fun blockOf(id: String, s: MapZonesUiState): ZoneEditPolicy.Block? = s.editGuard?.let { g -> g[id] ?: ZoneEditPolicy.Block.INSIDE_OR_UNKNOWN }
+
+    /** "Also seed this area" from the open pause draft: a separate Seed draft from the same box. The stored pause zone is not touched; the pause edit is dropped (nothing was saved). */
+    fun alsoSeedFromDraft() = edit { s ->
+        val d = AlsoSeed.draftOf(s.box) ?: return@edit s.copy(message = "Draw an area first.", messageIsError = true)
+        s.copy(shape = d, kind = ShapeKind.RECT, editingId = null, name = "", bufferText = PauseZone.DEFAULT_BUFFER_M.toString(), sheet = SheetMode.SEED, sheetError = null, coordError = null, selected = null, history = DraftHistory())
+    }
+
+    /** The same from a stored pause zone on the map (its box, not its ring). Read only: it never changes the zone. */
+    fun alsoSeedFromStored(id: String) = edit { s ->
+        val z = editor.snapshot.value.zones.firstOrNull { it.id == id } ?: editor.storedZones().firstOrNull { it.id == id }
+        val d = AlsoSeed.draftOf(z?.let { doubleArrayOf(it.south, it.west, it.north, it.east) })
+            ?: return@edit s.copy(message = ZoneWords.refusal(ZoneChange.NOT_FOUND, "replaced"), messageIsError = true)
+        s.copy(shape = d, kind = ShapeKind.RECT, editingId = null, name = "", bufferText = PauseZone.DEFAULT_BUFFER_M.toString(), sheet = SheetMode.SEED, sheetError = null, coordError = null, selected = null, history = DraftHistory())
+    }
 
     /** Drops the draft, the sheet and any edit. Makes no store call. */
-    fun cancelDraw() = edit { it.copy(shape = null, drawing = false, sheet = SheetMode.NONE, editingId = null, name = "", bufferText = PauseZone.DEFAULT_BUFFER_M.toString(), sheetError = null, saving = false) }
+    fun cancelDraw() = edit { it.copy(shape = null, drawing = false, sheet = SheetMode.NONE, editingId = null, name = "", bufferText = PauseZone.DEFAULT_BUFFER_M.toString(), sheetError = null, saving = false, history = DraftHistory(), coordError = null) }
 
     // --- the sheet ---
     fun next() = edit { if (it.shape != null && ShapeEdit.box(it.shape) != null) it.copy(sheet = if (it.editingId != null) SheetMode.PAUSE else SheetMode.CHOOSE, sheetError = null) else it }
@@ -146,7 +186,9 @@ class MapZonesViewModel(
     fun savePause() {
         val s = _state.value
         if (s.saving) return
+        if (s.sheet != SheetMode.PAUSE) return // a pause zone is saved only from the Pause sheet (never from Seed, e.g. after "Also seed")
         if (protectedNow()) { _state.update { it.copy(sheetError = ZoneWords.PROTECTED_BANNER) }; return } // re-evaluated at every tap: saving is off whenever the saved zones cannot be read
+        s.editingId?.let { id -> blockOf(id, s)?.takeIf { b -> b != ZoneEditPolicy.Block.NONE }?.let { b -> _state.update { it.copy(sheetError = ZoneEditPolicy.words(b)) }; return } } // P2 guard, checked again at every tap; the controller still decides
         val box = s.box
         if (box == null) { _state.update { it.copy(sheetError = "Draw an area first.") }; return }
         val o = ShapeEdit.outward(box)
@@ -177,7 +219,8 @@ class MapZonesViewModel(
         if (protectedNow()) { _state.update { it.copy(message = ZoneWords.PROTECTED_BANNER, messageIsError = true) }; return }
         val z = editor.snapshot.value.zones.firstOrNull { it.id == id } ?: editor.storedZones().firstOrNull { it.id == id }
         if (z == null) { _state.update { it.copy(message = ZoneWords.refusal(ZoneChange.NOT_FOUND, "replaced"), messageIsError = true) }; return }
-        _state.update { it.copy(shape = DrawnShape.Rect(z.south, z.west, z.north, z.east), kind = ShapeKind.RECT, editingId = z.id, name = z.name, bufferText = z.bufferM.toString(), sheet = SheetMode.NONE, selected = null, drawing = false, sheetError = null) }
+        blockOf(id, _state.value)?.takeIf { it != ZoneEditPolicy.Block.NONE }?.let { b -> _state.update { it.copy(message = ZoneEditPolicy.words(b), messageIsError = true) }; return }
+        _state.update { it.copy(shape = DrawnShape.Rect(z.south, z.west, z.north, z.east), kind = ShapeKind.RECT, editingId = z.id, name = z.name, bufferText = z.bufferM.toString(), sheet = SheetMode.NONE, selected = null, drawing = false, sheetError = null, history = DraftHistory(), coordError = null) }
     }
 
     fun toggleLayer(layer: MapLayer, pauseLocked: Boolean) = _state.update { it.copy(layers = MapOverview.toggle(it.layers, layer, pauseLocked)) }

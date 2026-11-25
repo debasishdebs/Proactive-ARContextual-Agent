@@ -46,6 +46,18 @@ class PlacePackTest {
     private fun pack(src: CellSource?, budget: Long = PlacePack.DEFAULT_BUDGET_BYTES) = PlacePack(db, src, budget, { t }, { logs += it }, { pauses += it })
     private fun <T> run(b: suspend () -> T): T = runBlocking { b() }
 
+    @Test fun cellStatusesReadsStoredCellsOnlyAndFetchesNothing() = run {
+        val src = FakeSource { CellFetch(listOf(fp("wd:Q1"))) }
+        val p = pack(src)
+        p.candidates(CHARMINAR_LAT, CHARMINAR_LON, true)
+        val before = src.asked.size
+        val box = Geohash5.bounds(cell)!!
+        assertEquals(mapOf(cell to CELL_OK), p.cellStatuses(box))
+        assertEquals(emptyMap<String, String>(), p.cellStatuses(GeoBox(-10.0, -10.0, -9.9, -9.9)))
+        assertEquals(emptyMap<String, String>(), p.cellStatuses(GeoBox(5.0, 5.0, 1.0, 1.0))) // invalid box
+        assertEquals(before, src.asked.size)
+    }
+
     @Test fun cacheAsideFetchesOnceThenServesFreshThenRefetchesAfter30Days() = run {
         val src = FakeSource { CellFetch(listOf(fp("wd:Q1"))) }
         val p = pack(src)

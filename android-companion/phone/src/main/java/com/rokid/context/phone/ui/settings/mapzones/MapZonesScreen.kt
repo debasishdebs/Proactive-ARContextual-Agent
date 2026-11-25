@@ -56,6 +56,7 @@ import com.rokid.context.phone.ui.settings.privacy.zones.SeedMapViewModel
 import com.rokid.context.phone.ui.settings.privacy.zones.SeedPanel
 import com.rokid.context.phone.ui.settings.privacy.zones.SeedOverlays
 import com.rokid.context.phone.ui.settings.privacy.zones.StateChip
+import com.rokid.context.phone.ui.settings.privacy.zones.MapViewport
 import com.rokid.context.phone.ui.settings.privacy.zones.ZoneRow
 import com.rokid.context.phone.ui.settings.privacy.zones.ZonesCallbacks
 import com.rokid.context.phone.ui.settings.privacy.zones.ZonesUiState
@@ -88,8 +89,16 @@ class MapZonesCallbacks(
     val dismiss: () -> Unit,
 )
 
+/** The P2 and P3 tools (flag mapZonesP23, nested under mapZonesV2). null = all of them off, and the screen is exactly the P1 screen. */
+class MapP23(
+    val undo: () -> Unit, val redo: () -> Unit, val applyCoords: (CoordText) -> Unit,
+    val alsoSeedDraft: () -> Unit, val alsoSeedStored: (String) -> Unit,
+    val cells: CellCoverageState?, val toggleCells: (String, DoubleArray) -> Unit, val dismissCells: () -> Unit,
+    val density: MomentDensityState?, val setDensity: (Boolean) -> Unit, val setWindow: (DateWindow) -> Unit, val refreshDensity: (MapViewport) -> Unit,
+)
+
 @Composable
-fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = null, seedMode: Boolean = false) {
+fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = null, seedMode: Boolean = false, p23On: Boolean = false, density: MomentDensityControl? = null) {
     val make = deps.zoneEditor
     if (make == null) { Box(Modifier.fillMaxSize().testTag("zones_unavailable")) { NoticeText("Pause zones are not available in this build.") }; return }
     val zonesVm = viewModel { ZonesViewModel(make()) }
@@ -104,6 +113,10 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
     LaunchedEffect(ui.savedTick) { if (ui.savedTick > 0 && !granted()) zonesVm.requestLocation() } // a saved zone with location off: the same prompt the shipped screen shows
     val offline = deps.offlineMap?.let { m -> remember { m() } }
     val online = deps.onlineMap?.let { m -> remember { m() } }?.let { d -> rememberOnlinePanel(d, ::granted, zonesVm::requestLocation) }
+    // p23On is the nested Developer flag mapZonesP23 (default OFF), read by the destination; density is the production control.
+    LaunchedEffect(p23On, zones.rows, zones.protectedMode) {
+        mapVm.setEditGuard(if (p23On) zones.rows.associate { it.zone.id to ZoneEditPolicy.reshapeBlock(it.chip.level, it.inside, zones.protectedMode) } else null)
+    }
     val seedVm = seed?.let { c -> viewModel(key = "seed_map") { SeedMapViewModel(c) } }
     val seedState = seedVm?.state?.collectAsStateWithLifecycle()?.value
     if (seedVm != null) {
@@ -122,12 +135,21 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
         val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) mapOffVm.importCopy(u.toString()) }
         OfflineMapPanel(mapUi, reader, { link.launch(PICK_TYPES) }, { import.launch(PICK_TYPES) }, mapOffVm::remove, mapOffVm::dismissMessage)
     }
+    val p23 = if (!p23On || density == null) null else {
+        val cellsVm = seed?.let { c -> viewModel(key = "map_cells") { CellCoverageViewModel(c) } }
+        val cellsUi = cellsVm?.state?.collectAsStateWithLifecycle()?.value
+        val densVm = viewModel(key = "map_density") { MomentDensityViewModel(density) }
+        val densUi by densVm.state.collectAsStateWithLifecycle()
+        LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { view.vp?.let { densVm.refresh(it) } } // every visit asks again, so a Forget shows at once
+        androidx.compose.runtime.DisposableEffect(densVm) { onDispose { densVm.clear() } }
+        MapP23(mapVm::undo, mapVm::redo, mapVm::applyCoordinates, mapVm::alsoSeedFromDraft, mapVm::alsoSeedFromStored, cellsUi, { id, b -> cellsVm?.toggle(id, b) }, { cellsVm?.dismissMessage() }, densUi, densVm::setOn, densVm::setWindow, densVm::onViewChanged)
+    }
     val cb = MapZonesCallbacks(
         back, mapVm::beginDraw, mapVm::cancelDraw, mapVm::setKind, mapVm::place, mapVm::reshape, mapVm::next, mapVm::choose, mapVm::back, mapVm::setName, mapVm::setBuffer, mapVm::savePause,
         { seedPanel?.seedBox?.invoke(mapVm.seedBox()) }, { l -> mapVm.toggleLayer(l, zones.rows.any { it.chip.level == ChipLevel.PAUSED || it.chip.level == ChipLevel.WARN }) },
         { t -> onTap(t, view, zones, seedPanel, mapVm) }, mapVm::select, mapVm::editPause, mapVm::dismissMessage,
     )
-    MapZonesScreen(ui, zones, seedPanel, offlinePanel, online, cb, zoneCb, view, mapVm.seedLevel())
+    MapZonesScreen(ui, zones, seedPanel, offlinePanel, online, cb, zoneCb, view, mapVm.seedLevel(), p23)
 }
 
 private fun onTap(t: TapTarget, view: MapViewState, zones: ZonesUiState, seed: SeedPanel?, vm: MapZonesViewModel) {
@@ -144,7 +166,7 @@ private fun onTap(t: TapTarget, view: MapViewState, zones: ZonesUiState, seed: S
 @Composable
 fun MapZonesScreen(
     ui: MapZonesUiState, zones: ZonesUiState, seed: SeedPanel?, offline: OfflineMapPanel?, online: OnlineMapPanel?,
-    on: MapZonesCallbacks, zoneOn: ZonesCallbacks, view: MapViewState, seedLevel: SeedLevel,
+    on: MapZonesCallbacks, zoneOn: ZonesCallbacks, view: MapViewState, seedLevel: SeedLevel, p23: MapP23? = null,
 ) {
     val seedAreas = seed?.ui?.areas.orEmpty()
     val pins = seed?.ui?.pins.orEmpty()
@@ -157,6 +179,11 @@ fun MapZonesScreen(
     val inside = zones.rows.any { it.inside }
     val fitBoxes = zones.rows.map { com.rokid.context.phone.ui.settings.privacy.zones.MapViewport.ringOf(it.zone) } + seedAreas.map { it.box }
     val reader = offline?.reader
+    // P2: while a shape is being drawn, its drag snaps to the edges of the other zones and seed areas. P3: the density blobs follow the view (debounced); both are off with the flag.
+    val snapTargets = if (p23 != null && ui.shape != null) items.filter { it.type != ItemType.PIN && it.id != ui.editingId }.map { it.box } else null
+    val dens = p23?.density
+    val vpNow = view.vp
+    if (p23 != null && dens?.on == true && vpNow != null) LaunchedEffect(vpNow.centerLat, vpNow.centerLon, vpNow.ppd, dens.window, dens.on) { p23.refreshDensity(vpNow) }
     // While a pause save is in flight the screen cannot be left: its answer (a refusal especially) must reach the sheet it was asked from.
     androidx.activity.compose.BackHandler(enabled = ui.saving) { }
     Box(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).testTag("mapzones_screen")) {
@@ -169,6 +196,7 @@ fun MapZonesScreen(
                 resize = { g -> ui.shape?.let { on.reshape(ShapeSteps.resize(it, g)) } },
                 selectNext = { ShapeSteps.nextSelection(items, ui.selected, layers)?.let { on.select(it) } },
             ),
+            snapTargets = snapTargets, doubleTapZoom = p23 != null, density = if (dens?.on == true) dens.blobs else emptyList(), cells = p23?.cells?.coverage,
         )
         Row(Modifier.align(Alignment.TopStart).fillMaxWidth().background(PcColors.SurfaceSoft.copy(alpha = 0.9f)).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(on.back, Modifier.testTag("mapzones_back"), enabled = !ui.saving) { Text("Back") }
@@ -186,10 +214,10 @@ fun MapZonesScreen(
             seed?.ui?.message?.let { m -> NoticeText(m, error = seed.ui.messageIsError, tag = "seed_message"); SecondaryAction("Dismiss", seed.dismiss, tag = "seed_message_dismiss") }
             when {
                 ui.sheet == SheetMode.CHOOSE -> ChooseSheet(ui, zones, on)
-                ui.sheet == SheetMode.PAUSE -> PauseSheet(ui, zones.protectedMode, on)
-                ui.sheet == SheetMode.SEED -> SeedSheet(ui, seed, seedLevel, on)
-                ui.shape != null -> DraftBar(ui, on)
-                else -> BrowseSheet(view, ui, zones, seed, offline, online, on, zoneOn, layers, pauseLocked, seedAreas.size, pins.size)
+                ui.sheet == SheetMode.PAUSE -> PauseSheet(ui, zones.protectedMode, on, p23, ZoneOverlap.of(ui.box, items.filter { it.type == ItemType.PAUSE }, emptyList(), ui.editingId), zones.rows.firstOrNull { it.zone.id == ui.editingId }?.zone?.let { doubleArrayOf(it.south, it.west, it.north, it.east) })
+                ui.sheet == SheetMode.SEED -> SeedSheet(ui, seed, seedLevel, on, if (p23 != null) ZoneOverlap.seedNote(ZoneOverlap.of(ui.box, items.filter { it.type == ItemType.PAUSE }, emptyList())) else null)
+                ui.shape != null -> DraftBar(ui, on, p23)
+                else -> BrowseSheet(view, ui, zones, seed, offline, online, on, zoneOn, layers, pauseLocked, seedAreas.size, pins.size, p23)
             }
         }
     }
@@ -229,7 +257,7 @@ fun MapZonesScreen(
 }
 
 @Composable
-private fun DraftBar(ui: MapZonesUiState, on: MapZonesCallbacks) {
+private fun DraftBar(ui: MapZonesUiState, on: MapZonesCallbacks, p23: MapP23?) {
     val shape = ui.shape ?: return
     Text(if (ui.editingId != null) "Reshape the zone" else "Drag the handles to size it, drag inside to move it", style = MaterialTheme.typography.titleSmall)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -237,8 +265,31 @@ private fun DraftBar(ui: MapZonesUiState, on: MapZonesCallbacks) {
         FilterChip(shape.kind == ShapeKind.CIRCLE, { on.setKind(ShapeKind.CIRCLE) }, { Text("Circle") }, Modifier.testTag("mapzones_kind_circle"), enabled = ui.editingId == null)
     }
     NoticeText(ShapeEdit.sizeText(shape), tag = "mapzones_size")
+    if (p23 != null) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            SecondaryAction("Undo", p23.undo, tag = "mapzones_undo", enabled = ui.history.canUndo && !ui.saving)
+            SecondaryAction("Redo", p23.redo, tag = "mapzones_redo", enabled = ui.history.canRedo && !ui.saving)
+        }
+        CoordinateEditor(ui, shape, p23)
+    }
     PrimaryAction("Next", on.next, tag = "mapzones_next", enabled = ui.box != null)
     SecondaryAction("Cancel", on.cancelDraw, tag = "mapzones_cancel", enabled = !ui.saving)
+}
+
+@Composable
+private fun CoordinateEditor(ui: MapZonesUiState, shape: DrawnShape, p23: MapP23) {
+    var open by remember { mutableStateOf(false) }
+    TextButton({ open = !open }, Modifier.testTag("mapzones_coords_toggle")) { Text(EditWords.COORDS) }
+    if (!open) return
+    val t = remember(shape) { CoordinateFields.textOf(shape) } // refreshed whenever the shape changes
+    var a by remember(t) { mutableStateOf(t.a) }; var b by remember(t) { mutableStateOf(t.b) }; var c by remember(t) { mutableStateOf(t.c) }; var d by remember(t) { mutableStateOf(t.d) }
+    val circle = shape is DrawnShape.Circle
+    TextFieldRow(if (circle) "Centre latitude" else "South", a, { a = it }, tag = "mapzones_coord_a", number = true)
+    TextFieldRow(if (circle) "Centre longitude" else "West", b, { b = it }, tag = "mapzones_coord_b", number = true)
+    TextFieldRow(if (circle) "Radius (metres)" else "North", c, { c = it }, tag = "mapzones_coord_c", number = true)
+    if (!circle) TextFieldRow("East", d, { d = it }, tag = "mapzones_coord_d", number = true)
+    ui.coordError?.let { NoticeText(it, error = true, tag = "mapzones_coord_error") }
+    SecondaryAction("Apply", { p23.applyCoords(CoordText(a, b, c, d)) }, tag = "mapzones_coord_apply", enabled = !ui.saving)
 }
 
 @Composable
@@ -253,23 +304,32 @@ private fun ChooseSheet(ui: MapZonesUiState, zones: ZonesUiState, on: MapZonesCa
 }
 
 @Composable
-private fun PauseSheet(ui: MapZonesUiState, unreadable: Boolean, on: MapZonesCallbacks) {
+private fun PauseSheet(ui: MapZonesUiState, unreadable: Boolean, on: MapZonesCallbacks, p23: MapP23?, overlap: Overlap, oldBox: DoubleArray?) {
     Text(if (ui.editingId != null) "Change pause zone" else "Pause zone", style = MaterialTheme.typography.titleMedium)
     TextFieldRow("Name", ui.name, on.setName, tag = "zone_name")
     TextFieldRow("Ring (metres, 0 to 50,000)", ui.bufferText, on.setBuffer, tag = "zone_buffer", number = true)
     NoticeText("Capture pauses inside the box and the ring. Within 2 km more, the glasses hold capture if the link drops. If location is off or stale, capture pauses (fail closed)." + if (ui.shape?.kind == ShapeKind.CIRCLE) " A circle is saved as the box around it." else "", tag = "mapzones_pause_note")
     ui.sheetError?.let { NoticeText(it, error = true, tag = "mapzones_sheet_error") }
+    if (p23 != null) {
+        ZoneOverlap.pauseNote(overlap)?.let { NoticeText(it, tag = "mapzones_overlap_note") }
+        val blocked = ui.editingId?.let { id -> ui.editGuard?.let { g -> g[id] ?: ZoneEditPolicy.Block.INSIDE_OR_UNKNOWN } }?.takeIf { it != ZoneEditPolicy.Block.NONE }
+        blocked?.let { b -> ZoneEditPolicy.words(b)?.let { NoticeText(it, error = true, tag = "mapzones_edit_blocked") } }
+        val nb = ui.box
+        if (ui.editingId != null && oldBox != null && nb != null && ZoneEditPolicy.shrinks(oldBox, nb)) NoticeText(ZoneEditPolicy.SHRINK_NOTICE, tag = "mapzones_shrink_note")
+        SecondaryAction(EditWords.ALSO_SEED, p23.alsoSeedDraft, tag = "mapzones_also_seed", enabled = !ui.saving && ui.box != null)
+    }
     if (unreadable) NoticeText("Pause cannot be saved while the saved zones cannot be read.", error = true, tag = "mapzones_save_disabled")
-    PrimaryAction(if (ui.saving) "Saving..." else "Save pause zone", on.savePause, tag = "mapzones_save_pause", enabled = PauseSave.enabled(ui.saving, unreadable))
+    PrimaryAction(if (ui.saving) "Saving..." else "Save pause zone", on.savePause, tag = "mapzones_save_pause", enabled = PauseSave.enabled(ui.saving, unreadable) && !(p23 != null && ui.editingId != null && (ui.editGuard?.get(ui.editingId) ?: ZoneEditPolicy.Block.INSIDE_OR_UNKNOWN) != ZoneEditPolicy.Block.NONE))
     SecondaryAction("Back", on.backSheet, tag = "mapzones_back_sheet", enabled = !ui.saving)
 }
 
 @Composable
-private fun SeedSheet(ui: MapZonesUiState, seed: SeedPanel?, level: SeedLevel, on: MapZonesCallbacks) {
+private fun SeedSheet(ui: MapZonesUiState, seed: SeedPanel?, level: SeedLevel, on: MapZonesCallbacks, overlapNote: String? = null) {
     val box = SeedEstimate.boxOf(ui.box)
     Text("Seed places", style = MaterialTheme.typography.titleMedium)
     NoticeText(SeedEstimate.line(box), error = level == SeedLevel.TOO_LARGE, tag = "seed_estimate")
     NoticeText("Only the 5 km cell keys leave the phone, never your position. Seeding needs free Wi-Fi and is refused under Offline only. The seed area has no name yet.", tag = "seed_note")
+    overlapNote?.let { NoticeText(it, tag = "mapzones_seed_overlap_note") }
     if (seed == null) NoticeText("Place Guide is not available in this build.", error = true, tag = "mapzones_seed_unavailable")
     PrimaryAction("Seed now", on.seedNow, tag = "seed_box", enabled = seed != null && !seed.ui.seeding && box != null && level != SeedLevel.TOO_LARGE && level != SeedLevel.EMPTY)
     SecondaryAction("Back", on.backSheet, tag = "mapzones_back_sheet")
@@ -278,7 +338,7 @@ private fun SeedSheet(ui: MapZonesUiState, seed: SeedPanel?, level: SeedLevel, o
 @Composable
 private fun BrowseSheet(
     view: MapViewState, ui: MapZonesUiState, zones: ZonesUiState, seed: SeedPanel?, offline: OfflineMapPanel?, online: OnlineMapPanel?, on: MapZonesCallbacks, zoneOn: ZonesCallbacks,
-    layers: Set<MapLayer>, pauseLocked: Boolean, seedCount: Int, pinCount: Int,
+    layers: Set<MapLayer>, pauseLocked: Boolean, seedCount: Int, pinCount: Int, p23: MapP23? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
     // The counts row is also the legend: each chip toggles its layer. Pause cannot be hidden while a zone is inside or near.
@@ -287,11 +347,13 @@ private fun BrowseSheet(
         FilterChip(MapLayer.SEED in layers, { on.toggleLayer(MapLayer.SEED) }, { Text("$seedCount seed") }, Modifier.testTag("mapzones_legend_seed"))
         FilterChip(MapLayer.PINS in layers, { on.toggleLayer(MapLayer.PINS) }, { Text("$pinCount pin" + if (pinCount == 1) "" else "s") }, Modifier.testTag("mapzones_legend_pins"))
     }
+    p23?.density?.let { d -> DensityControls(d, p23) }
     if (pauseLocked) NoticeText("The pause layer stays on while you are in or near a zone.", tag = "mapzones_pause_locked")
     if (zones.you == null) NoticeText("Your position is not shown: there is no fresh location fix.", tag = "zone_no_fix")
     PrimaryAction("+ Draw area", { on.place(view.vp?.let { ShapeEdit.defaultShape(it, ui.kind) }) }, tag = "mapzones_draw")
     NoticeText("Or press and hold on the map, then drag to draw.", tag = "mapzones_draw_hint")
-    SelectedCard(ui, zones, seed, on, zoneOn)
+    SelectedCard(ui, zones, seed, on, zoneOn, p23)
+    p23?.cells?.message?.let { NoticeText(it, tag = "mapzones_cells_message"); SecondaryAction("Dismiss", p23.dismissCells, tag = "mapzones_cells_message_dismiss") }
     TextButton({ expanded = !expanded }, Modifier.testTag("mapzones_expand")) { Text(if (expanded) "Hide the list" else "Show the list and map settings") }
     if (expanded) {
         Text("Your zones", style = MaterialTheme.typography.titleMedium)
@@ -309,7 +371,23 @@ private fun BrowseSheet(
 }
 
 @Composable
-private fun SelectedCard(ui: MapZonesUiState, zones: ZonesUiState, seed: SeedPanel?, on: MapZonesCallbacks, zoneOn: ZonesCallbacks) {
+private fun DensityControls(d: MomentDensityState, p23: MapP23) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(EditWords.DENSITY, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+        Switch(d.on, p23.setDensity, modifier = Modifier.testTag("mapzones_density_switch"))
+    }
+    if (!d.on) return
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilterChip(d.window == DateWindow.LAST_7_DAYS, { p23.setWindow(DateWindow.LAST_7_DAYS) }, { Text("7 days") }, Modifier.testTag("mapzones_density_7"))
+        FilterChip(d.window == DateWindow.LAST_30_DAYS, { p23.setWindow(DateWindow.LAST_30_DAYS) }, { Text("30 days") }, Modifier.testTag("mapzones_density_30"))
+        FilterChip(d.window == DateWindow.ALL, { p23.setWindow(DateWindow.ALL) }, { Text("All") }, Modifier.testTag("mapzones_density_all"))
+    }
+    if (d.summary.isNotEmpty()) NoticeText(d.summary, tag = "mapzones_density_summary")
+    if (d.capped) NoticeText(MomentDensity.CAPPED, tag = "mapzones_density_capped")
+}
+
+@Composable
+private fun SelectedCard(ui: MapZonesUiState, zones: ZonesUiState, seed: SeedPanel?, on: MapZonesCallbacks, zoneOn: ZonesCallbacks, p23: MapP23? = null) {
     val sel = ui.selected ?: return
     when (sel.kind) {
         SelectionKind.PAUSE -> {
@@ -318,8 +396,12 @@ private fun SelectedCard(ui: MapZonesUiState, zones: ZonesUiState, seed: SeedPan
             StateChip(r.chip, Modifier.testTag("mapzones_sel_chip"))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Switch(r.zone.enabled, { zoneOn.setEnabled(r.zone.id, it) }, modifier = Modifier.testTag("zone_switch_${r.zone.id}"))
-                SecondaryAction("Edit shape", { on.editPause(r.zone.id) }, tag = "mapzones_sel_edit", enabled = !zones.protectedMode)
+                SecondaryAction("Edit shape", { on.editPause(r.zone.id) }, tag = "mapzones_sel_edit", enabled = !zones.protectedMode && (p23 == null || ZoneEditPolicy.reshapeBlock(r.chip.level, r.inside, zones.protectedMode) == ZoneEditPolicy.Block.NONE))
                 SecondaryAction("Delete", { zoneOn.askDelete(r.zone.id) }, tag = "zone_delete_${r.zone.id}")
+            }
+            if (p23 != null) {
+                ZoneEditPolicy.words(ZoneEditPolicy.reshapeBlock(r.chip.level, r.inside, zones.protectedMode))?.let { NoticeText(it, tag = "mapzones_sel_edit_blocked") }
+                SecondaryAction(EditWords.ALSO_SEED, { p23.alsoSeedStored(r.zone.id) }, tag = "mapzones_sel_also_seed")
             }
         }
         SelectionKind.SEED -> {
@@ -329,6 +411,11 @@ private fun SelectedCard(ui: MapZonesUiState, zones: ZonesUiState, seed: SeedPan
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SecondaryAction("Seed again", { s.seedBox(SeedEstimate.boxOf(a.box)) }, tag = "mapzones_sel_seed_again", enabled = !s.ui.seeding)
                 SecondaryAction("Remove", { s.askRemove(a.id) }, tag = "seed_remove_${a.id}")
+            }
+            if (p23 != null) {
+                val shown = p23.cells?.areaId == a.id
+                SecondaryAction(if (shown) EditWords.HIDE_CELLS else EditWords.SHOW_CELLS, { p23.toggleCells(a.id, a.box) }, tag = "mapzones_sel_cells")
+                p23.cells?.coverage?.takeIf { shown }?.let { NoticeText(it.summary + ". Blue: ready. Amber: partial. Red dashed: not fetched.", tag = "mapzones_cells_summary") }
             }
         }
     }

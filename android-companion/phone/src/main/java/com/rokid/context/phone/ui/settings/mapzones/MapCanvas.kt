@@ -118,6 +118,11 @@ fun MapCanvas(
     onTap: (TapTarget) -> Unit,
     modifier: Modifier = Modifier,
     access: MapAccessActions? = null,
+    /** P2 and P3 (flag mapZonesP23), all default off: edges to snap a drag to, double-tap zoom, the Moments density blobs and the per-cell colours of one seed area. */
+    snapTargets: List<DoubleArray>? = null,
+    doubleTapZoom: Boolean = false,
+    density: List<DensityBlob> = emptyList(),
+    cells: Coverage? = null,
 ) {
     val measurer = rememberTextMeasurer()
     val fitSig = items.map { it.id }
@@ -161,6 +166,9 @@ fun MapCanvas(
     val onNewShapeNow by rememberUpdatedState(onNewShape)
     val onReshapeNow by rememberUpdatedState(onReshape)
     val onTapNow by rememberUpdatedState(onTap)
+    val snapNow by rememberUpdatedState(snapTargets)
+    val dblNow by rememberUpdatedState(doubleTapZoom)
+    var lastTap by remember { mutableStateOf<Triple<Long, Float, Float>?>(null) }
     var preview by remember { mutableStateOf<Pair<Offset, Offset>?>(null) }
 
     Box(Modifier.then(modifier).onSizeChanged { view.size = Size(it.width.toFloat(), it.height.toFloat()); view.vp = view.vp?.resized(view.size.width, view.size.height) }.semantics {
@@ -195,8 +203,9 @@ fun MapCanvas(
                         down.consume()
                         drag(down.id) { change ->
                             val v = view.vp ?: return@drag
-                            val next = if (hit is Hit.OnHandle) ShapeEdit.resize(cur, hit.handle, v.toLatLon(change.position.x, change.position.y))
+                            val raw = if (hit is Hit.OnHandle) ShapeEdit.resize(cur, hit.handle, v.toLatLon(change.position.x, change.position.y))
                             else { val a = v.toLatLon(last.x, last.y); val b = v.toLatLon(change.position.x, change.position.y); ShapeEdit.move(cur, b.lat - a.lat, b.lon - a.lon) }
+                            val next = snapNow?.let { t -> ShapeSnap.snap(cur, raw, t, v, ShapeSnap.SNAP_DP.dp.toPx()) } ?: raw
                             last = change.position
                             if (next != cur) { cur = next; onReshapeNow(next) }
                             change.consume()
@@ -219,6 +228,14 @@ fun MapCanvas(
                     }
                     if (decision == TouchDecision.WAIT) decision = if (canDrawNow) TouchDecision.DRAW else TouchDecision.PAN
                     if (decision == TouchDecision.TAP) {
+                        val now = System.currentTimeMillis()
+                        val prevTap = lastTap
+                        if (dblNow && DoubleTap.isDouble(prevTap?.first, prevTap?.second ?: 0f, prevTap?.third ?: 0f, now, down.position.x, down.position.y, viewConfiguration.touchSlop * 4)) {
+                            lastTap = null
+                            view.vp = view.vp?.zoomed(DoubleTap.FACTOR, down.position.x, down.position.y)
+                            return@awaitEachGesture
+                        }
+                        lastTap = Triple(now, down.position.x, down.position.y)
                         onTapNow(MapTap.at(itemsNow, v0, down.position.x, down.position.y, minShape, touch, layersNow))
                         return@awaitEachGesture
                     }
@@ -264,6 +281,12 @@ fun MapCanvas(
             }
             if (!painted) drawGrid(v, measurer)
             val minPx = SeedOverlays.MIN_SHAPE_DP.dp.toPx()
+            for (b in density) {
+                val p = v.toPx(b.lat, b.lon)
+                if (!(p.x.isFinite() && p.y.isFinite()) || p.x < -80f || p.y < -80f || p.x > size.width + 80f || p.y > size.height + 80f) continue
+                val col = Color(MomentDensity.colorOf(b.level)); val rad = (20f + 24f * b.level).dp.toPx()
+                drawCircle(androidx.compose.ui.graphics.Brush.radialGradient(listOf(col.copy(alpha = 0.6f), col.copy(alpha = 0f)), Offset(p.x, p.y), rad), rad, Offset(p.x, p.y))
+            }
             if (MapLayer.SEED in layers) for (a in seedAreas) if (!SeedOverlays.isTiny(v, a.box, minPx)) { drawSeedArea(v, a); drawDots(v, a.box, TypeLooks.SEED) }
             if (MapLayer.PAUSE in layers) for (r in zones) {
                 val z = r.zone
@@ -271,6 +294,13 @@ fun MapCanvas(
                 if (SeedOverlays.isTiny(v, box, minPx)) continue
                 drawZone(v, z, measurer, active = z.enabled)
                 if (z.enabled) drawHatch(v, box, TypeLooks.PAUSE)
+            }
+            cells?.cells?.forEach { c ->
+                val tl = v.toPx(c.box[2], c.box[1]); val br = v.toPx(c.box[0], c.box[3])
+                if (!(tl.x.isFinite() && tl.y.isFinite() && br.x.isFinite() && br.y.isFinite()) || br.x < 0f || tl.x > size.width || br.y < 0f || tl.y > size.height) return@forEach
+                val col = when (c.state) { CellState.OK -> Color(0xFF1E6FD9); CellState.PARTIAL -> Color(0xFFF59E0B); CellState.MISSING -> Color(0xFFD32F2F) }
+                if (c.state != CellState.MISSING) drawRect(col.copy(alpha = 0.3f), Offset(tl.x, tl.y), Size(br.x - tl.x, br.y - tl.y))
+                drawRect(col, Offset(tl.x, tl.y), Size(br.x - tl.x, br.y - tl.y), style = Stroke(1.dp.toPx(), pathEffect = if (c.state == CellState.OK) null else PathEffect.dashPathEffect(floatArrayOf(8f, 6f))))
             }
             for (c in MapOverview.clusters(items, v, minPx, layers)) drawChip(v, c, measurer)
             selected?.let { s -> items.firstOrNull { it.id == s.id && (it.type == ItemType.PAUSE) == (s.kind == SelectionKind.PAUSE) }?.let { drawSelected(v, it.box, minPx) } }

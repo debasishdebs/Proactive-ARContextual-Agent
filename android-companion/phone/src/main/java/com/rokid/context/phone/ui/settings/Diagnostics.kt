@@ -332,6 +332,9 @@ fun DiagnosticsScreen(
     /** Map zones P1: the new full-height Map zones screen. Default OFF (the shipped Pause zones screen); shown only with [developerMode]. */
     mapZonesV2: Boolean = false,
     onMapZonesV2: (Boolean) -> Unit = {},
+    /** Map zones P2 and P3 tools (undo, snap, coordinates, Also seed, Show cells, Moments density). Nested under [mapZonesV2]. Default OFF; shown only with [developerMode]. */
+    mapZonesP23: Boolean = false,
+    onMapZonesP23: (Boolean) -> Unit = {},
     /** 1.4.6 pack Moments (shadow only, counts in the log): Developer toggle plus one count line. Default OFF; shown only with [developerMode]. */
     packMoments: Boolean = false,
     onPackMoments: (Boolean) -> Unit = {},
@@ -469,6 +472,13 @@ fun DiagnosticsScreen(
                     }
                     ChoiceRow("Record raw glasses sensors", rates.map { if (it == 0) "Off" else "$it Hz" }, rates.indexOf(sensorRecHz).coerceAtLeast(0), { onSensorRecHz(rates[it]) }, tag = "sensor_rec_rate")
                     if (sensorRecHz > 0) NoticeText(SensorRecCopy.warning(sensorRecHz), error = true, tag = "sensor_rec_warning")
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Map zones tools (P2 and P3)", style = MaterialTheme.typography.titleSmall)
+                            Text("Only with the new Map zones screen. Adds undo, snapping, typed coordinates, Also seed this area, Show cells and the Moments-on-the-map layer (which has its own switch, off by default). Pause zones are saved and enforced exactly the same.", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(checked = mapZonesP23, onCheckedChange = onMapZonesP23, modifier = Modifier.testTag("map_zones_p23_switch"))
+                    }
                     ChoiceRow("Keep canvas pairing", CanvasSessionCopy.HOURS.map { CanvasSessionCopy.label(it) }, CanvasSessionCopy.HOURS.indexOf(devSessionHours).coerceAtLeast(0), { onDevSessionHours(CanvasSessionCopy.HOURS[it]) }, tag = "dev_session_hours")
                     NoticeText(CanvasSessionCopy.note(devSessionHours), tag = "dev_session_note")
                     testPlace?.invoke()
