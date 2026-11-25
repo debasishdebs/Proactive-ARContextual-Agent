@@ -11,5 +11,6 @@ git filter-repo --force --invert-paths \
  --path-glob 'docs/superpowers/plans/handoffs/trip-gap-analysis-*.md' \
  --path-glob 'docs/superpowers/plans/handoffs/retention-redaction-analysis-*.md' >/dev/null 2>&1
 git remote add origin git@github.com:debasishdebs/Proactive-ARContextual-Agent.git
+git fetch -q origin "refs/heads/$TARGET:refs/remotes/origin/$TARGET" 2>/dev/null || true
 git push --force-with-lease origin "$BR:refs/heads/$TARGET"
 rm -rf "$(dirname "$T")"
