@@ -23,16 +23,16 @@ class CentroidShadow(
         val found = centroids(spaceId, pinIds).byPin
         if (!live()) return
         val r = CandidateScorer.score(query, found.map { (id, v) -> CandidateScorer.Candidate(id, imageRefs = listOf(v)) })
-        log(line(spaceId, pinIds.size, found.size, r))
-    }
-
-    internal fun line(spaceId: String, pins: Int, withCentroid: Int, r: CandidateScorer.Result): String {
         val top = r.top1?.milli
         val space = MatchThresholds.spaceOf(spaceId)
+        val spaceName = space?.name?.lowercase() ?: "na"
         val band = if (space == null) "na" else MatchThresholds.band(spaceId, r).name.lowercase()
         val medium = top != null && top >= config.mediumLowMilli && top < config.mediumHighMilli
-        return "place shadow3 v=1 thrV=${MatchThresholds.VERSION} space=${space?.name?.lowercase() ?: "na"} pins=$pins withCentroid=$withCentroid noCentroid=${pins - withCentroid} ranked=${r.ranked.size} " +
-            "score=${top?.let { PlaceShadow.scoreBucket(it) } ?: "na"} margin=${PlaceShadow.marginBucket(r.margin)} band=$band medium=$medium"
+        val scoreBucket = top?.let { PlaceShadow.scoreBucket(it) } ?: "na"
+        val marginBucket = PlaceShadow.marginBucket(r.margin)
+        val noCentroid = pinIds.size - found.size
+        // One literal (LogContentScan): counts, enum words and buckets only; never an id, a name, a coordinate or a per-place score.
+        log("place shadow3 v=1 thrV=${MatchThresholds.VERSION} space=$spaceName pins=${pinIds.size} withCentroid=${found.size} noCentroid=$noCentroid ranked=${r.ranked.size} score=$scoreBucket margin=$marginBucket band=$band medium=$medium")
     }
 }
 
