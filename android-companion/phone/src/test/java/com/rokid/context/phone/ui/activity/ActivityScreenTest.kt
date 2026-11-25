@@ -130,7 +130,8 @@ class ActivityScreenTest {
     /** Every top card opens the list of its kind over the period shown (a key, never ids; an empty kind too: its list shows the empty state). */
     @Test fun eachTopCardOpensItsKindOverThePeriodShown() {
         show(ActivityUiState(period = Period.MONTH, header = "October", status = status, tiles = Tiles(2, 1, 1, 0), today = TODAY))
-        listOf("Frames", "Memories", "Answers", "Nudges").forEach { compose.onNodeWithText(it).performClick() }
+        // The level chips sit above the tiles, so a small screen scrolls to each card first.
+        listOf("Frames", "Memories", "Answers", "Nudges").forEach { compose.onNodeWithTag("activity_list").performScrollToNode(hasText(it)); compose.onNodeWithText(it).performClick() }
         assertEquals(listOf(ListKind.FRAMES, ListKind.MEMORIES, ListKind.ANSWERS, ListKind.NUDGES).map { it to Period.MONTH }, lists)
     }
 }

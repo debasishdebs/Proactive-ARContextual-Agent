@@ -60,10 +60,10 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
 
     composable(Routes.ACTIVITY, arguments = listOf(navArgument("period") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
         val period = Period.parse(entry.arguments?.getString("period"))
-        val vm = viewModel { ActivityViewModel(period, deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.memory.marks, deps.clock, deps.storagePct, deps.zone, index = deps.index, sort = deps.activitySort) }
+        val vm = viewModel { ActivityViewModel(period, deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.memory.marks, deps.clock, deps.storagePct, deps.zone, index = deps.index, sort = deps.activitySort, granularity = deps.activityGranularity, scenes = deps.memory.scenes) }
         val state by vm.state.collectAsStateWithLifecycle()
         ActivityScreen(
-            state, onSelectPeriod = vm::selectPeriod, onSelectSort = vm::selectSort, onTogglePause = vm::togglePause, onBannerAction = { a -> bannerNav(a, vm::onBannerAction) },
+            state, onSelectPeriod = vm::selectPeriod, onSelectSort = vm::selectSort, onSelectGranularity = vm::selectGranularity, onTogglePause = vm::togglePause, onBannerAction = { a -> bannerNav(a, vm::onBannerAction) },
             onPreview = { ids -> nav.navigate(previewMoment(ids, PreviewMode.OPEN).route) }, onOpenList = { kind, period -> nav.navigate(listView(kind, period, deps.today())) },
             onOpenDay = { nav.navigate(Routes.day(it)) },
             onSearchPhotos = { nav.navigate(Routes.photos()) },
