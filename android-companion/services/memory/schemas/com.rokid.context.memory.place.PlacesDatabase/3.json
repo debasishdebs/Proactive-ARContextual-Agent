@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 3,
-    "identityHash": "0cb813ec4399e75634225e8b8ce8cc37",
+    "identityHash": "9e5855bdc3e59a6e357c33996a04d248",
     "entities": [
       {
         "tableName": "place",
@@ -173,7 +173,7 @@
       },
       {
         "tableName": "area",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`blueZoneId` TEXT NOT NULL, `south` REAL NOT NULL, `west` REAL NOT NULL, `north` REAL NOT NULL, `east` REAL NOT NULL, `seededAt` INTEGER NOT NULL, `status` TEXT NOT NULL, PRIMARY KEY(`blueZoneId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`blueZoneId` TEXT NOT NULL, `south` REAL NOT NULL, `west` REAL NOT NULL, `north` REAL NOT NULL, `east` REAL NOT NULL, `seededAt` INTEGER NOT NULL, `status` TEXT NOT NULL, `name` TEXT, PRIMARY KEY(`blueZoneId`))",
         "fields": [
           {
             "fieldPath": "blueZoneId",
@@ -216,6 +216,12 @@
             "columnName": "status",
             "affinity": "TEXT",
             "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": false
           }
         ],
         "primaryKey": {
@@ -231,7 +237,7 @@
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '0cb813ec4399e75634225e8b8ce8cc37')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '9e5855bdc3e59a6e357c33996a04d248')"
     ]
   }
 }

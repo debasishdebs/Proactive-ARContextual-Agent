@@ -68,6 +68,8 @@ Each check prints PASS / WARN / FAIL / UNKNOWN with a reason; exit 0 = no FAIL, 
    - `db version` / `db integrity`: a host COPY of `context.db`, only when the header and the app's own `db_encrypted` flag both say plaintext (same pairing rule as the install script) and `sqlite3` exists: `user_version` must be 18 and `integrity_check` ok; also `db rows moment_location`, `db rows place_card_log` and `db rows scene_centroid` and `db rows model_attribution` (row counts only, UNKNOWN if unreadable). v18 cannot be downgraded: the rollback is `v17-upgrade-recovery.md` section 4 (restore the pre-install backup). Encrypted (the normal case) = UNKNOWN, inconsistent = WARN.
    Not verifiable without a device: the real `ls -l` / prefs / log formats on a phone (parsers follow the source and the emulator-style samples), the 70-minute heartbeat on a real run, and everything on a non-debuggable build.
 
+places.db v3 (v18 WP11b adds the nullable `area.name`; the phone is still on v2): places.db is SQLCipher, so the post-install check cannot read it and no host copy can be rehearsed. Only an emulator run proves the encrypted v2 -> v3 open: install the previous build, seed one area, install this build, open Place Guide and confirm the seeded area is still listed (its name is NULL and nothing visible changes). The unit tests prove the SQL on plain SQLite only.
+
 Emulator run (phone only, 1.0.0 code 4 candidate): 20 PASS, 1 WARN (no battery exemption on the emulator), 0 FAIL; a wrong APK folder gave FAIL on sha256 and a deliver_hud flag set ON gave FAIL on safety defaults (both exit 1).
 
 ## Link health report (read-only)

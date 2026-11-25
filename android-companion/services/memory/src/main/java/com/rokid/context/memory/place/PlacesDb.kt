@@ -50,6 +50,8 @@ data class AreaEntity(
     val south: Double, val west: Double, val north: Double, val east: Double,
     val seededAt: Long,
     val status: String,
+    /** v18 WP11b: the owner's own name for the seed area (a later rename screen sets it); null = none, and nothing shows it yet. Survives a re-seed ([PlacePack.writeArea] carries it over). */
+    val name: String? = null,
 ) {
     val box: GeoBox get() = GeoBox(south, west, north, east)
 }
@@ -103,6 +105,9 @@ interface PlacesDao {
     @Query("SELECT * FROM area ORDER BY blueZoneId") suspend fun areas(): List<AreaEntity>
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putArea(row: AreaEntity)
     @Query("DELETE FROM area WHERE blueZoneId = :id") suspend fun deleteArea(id: String): Int
+    /** v18 WP11b: sets (or clears, with null) the name of an existing area; 0 rows = no such area. */
+    @Query("UPDATE area SET name = :name WHERE blueZoneId = :id") suspend fun setAreaName(id: String, name: String?): Int
+    @Query("SELECT name FROM area WHERE blueZoneId = :id") suspend fun areaName(id: String): String?
 }
 
 /**
@@ -125,10 +130,14 @@ abstract class PlacesDatabase : RoomDatabase() {
             }
         }
 
-        /** v2 -> v3 (v18 WP3): the card history moved to context.db, so the table (and its two indexes) go. The pack rows, cells and areas are not touched; no destructive fallback exists. A v1 file chains 1 -> 2 -> 3. */
+        /**
+         * v2 -> v3 (v18 WP3, WP11b): the card history moved to context.db, so the table (and its two indexes) go; and `area` gains the nullable `name` (the owner's name for a seed area, no default, every existing area gets NULL).
+         * The pack rows, cells and areas are otherwise not touched; no destructive fallback exists. A v1 file chains 1 -> 2 -> 3. The SQL equals the exported 3.json. places.db is SQLCipher: this runs encrypted only on a device or emulator.
+         */
         val MIGRATION_PLACES_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("DROP TABLE IF EXISTS `place_card_log`")
+                db.execSQL("ALTER TABLE `area` ADD COLUMN `name` TEXT")
             }
         }
 

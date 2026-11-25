@@ -238,6 +238,21 @@ class PlacePackTest {
         assertEquals(cells.size, again.skipped); assertEquals(cells, src.asked)
     }
 
+    // v18 WP11b: the seed-area name is null by default, set and cleared by setAreaName (trimmed, bounded), and survives a re-seed (the seed rewrites the area row)
+    @Test fun anAreaNameDefaultsToNullAndSurvivesAReSeed() = runBlocking {
+        val src = FakeSource { c -> CellFetch(listOf(fp("$c:p", lat = Geohash5.bounds(c)!!.south + 0.01, lon = Geohash5.bounds(c)!!.west + 0.01))) }
+        val p = pack(src)
+        val box = GeoBox(17.30, 78.40, 17.40, 78.50)
+        assertFalse("no such area", p.setAreaName("hyd", "x"))
+        p.seedArea("hyd", box)
+        assertEquals(null, p.areas().single().name)
+        assertTrue(p.setAreaName("hyd", "  Old town  ")); assertEquals("Old town", p.areas().single().name)
+        p.seedArea("hyd", GeoBox(17.30, 78.40, 17.45, 78.55)) // a re-seed rewrites the row: the name stays
+        assertEquals("Old town", p.areas().single().name)
+        assertTrue(p.setAreaName("hyd", "x".repeat(500))); assertEquals(PlacePack.MAX_AREA_NAME, p.areas().single().name!!.length)
+        assertTrue(p.setAreaName("hyd", "   ")); assertEquals(null, p.areas().single().name)
+    }
+
     @Test fun aFailedCellMakesTheAreaPartialAndTheRestGoOn() = run {
         val box = GeoBox(17.30, 78.40, 17.36, 78.46)
         val cells = Geohash5.cellsCovering(box)

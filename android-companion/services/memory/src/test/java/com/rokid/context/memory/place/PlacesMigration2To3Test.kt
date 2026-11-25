@@ -16,7 +16,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * places.db v2 -> v3 (v18 WP3): the card history moved to context.db, so [PlacesDatabase.MIGRATION_PLACES_2_3] drops `place_card_log`; pins, cells and areas survive. The 1 -> 2 -> 3 chain (a v1 phone) is tested here too.
+ * places.db v2 -> v3 (v18 WP3): the card history moved to context.db, so [PlacesDatabase.MIGRATION_PLACES_2_3] drops `place_card_log` and `area` gains the nullable `name` (v18 WP11b); pins, cells and areas survive with a NULL name. places.db is SQLCipher: the encrypted open is rehearsed on the emulator only, this test proves the SQL on plain SQLite. The 1 -> 2 -> 3 chain (a v1 phone) is tested here too.
  * Files are built from the exported `1.json` / `2.json`; the result is validated against `3.json`. Synthetic data only.
  */
 @RunWith(AndroidJUnit4::class)
@@ -40,7 +40,9 @@ class PlacesMigration2To3Test {
         assertEquals(2, count(db, "place")); assertEquals(1, count(db, "cell")); assertEquals(1, count(db, "area"))
         db.query("SELECT name, pinned FROM place WHERE id = 'user:00000000-0000-0000-0000-000000000001'").use { assertTrue(it.moveToFirst()); assertEquals("Room A1", it.getString(0)); assertEquals(1, it.getInt(1)) }
         db.query("SELECT status FROM cell WHERE geohash5 = 's0000'").use { assertTrue(it.moveToFirst()); assertEquals("OK", it.getString(0)) }
-        db.query("SELECT status FROM area").use { assertTrue(it.moveToFirst()); assertEquals("DONE", it.getString(0)) }
+        db.query("SELECT status, name FROM area").use { assertTrue(it.moveToFirst()); assertEquals("DONE", it.getString(0)); assertTrue("an existing area has no name", it.isNull(1)) }
+        db.execSQL("UPDATE area SET name = 'Old town' WHERE blueZoneId = 'z1'") // the column takes a value
+        db.query("SELECT name FROM area WHERE blueZoneId = 'z1'").use { assertTrue(it.moveToFirst()); assertEquals("Old town", it.getString(0)) }
         assertEquals(setOf("place", "cell", "area"), tables(db)); assertEquals(0, indexes(db))
     }
 
@@ -63,6 +65,6 @@ class PlacesMigration2To3Test {
         helper.createDatabase(name, 2).use { seedPack(it) }
         val ctx = ApplicationProvider.getApplicationContext<Context>()
         val room = Room.databaseBuilder(ctx, PlacesDatabase::class.java, name).addMigrations(PlacesDatabase.MIGRATION_PLACES_1_2, PlacesDatabase.MIGRATION_PLACES_2_3).allowMainThreadQueries().build()
-        try { assertEquals(2, room.dao().placeCount()); assertEquals(1, room.dao().cells().size); assertEquals(1, room.dao().areas().size) } finally { room.close() }
+        try { assertEquals(2, room.dao().placeCount()); assertEquals(1, room.dao().cells().size); assertEquals(1, room.dao().areas().size); assertEquals(null, room.dao().areas().single().name); assertEquals(1, room.dao().setAreaName("z1", "Fort")); assertEquals("Fort", room.dao().areaName("z1")) } finally { room.close() }
     }
 }

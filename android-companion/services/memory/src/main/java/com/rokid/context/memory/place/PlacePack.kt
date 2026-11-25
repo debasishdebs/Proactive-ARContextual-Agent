@@ -117,6 +117,9 @@ class PlacePack(
 
     suspend fun areas(): List<AreaEntity> = dao.areas()
 
+    /** v18 WP11b: names (or, with null or blank, un-names) a seed area; trimmed and bounded. False when no such area. The rename screen is a later WP. */
+    suspend fun setAreaName(blueZoneId: String, name: String?): Boolean = fetchLock.withLock { dao.setAreaName(blueZoneId, name?.trim()?.take(MAX_AREA_NAME)?.takeIf { it.isNotEmpty() }) > 0 }
+
     /** Map zones "Show cells" (read only): the stored status of each 5 km cell that touches [box] (a cell with no row is absent). Nothing is fetched. */
     suspend fun cellStatuses(box: GeoBox): Map<String, String> {
         val want = Geohash5.cellsCovering(box).toHashSet()
@@ -239,7 +242,7 @@ class PlacePack(
     }
 
     /** The area row, written under the fetch lock and only while this seed is still wanted: a removal cancels the seed first, so its last write cannot bring the area back. */
-    private suspend fun writeArea(row: AreaEntity) = fetchLock.withLock { currentCoroutineContext().ensureActive(); dao.putArea(row) }
+    private suspend fun writeArea(row: AreaEntity) = fetchLock.withLock { currentCoroutineContext().ensureActive(); dao.putArea(if (row.name == null) row.copy(name = dao.areaName(row.blueZoneId)) else row) } // a seed rewrite keeps the owner's name (v18 WP11b)
 
     private suspend fun seedBody(blueZoneId: String, bbox: GeoBox, cells: List<String>, src: CellSource, onProgress: (Int, Int) -> Unit): SeedResult {
         writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_SEEDING))
@@ -410,6 +413,8 @@ class PlacePack(
         ids.chunked(SQL_CHUNK).flatMap { call(it) }
 
     companion object {
+        /** The longest stored seed-area name (v18 WP11b). */
+        const val MAX_AREA_NAME = 80
         const val DEFAULT_BUDGET_BYTES = 50L * 1024 * 1024
         /** The budgets the screen offers (MB). */
         val BUDGET_CHOICES_MB = listOf(25, 50, 100, 200)

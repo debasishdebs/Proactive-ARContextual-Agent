@@ -115,7 +115,7 @@ object SeedGate {
 
 /** The zones map's view of Place Guide: the seeded areas and pins to draw, and the existing seed path ([guide].seed, with its Offline only and Wi-Fi refusals) for a drawn box. */
 class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGuideControl) : com.rokid.context.phone.ui.settings.privacy.zones.SeedMapControl {
-    override suspend fun areas() = PlaceGraph.readyPack(app).areas().map { com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, it.status) }
+    override suspend fun areas() = PlaceGraph.readyPack(app).areas().map { com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, it.status, it.name) }
     override suspend fun pins() = guide.pinning?.pins().orEmpty().map { com.rokid.context.phone.ui.settings.privacy.zones.PinInfo(it.lat, it.lon, it.radiusM) }
     override suspend fun seed(box: GeoBox) = guide.seed(box)
     override suspend fun remove(id: String) { PlaceGraph.readyPack(app).removeArea(id) }

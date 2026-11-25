@@ -22,7 +22,9 @@ import kotlin.math.floor
 // Pause zones are NOT touched here: their store, evaluator and save path are unchanged.
 
 /** A seeded area as the map needs it: id, box and the pack's status text. Held on screen only; never logged. */
-data class SeedAreaInfo(val id: String, val south: Double, val west: Double, val north: Double, val east: Double, val status: String) {
+data class SeedAreaInfo(val id: String, val south: Double, val west: Double, val north: Double, val east: Double, val status: String,
+    /** v18 WP11b: the owner's name for the area, read only; null until a rename screen exists. Not shown yet. */
+    val name: String? = null) {
     val box: DoubleArray get() = doubleArrayOf(south, west, north, east)
 }
 
