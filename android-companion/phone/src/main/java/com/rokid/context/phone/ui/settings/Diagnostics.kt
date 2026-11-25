@@ -339,6 +339,12 @@ fun DiagnosticsScreen(
     packMoments: Boolean = false,
     onPackMoments: (Boolean) -> Unit = {},
     packMomentsCount: String = "",
+    /** Canvas v2.2 model, classifier, router and rule nodes (Developer; default OFF). With it OFF the node types do not exist for the canvas. */
+    canvasModelNodes: Boolean = false,
+    onCanvasModelNodes: (Boolean) -> Unit = {},
+    /** Canvas v2.1 Test run building blocks (Developer; default OFF). No screen uses it yet: the switch is read by the Test run policy only. */
+    canvasTestRun: Boolean = false,
+    onCanvasTestRun: (Boolean) -> Unit = {},
     /** WP8: the Developer "test place and test photos" section (null = not available). Shown only with [developerMode]. */
     testPlace: (@Composable () -> Unit)? = null,
     /** Room v16 suspect descriptions: mark one, mark every one, undo the last marking. */
@@ -480,6 +486,20 @@ fun DiagnosticsScreen(
                         Switch(checked = mapZonesP23, onCheckedChange = onMapZonesP23, modifier = Modifier.testTag("map_zones_p23_switch"))
                     }
                     ChoiceRow("Keep canvas pairing", CanvasSessionCopy.HOURS.map { CanvasSessionCopy.label(it) }, CanvasSessionCopy.HOURS.indexOf(devSessionHours).coerceAtLeast(0), { onDevSessionHours(CanvasSessionCopy.HOURS[it]) }, tag = "dev_session_hours")
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Canvas model nodes", style = MaterialTheme.typography.titleSmall)
+                            Text("Off (default). On: the canvas offers Classify, Route by model and Rule table. They are for experiments only (never published), and under Offline only no remote model is called.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                        }
+                        Switch(checked = canvasModelNodes, onCheckedChange = onCanvasModelNodes, modifier = Modifier.testTag("canvas_model_nodes_switch"))
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Canvas Test run (building blocks)", style = MaterialTheme.typography.titleSmall)
+                            Text("Off (default). Gates the dry-run Test run logic (window picker, E2E record, live tap limits). No screen uses it yet; nothing is sent or written.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                        }
+                        Switch(checked = canvasTestRun, onCheckedChange = onCanvasTestRun, modifier = Modifier.testTag("canvas_test_run_switch"))
+                    }
                     NoticeText(CanvasSessionCopy.note(devSessionHours), tag = "dev_session_note")
                     testPlace?.invoke()
                 }
