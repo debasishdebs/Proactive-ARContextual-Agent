@@ -34,11 +34,11 @@ class MomentLocationImport(
         val dao = db.momentLocationDao()
         val moments = db.momentDao()
         val s3 = db.canvasSlice3Dao()
-        val zoneList = if (rows.isEmpty()) emptyList() else zones()
         for (chunk in rows.chunked(CHUNK)) {
             val rev = s3.frameForgetRev(); val gen = generation()
             val now = wall()
             db.withTransaction {
+                val zoneList = zones() // re-read per chunk, inside its transaction: a zone that became active between chunks blocks this one
                 for (r in chunk) {
                     val reason = when {
                         !enabled() -> "setting_off"

@@ -124,7 +124,7 @@ class DevTestImport(
             return DevTestImport(
                 pinning,
                 ingest = { bytes -> ingestBytes(app, capture, bytes) },
-                fetch = { url -> DevImageFetch.fetch(Http.modelClient(DevImageFetch.TIMEOUT_SEC), url) },
+                fetch = { url -> withContext(Dispatchers.IO) { DevImageFetch.fetch(Http.modelClient(DevImageFetch.TIMEOUT_SEC), url) } },
                 fetchAllowed = { runCatching { com.rokid.context.ai.datasaver.DataSaverGraph.get(app).decide(DataKind.BULK_OTHER).allowed }.getOrDefault(false) },
             )
         }

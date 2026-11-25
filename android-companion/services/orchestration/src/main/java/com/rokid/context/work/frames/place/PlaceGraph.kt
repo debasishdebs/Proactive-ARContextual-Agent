@@ -64,10 +64,23 @@ object PlaceGraph {
         }
     }
 
-    /** CH 7: the owed-token key of the old places.db history is removed once at startup (the history now lives in context.db and nothing is owed). One commit, no database access. */
-    fun dropOwedKey(context: Context) {
+    /**
+     * CH 7: the owed-token key of the old places.db history is removed once at startup (the history now lives in context.db and nothing is owed). Before it goes, an EXISTING places.db is opened once so Room
+     * migrates it to v3 (which drops `place_card_log`): legacy v2 history cannot then survive a Forget. No file: nothing is created. An open that fails keeps the key, so the next start retries.
+     */
+    fun dropOwedKey(context: Context, migrate: () -> Unit = { migratePlacesDb(context) }) {
         val prefs = context.applicationContext.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE)
-        if (prefs.contains("history_deletions_owed")) prefs.edit().remove("history_deletions_owed").commit()
+        if (!prefs.contains("history_deletions_owed")) return
+        try { migrate() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { PcLog.w(TAG, "places.db migration not done: ${e.javaClass.simpleName}"); return }
+        prefs.edit().remove("history_deletions_owed").commit()
+    }
+
+    /** Opens the existing places.db through the factory once (the migration runs on open). Does nothing when the file does not exist. */
+    private fun migratePlacesDb(context: Context) {
+        val app = context.applicationContext
+        if (!app.getDatabasePath(PlacesDatabase.NAME).exists()) return
+        val db = PlacesDatabase.build(app)
+        try { db.openHelper.writableDatabase } finally { db.close() }
     }
 
     /** The card history; kept for the readers that must not build anything extra (Home, quota eviction). `context.db` always exists. */

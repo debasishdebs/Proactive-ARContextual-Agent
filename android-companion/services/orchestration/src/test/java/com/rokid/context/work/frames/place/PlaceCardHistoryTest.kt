@@ -149,4 +149,24 @@ class PlaceCardHistoryTest {
         assertFalse(prefs.contains("history_deletions_owed")); assertTrue("the other keys stay", prefs.getBoolean("enabled", false))
         prefs.edit().clear().commit()
     }
+
+    @Test fun theOwedKeyWaitsForThePlacesDbMigration() {
+        val prefs = ctx.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putStringSet("history_deletions_owed", setOf("a:1")).commit()
+        var ran = 0
+        PlaceGraph.dropOwedKey(ctx) { ran++; throw IllegalStateException("open") }
+        assertEquals(1, ran); assertTrue("a failed migration keeps the key for the next start", prefs.contains("history_deletions_owed"))
+        PlaceGraph.dropOwedKey(ctx) { ran++ }
+        assertEquals(2, ran); assertFalse(prefs.contains("history_deletions_owed"))
+        PlaceGraph.dropOwedKey(ctx) { ran++ }
+        assertEquals("no key, no migration", 2, ran)
+    }
+
+    @Test fun noPlacesDbFileIsNeverCreatedByTheCleanup() {
+        val prefs = ctx.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putStringSet("history_deletions_owed", setOf("a:1")).commit()
+        assertFalse(ctx.getDatabasePath(com.rokid.context.memory.place.PlacesDatabase.NAME).exists())
+        PlaceGraph.dropOwedKey(ctx)
+        assertFalse(ctx.getDatabasePath(com.rokid.context.memory.place.PlacesDatabase.NAME).exists()); assertFalse(prefs.contains("history_deletions_owed"))
+    }
 }
