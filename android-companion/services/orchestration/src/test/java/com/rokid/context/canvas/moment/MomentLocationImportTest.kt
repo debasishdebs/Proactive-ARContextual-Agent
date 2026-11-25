@@ -62,6 +62,15 @@ class MomentLocationImportTest {
         val e = dao.of(listOf(id)).single(); assertEquals(1.0, e.lat, 0.0); assertEquals("ZONE_STREAM", e.source)
     }
 
+    @Test fun zoneBecomingActiveBetweenChunksRefusesTheLaterChunk() = runBlocking {
+        seed()
+        var calls = 0
+        val imp = MomentLocationImport(db, { 42L }, { enabled }, { if (calls++ == 0) emptyList() else listOf(PauseZone("z", "Home", 11.99, 76.99, 12.01, 77.01)) }, { 0L })
+        val rows = (1..MomentLocationImport.CHUNK + 1).map { row() }
+        val rep = imp.run(rows)
+        assertEquals(1, rep.written); assertEquals(MomentLocationImport.CHUNK - 1 + 1, rep.skipped.values.sum()); assertEquals(1, rep.skipped["zone"]); assertEquals(MomentLocationImport.CHUNK - 1, rep.skipped["present"])
+    }
+
     @Test fun goneTombstonedZonePausedRefused() = runBlocking {
         // no moment at all
         assertEquals(1, one().skipped["no_moment"])

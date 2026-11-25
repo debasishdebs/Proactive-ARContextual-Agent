@@ -76,6 +76,14 @@ class MomentLocationRecorderTest {
         assertEquals(0, rec(zones = { null }, zoneFix = elapsedFix(1000)).poke()); assertEquals(0, dao.count())
     }
 
+    @Test fun zoneActiveAfterEntryRefusesTheWrite() = runBlocking {
+        seedFrame()
+        var reads = 0 // the entry check sees no zone; every later read (inside the write transaction) sees one
+        val r = MomentLocationRecorder(db, { now }, { elapsedNow }, { true }, { reads++ > 0 }, { emptyList() }, { elapsedFix(1000) }, { null }, { null }, { 0 }) { logs += it }
+        assertEquals(0, r.poke())
+        assertEquals(0, dao.count()); assertTrue(logs.single().contains("zone_state:1"))
+    }
+
     @Test fun pausedSecondRefused() = runBlocking {
         seedFrame()
         db.pauseDao().insertInterval(PauseIntervalEntity("manual:1", "PHONE", capture - 1000, null))

@@ -78,16 +78,19 @@ class MomentLocationRecorder(
             val pick = sources.firstNotNullOfOrNull { (name, f) -> f?.let { fix -> usable(fix, c.atMs, now)?.let { gap -> Triple(name, fix, gap) } } }
             if (pick == null) { skip("no_fix", 1); continue }
             val (source, fix, gap) = pick
-            if (!zonesRead) { zonesValue = zones(); zonesRead = true }
+            if (!zonesRead) { zonesValue = zones(); zonesRead = true } // early pre-filter; the write transaction below re-reads the zones and the pauses
             if (ZoneEvaluator.blocksPoint(zonesValue, fix.lat, fix.lon, fix.accM!!)) { skip("zone_point", 1); continue }
             if (db.pauseDao().countCovering(c.atMs) > 0) { skip("paused", 1); continue }
-            val row = MomentLocationEntity(c.momentId, c.atMs, c.kind, c.anchorId, fix.lat, fix.lon, fix.accM.toDouble(), gap, source, null, null, now)
+            val row = MomentLocationEntity(c.momentId, c.atMs, c.kind, c.anchorId, fix.lat, fix.lon, fix.accM!!.toDouble(), gap, source, null, null, now)
             val reason = db.withTransaction {
                 when {
                     !enabled() -> "off" // switched off while this poke ran: "Delete saved locations" must not be followed by a late row
                     s3.frameForgetRev() != rev || generation() != gen -> "authority"
                     (if (c.kind == "FRAME") dao.frameAnchorExists(c.anchorId) else dao.markAnchorExists(c.anchorId)) == 0 -> "gone"
                     (c.kind == "FRAME" && dao.frameTombstoned(c.anchorId) > 0) || dao.momentTombstoned(c.momentId) > 0 -> "tombstoned"
+                    zoneBlocked() -> "zone_state"
+                    ZoneEvaluator.blocksPoint(zones(), fix.lat, fix.lon, fix.accM!!) -> "zone_point" // current zones and pauses, re-read inside the write transaction
+                    db.pauseDao().countCovering(c.atMs) > 0 -> "paused"
                     dao.insertIfAbsent(row) < 0 -> "present"
                     else -> null
                 }
