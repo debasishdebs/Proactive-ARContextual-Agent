@@ -332,6 +332,8 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         var mapZonesV2On by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app)) }
         var mapZonesP23On by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesP23(app)) }
         var packMomentsOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.packMoments(app)) }
+        var canvasModelNodesOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.canvasModelNodes(app)) }
+        var canvasTestRunOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.canvasTestRun(app)) }
         val ctxDecision by s.contextSources.decision.collectAsStateWithLifecycle()
         val ctxStats = s.contextSources.stats
         var ctxTick by remember { androidx.compose.runtime.mutableIntStateOf(0) }
@@ -360,6 +362,8 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             mapZonesP23 = mapZonesP23On, onMapZonesP23 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setMapZonesP23(app, on); mapZonesP23On = on },
             packMoments = packMomentsOn, onPackMoments = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setPackMoments(app, on); packMomentsOn = on },
             packMomentsCount = if (packMomentsOn) com.rokid.context.work.frames.place.PackMomentStats.summary() else "",
+            canvasModelNodes = canvasModelNodesOn, onCanvasModelNodes = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setCanvasModelNodes(app, on); canvasModelNodesOn = on },
+            canvasTestRun = canvasTestRunOn, onCanvasTestRun = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setCanvasTestRun(app, on); canvasTestRunOn = on },
             sensorRecHz = s.hud.settings.collectAsStateWithLifecycle().value.sensorRecHz,
             onSensorRecHz = { hz -> s.hud.update { it.copy(sensorRecHz = hz).normalized() } },
             contextHub = contextHub,
