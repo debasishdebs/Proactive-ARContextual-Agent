@@ -33,11 +33,11 @@ class NodeInspectorTest {
     }
 
     @Test fun outputIsCappedOnACharacterBoundary() {
-        val big = "é".repeat(3000)
+        val big = "\u00e9".repeat(3000)
         val (cut, flag) = NodeInspector.cap(big)
         assertTrue(flag)
         assertTrue(cut!!.toByteArray(Charsets.UTF_8).size <= NodeInspector.OUTPUT_CAP_BYTES)
-        assertTrue(cut.all { c -> c == 'é' })
+        assertTrue(cut.all { c -> c == '\u00e9' })
         assertFalse(NodeInspector.cap("short").second)
         assertNull(NodeInspector.cap(null).first)
     }
