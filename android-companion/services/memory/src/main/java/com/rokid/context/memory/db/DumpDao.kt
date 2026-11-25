@@ -1,11 +1,7 @@
 package com.rokid.context.memory.db
 
-import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Query
-
-/** One stored vector as the Developer dump reads it: the insertion [rowid] (the paging key), the owner [id], its space and the little-endian float32 [blob]. */
-class DumpVectorRow(@ColumnInfo(name = "rowid") val rowid: Long, val id: String, val spaceId: String, val blob: ByteArray)
 
 /** Moment id and its mark (a MARK part of a Moment). */
 data class DumpMarkMoment(val refId: String, val momentId: String)
@@ -55,10 +51,4 @@ abstract class DumpDao {
     @Query("SELECT refId AS refId, momentId AS momentId FROM moment_part WHERE kind = 'MARK' AND refId IN (:labelIds) AND momentId NOT IN (SELECT momentId FROM moment_tombstone)")
     abstract suspend fun momentsOfMarks(labelIds: List<String>): List<DumpMarkMoment>
     @Query("SELECT momentId FROM moment_tombstone WHERE momentId IN (:ids)") abstract suspend fun tombstonedMoments(ids: List<String>): List<String>
-
-    // --- Vectors (paged by rowid) ---
-    @Query("SELECT v.rowid AS rowid, v.memoryId AS id, v.spaceId AS spaceId, v.blob AS blob FROM memory_vector v JOIN memory m ON m.id = v.memoryId WHERE v.rowid > :afterRowid AND (m.frameId IS NULL OR m.frameId NOT IN (SELECT frameId FROM forget_tombstone)) ORDER BY v.rowid LIMIT :limit")
-    abstract suspend fun memoryVectorsPage(afterRowid: Long, limit: Int): List<DumpVectorRow>
-    @Query("SELECT v.rowid AS rowid, v.frameId AS id, v.spaceId AS spaceId, v.blob AS blob FROM frame_vector v JOIN frame_meta m ON m.frameId = v.frameId WHERE v.rowid > :afterRowid AND v.frameId NOT IN (SELECT frameId FROM forget_tombstone) AND ((:siglip = 1 AND v.spaceId LIKE 'siglip2%') OR (:siglip = 0 AND v.spaceId NOT LIKE 'siglip2%')) ORDER BY v.rowid LIMIT :limit")
-    abstract suspend fun frameVectorsPage(afterRowid: Long, siglip: Int, limit: Int): List<DumpVectorRow>
 }

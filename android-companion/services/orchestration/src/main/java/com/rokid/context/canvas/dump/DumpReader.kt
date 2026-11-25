@@ -4,7 +4,6 @@ import com.rokid.context.memory.db.AttributionKind
 import com.rokid.context.memory.db.CanvasLabelEntity
 import com.rokid.context.memory.db.ModelAttributionEntity
 import com.rokid.context.memory.db.ContextDatabase
-import com.rokid.context.memory.db.DumpVectorRow
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MomentEntity
 import com.rokid.context.memory.db.MomentLocationEntity
@@ -17,7 +16,6 @@ import com.rokid.context.memory.frames.FrameImages
 import com.rokid.context.memory.moment.MomentId
 import com.rokid.context.memory.moment.ObjectKind
 import com.rokid.context.memory.place.UserPlace
-import com.rokid.context.memory.retrieval.VectorCodec
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -28,7 +26,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
 import java.security.MessageDigest
-import java.util.Base64
 
 /**
  * v1.7 Developer dump API (design 2026-11-26): the READ-ONLY reader behind the `/api/dump` routes. It is the ONE reader allowed to put the saved Moment location (and the pin coordinates) into an answer: the owner asked for them for experiments
@@ -244,36 +241,6 @@ class DumpReader(
         return DumpPhoto(bytes, type)
     }
 
-    override suspend fun vectors(space: String, after: String?, limit: Int, float16: Boolean): List<DumpItem>? {
-        if (space !in DumpSource.SPACES) return null
-        val n = limit.coerceIn(1, DumpSource.MAX_PAGE_ITEMS)
-        val (kind, rowid) = parseVectorCursor(after)
-        val out = ArrayList<DumpItem>()
-        if (space == "nomic" && kind == "m") {
-            dump.memoryVectorsPage(rowid, n).forEach { out += vectorItem("m", "memory", it, float16) }
-        }
-        if (out.size < n && (kind == "m" || kind == "f")) {
-            val startRow = if (kind == "f") rowid else 0L
-            if (space == "siglip2" || space == "nomic") dump.frameVectorsPage(startRow, if (space == "siglip2") 1 else 0, n - out.size).forEach { out += vectorItem("f", "frame", it, float16) }
-        }
-        return out
-    }
-
-    private fun vectorItem(prefix: String, kind: String, r: DumpVectorRow, float16: Boolean): DumpItem {
-        val dim = r.blob.size / 4
-        val aligned = r.blob.size % 4 == 0
-        val bytes = if (float16 && aligned) toHalf(r.blob) else r.blob
-        return DumpItem("$prefix:${r.rowid}", buildJsonObject {
-            put("kind", kind); put("id", r.id); put("spaceId", r.spaceId); put("dim", dim); put("dtype", if (!aligned) "raw" else if (float16) "float16" else "float32"); put("data", Base64.getEncoder().encodeToString(bytes))
-        })
-    }
-
-    private fun parseVectorCursor(after: String?): Pair<String, Long> {
-        if (after.isNullOrEmpty()) return "m" to 0L
-        val i = after.indexOf(':'); if (i != 1) return "m" to 0L
-        return after.substring(0, 1).takeIf { it == "m" || it == "f" }.let { (it ?: "m") to (after.substring(2).toLongOrNull() ?: 0L) }
-    }
-
     private fun splitCursor(c: String?): Pair<Long, String>? {
         if (c.isNullOrEmpty()) return null
         val i = c.indexOf(':'); if (i <= 0) return null
@@ -295,37 +262,6 @@ class DumpReader(
             b.size >= 8 && b[0] == 0x89.toByte() && b[1] == 'P'.code.toByte() && b[2] == 'N'.code.toByte() && b[3] == 'G'.code.toByte() -> "image/png"
             b.size >= 12 && String(b, 0, 4, Charsets.ISO_8859_1) == "RIFF" && String(b, 8, 4, Charsets.ISO_8859_1) == "WEBP" -> "image/webp"
             else -> null
-        }
-
-        /** Little-endian float32 to little-endian IEEE half (round to nearest even; overflow = infinity). */
-        internal fun toHalf(blob: ByteArray): ByteArray {
-            val v = VectorCodec.decode(blob)
-            val out = ByteArray(v.size * 2)
-            for (i in v.indices) { val h = floatToHalf(v[i]); out[2 * i] = (h and 0xFF).toByte(); out[2 * i + 1] = ((h shr 8) and 0xFF).toByte() }
-            return out
-        }
-
-        internal fun floatToHalf(f: Float): Int {
-            val b = java.lang.Float.floatToRawIntBits(f)
-            val sign = (b ushr 16) and 0x8000
-            val exp = (b ushr 23) and 0xFF
-            val man = b and 0x7FFFFF
-            if (exp == 0xFF) return sign or 0x7C00 or (if (man != 0) 0x200 else 0)
-            val e = exp - 127 + 15
-            if (e >= 0x1F) return sign or 0x7C00
-            if (e <= 0) {
-                if (e < -10) return sign
-                val m = man or 0x800000
-                val shift = 14 - e
-                var h = m ushr shift
-                val rem = m and ((1 shl shift) - 1); val half = 1 shl (shift - 1)
-                if (rem > half || (rem == half && (h and 1) == 1)) h++
-                return sign or h
-            }
-            var h = sign or (e shl 10) or (man ushr 13)
-            val rem = man and 0x1FFF
-            if (rem > 0x1000 || (rem == 0x1000 && (h and 1) == 1)) h++
-            return h
         }
     }
 }

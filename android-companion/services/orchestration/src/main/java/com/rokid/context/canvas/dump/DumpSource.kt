@@ -21,14 +21,11 @@ interface DumpSource {
     suspend fun pins(): List<JsonObject>
     /** The stored JPEG (or PNG, WebP) bytes of a live photo and its content type, null when the photo is gone, forgotten, unreadable or over [MAX_PHOTO_BYTES]. */
     suspend fun photo(frameId: String): DumpPhoto?
-    /** Vectors of [space] (`nomic` or `siglip2`) after the cursor [after]; null = unknown space. [float16] converts the float32 storage on the fly. */
-    suspend fun vectors(space: String, after: String?, limit: Int, float16: Boolean): List<DumpItem>?
 
     companion object {
         const val MAX_PHOTO_BYTES = 12 * 1024 * 1024
         const val MAX_PAGE_ITEMS = 200
         const val MAX_PAGE_BYTES = 2 * 1024 * 1024
-        val SPACES = listOf("nomic", "siglip2")
     }
 }
 

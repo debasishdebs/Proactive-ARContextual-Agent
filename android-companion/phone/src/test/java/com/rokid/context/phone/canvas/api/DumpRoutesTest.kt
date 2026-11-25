@@ -37,7 +37,6 @@ class DumpRoutesTest {
         override suspend fun marks(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem> = emptyList()
         override suspend fun pins(): List<JsonObject> = listOf(buildJsonObject { put("id", "p1"); put("lat", 1.5) })
         override suspend fun photo(frameId: String): DumpPhoto? = if (frameId == "f1") DumpPhoto(byteArrayOf(1, 2, 3), "image/jpeg") else null
-        override suspend fun vectors(space: String, after: String?, limit: Int, float16: Boolean): List<DumpItem>? = if (space == "nomic") listOf(DumpItem("m:1", buildJsonObject { put("id", "x"); put("dtype", if (float16) "float16" else "float32") })) else null
     }
 
     private val src = Fake()
@@ -56,7 +55,7 @@ class DumpRoutesTest {
 
     @Test fun developerModeOffIs403OnEveryRouteAndReadsNothing() {
         dev = false
-        listOf("manifest", "moments", "scenes", "marks", "pins", "frames/f1/photo", "vectors").forEach { p -> val r = get("/api/dump/$p", mapOf("space" to "nomic")); assertEquals(p, 403, r!!.status); assertEquals("developer_mode_off", code(r)) }
+        listOf("manifest", "moments", "scenes", "marks", "pins", "frames/f1/photo").forEach { p -> val r = get("/api/dump/$p", mapOf("space" to "nomic")); assertEquals(p, 403, r!!.status); assertEquals("developer_mode_off", code(r)) }
         assertEquals(0, src.calls)
     }
 
@@ -72,7 +71,6 @@ class DumpRoutesTest {
     @Test fun limitIsCappedAt200AndBadParametersAre400() {
         get("/api/dump/moments", mapOf("limit" to "9999")); assertTrue(src.lastArgs.last().endsWith("|200"))
         listOf(mapOf("limit" to "0"), mapOf("limit" to "x"), mapOf("after" to "a b"), mapOf("after" to "a/../b"), mapOf("from" to "yesterday"), mapOf("to" to "2026-13-40")).forEach { q -> assertEquals(q.toString(), 400, get("/api/dump/moments", q)!!.status) }
-        assertEquals(400, get("/api/dump/vectors")!!.status); assertEquals(400, get("/api/dump/vectors", mapOf("space" to "other"))!!.status); assertEquals(400, get("/api/dump/vectors", mapOf("space" to "nomic", "dtype" to "float64"))!!.status)
     }
 
     @Test fun fromAndToTakeDaysInTheLocalZoneOrEpochMs() {
@@ -99,8 +97,29 @@ class DumpRoutesTest {
         assertEquals(404, get("/api/dump/frames/f1/other")!!.status); assertEquals(404, get("/api/dump/nothing")!!.status)
     }
 
-    @Test fun vectorsDtypeIsPassedAndAnUnknownSpaceIs400() {
-        assertEquals("float16", json(get("/api/dump/vectors", mapOf("space" to "nomic", "dtype" to "float16")))["items"]!!.jsonArray[0].jsonObject["dtype"]!!.jsonPrimitive.content)
+    @Test fun theVectorsEndpointIsGone() {
+        assertEquals(404, get("/api/dump/vectors", mapOf("space" to "nomic"))!!.status)
+    }
+
+    @Test fun sinceUntilCursorAreAliasesAndIsoDateTimesAreAccepted() {
+        get("/api/dump/moments", mapOf("since" to "1000", "until" to "2000", "cursor" to "m1")); assertEquals("1000|2000|m1|200", src.lastArgs.last())
+        get("/api/dump/moments", mapOf("since" to "2026-11-25T00:00:00Z", "until" to "2026-11-25T00:00:01.5Z")); assertEquals("1795564800000|1795564801500|null|200", src.lastArgs.last())
+        get("/api/dump/moments", mapOf("since" to "2026-11-25T05:30:00+05:30")); assertEquals("1795564800000|${Long.MAX_VALUE}|null|200", src.lastArgs.last())
+        get("/api/dump/moments", mapOf("since" to "2026-11-25T00:00:00")); assertEquals("1795564800000", src.lastArgs.last().substringBefore('|')) // zone-less = local zone (UTC here)
+    }
+
+    @Test fun conflictingAliasesAndAReversedRangeAre400() {
+        listOf(mapOf("from" to "1", "since" to "1"), mapOf("to" to "5", "until" to "5"), mapOf("after" to "a", "cursor" to "a"), mapOf("since" to "9", "until" to "3"), mapOf("since" to "2026-11-25T99:00:00Z"), mapOf("until" to "x".repeat(60)))
+            .forEach { q -> assertEquals(q.toString(), 400, get("/api/dump/moments", q)!!.status) }
+    }
+
+    @Test fun fieldsKeepOnlyTheNamedTopLevelKeysAndId() {
+        src.moments = listOf(DumpItem("m1", buildJsonObject { put("id", "m1"); put("a", 1); put("b", 2); put("c", 3) }))
+        val it = json(get("/api/dump/moments", mapOf("fields" to "a,c")))["items"]!!.jsonArray[0].jsonObject
+        assertEquals(setOf("id", "a", "c"), it.keys)
+        assertEquals(setOf("id", "lat"), json(get("/api/dump/pins", mapOf("fields" to "lat")))["items"]!!.jsonArray[0].jsonObject.keys)
+        assertEquals(setOf("id", "a", "b", "c"), json(get("/api/dump/moments"))["items"]!!.jsonArray[0].jsonObject.keys)
+        listOf("a b", "a,,b", "a.b", "1a", "a/../b", (1..41).joinToString(",") { "f$it" }).forEach { f -> assertEquals(f, 400, get("/api/dump/moments", mapOf("fields" to f))!!.status) }
     }
 
     @Test fun rateLimitedAfterTheBudgetWithinOneSecondAndFreshAfterIt() {

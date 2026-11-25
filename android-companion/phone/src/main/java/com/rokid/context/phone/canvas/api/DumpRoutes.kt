@@ -7,6 +7,7 @@ import com.rokid.context.phone.canvas.server.HttpRequest
 import com.rokid.context.phone.canvas.server.HttpResponse
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.time.DateTimeException
@@ -14,7 +15,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 
 /**
- * The Developer-only READ-ONLY dump API (design 2026-11-26): `GET /api/dump/manifest`, `/moments`, `/scenes`, `/marks`, `/pins`, `/frames/<id>/photo` and `/vectors`. The router owns the pairing token (a request without a paired session never reaches
+ * The Developer-only READ-ONLY dump API (design 2026-11-26): `GET /api/dump/manifest`, `/moments`, `/scenes`, `/marks`, `/pins` and `/frames/<id>/photo` (the vectors endpoint was REMOVED, owner ruling 26 Nov: he generates vectors himself). The router owns the pairing token (a request without a paired session never reaches
  * this class: 401), the Host policy (loopback, or the paired LAN host while "Use from a laptop" is on: this route does not widen it) and the Origin policy. This class owns the Developer gate: Developer mode off answers 403 `developer_mode_off`
  * on every call. Other methods are 405. At most [MAX_PER_SECOND] calls a second (429 `rate_limited`, `Retry-After: 1`). A Delete all that lands while a request reads answers 409 `dump_stopped` and no data; Developer mode going off mid-read
  * answers 403. Pages hold at most [DumpSource.MAX_PAGE_ITEMS] items and [DumpSource.MAX_PAGE_BYTES] bytes; a photo is capped at [DumpSource.MAX_PHOTO_BYTES]. Logs: a literal and a count, never an id, text or position. This route carries the
@@ -35,6 +36,8 @@ class DumpRoutes(
         private val FRAME_ID = Regex("^[A-Za-z0-9_.:-]{1,100}$")
         private val DAY = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
         private val MS = Regex("^[0-9]{1,15}$")
+        private val FIELD = Regex("^[A-Za-z][A-Za-z0-9_]{0,39}$")
+        private const val MAX_FIELDS = 40
     }
 
     private class Bad : Exception()
@@ -65,9 +68,8 @@ class DumpRoutes(
                 seg == listOf("moments") -> page(req, "moments") { f, t, a, n -> source.moments(f, t, a, n) }
                 seg == listOf("scenes") -> page(req, "scenes") { f, t, a, n -> source.scenes(f, t, a, n) }
                 seg == listOf("marks") -> page(req, "marks") { f, t, a, n -> source.marks(f, t, a, n) }
-                seg == listOf("pins") -> pins()
+                seg == listOf("pins") -> pins(req)
                 seg.size == 3 && seg[0] == "frames" && seg[2] == "photo" -> photo(seg[1])
-                seg == listOf("vectors") -> vectors(req)
                 else -> HttpResponse.error(404, "not_found", "Not found.")
             }
             // a Delete all that landed while the read ran, or Developer mode going off: nothing is answered
@@ -82,19 +84,22 @@ class DumpRoutes(
     }
 
     private suspend fun page(req: HttpRequest, name: String, read: suspend (Long, Long, String?, Int) -> List<DumpItem>): HttpResponse {
-        val from = bound(req.query["from"], false) ?: 0L
-        val to = bound(req.query["to"], true) ?: Long.MAX_VALUE
-        val after = cursor(req.query["after"])
+        val from = bound(one(req, "from", "since"), false) ?: 0L
+        val to = bound(one(req, "to", "until"), true) ?: Long.MAX_VALUE
+        if (from > to) throw Bad()
+        val after = cursor(one(req, "after", "cursor"))
         val limit = limit(req.query["limit"])
+        val fields = fields(req.query["fields"])
         val items = read(from, to, after, limit)
         val n = items.size
         PcLog.i("PcDump", "dump page n=$n")
-        return pageJson(items, limit)
+        return pageJson(items, limit, fields)
     }
 
-    private fun pageJson(items: List<DumpItem>, limit: Int): HttpResponse {
+    private fun pageJson(items: List<DumpItem>, limit: Int, fields: Set<String>? = null): HttpResponse {
         var bytes = 0; val kept = ArrayList<DumpItem>()
-        for (x in items) {
+        for (x0 in items) {
+            val x = if (fields == null) x0 else DumpItem(x0.cursor, project(x0.json, fields))
             val n = x.json.toString().toByteArray(Charsets.UTF_8).size + 1
             if (kept.isNotEmpty() && bytes + n > DumpSource.MAX_PAGE_BYTES - 1024) break
             kept += x; bytes += n
@@ -106,8 +111,9 @@ class DumpRoutes(
         })
     }
 
-    private suspend fun pins(): HttpResponse {
-        val p = source.pins()
+    private suspend fun pins(req: HttpRequest): HttpResponse {
+        val fields = fields(req.query["fields"])
+        val p = source.pins().let { l -> if (fields == null) l else l.map { project(it, fields) } }
         val n = p.size
         PcLog.i("PcDump", "dump pins n=$n")
         return HttpResponse.json(200, buildJsonObject { put("items", JsonArray(p)); put("count", p.size); put("next", JsonNull) })
@@ -120,26 +126,39 @@ class DumpRoutes(
         return HttpResponse(200, ph.contentType, ph.bytes, mapOf("Cache-Control" to "no-store", "Cross-Origin-Resource-Policy" to "same-origin"))
     }
 
-    private suspend fun vectors(req: HttpRequest): HttpResponse {
-        val space = req.query["space"] ?: throw Bad()
-        val dtype = req.query["dtype"] ?: "float32"
-        if (dtype != "float32" && dtype != "float16") throw Bad()
-        val limit = limit(req.query["limit"])
-        val items = source.vectors(space, cursor(req.query["after"]), limit, dtype == "float16") ?: throw Bad()
-        // vectors are 3 KB each: the byte cap, not the 200 items, is what usually ends a page
-        val n = items.size
-        PcLog.i("PcDump", "dump vectors n=$n")
-        return pageJson(items, limit)
+    /** The value of [name] or of its alias [alias]; both given is a bad request. */
+    private fun one(req: HttpRequest, name: String, alias: String): String? {
+        val a = req.query[name]; val b = req.query[alias]
+        if (!a.isNullOrEmpty() && !b.isNullOrEmpty()) throw Bad()
+        return if (!a.isNullOrEmpty()) a else b
     }
+
+    /** `fields=a,b`: the top-level keys to keep per item (`id` is always kept). Null = all. Names are plain identifiers; an unknown name just matches nothing. */
+    private fun fields(v: String?): Set<String>? {
+        if (v.isNullOrEmpty()) return null
+        val names = v.split(',')
+        if (names.size > MAX_FIELDS || names.any { !FIELD.matches(it) }) throw Bad()
+        return names.toSet() + "id"
+    }
+
+    private fun project(o: JsonObject, keep: Set<String>) = JsonObject(o.filterKeys { it in keep })
 
     private fun cursor(v: String?): String? { if (v.isNullOrEmpty()) return null; if (!CURSOR.matches(v)) throw Bad(); return v }
     private fun limit(v: String?): Int = if (v.isNullOrEmpty()) DumpSource.MAX_PAGE_ITEMS else (v.toIntOrNull()?.takeIf { it > 0 } ?: throw Bad()).coerceAtMost(DumpSource.MAX_PAGE_ITEMS)
 
-    /** `from` and `to`: epoch milliseconds or a local day `YYYY-MM-DD` (`to` = the end of that day). Null = not given. */
+    /** An ISO-8601 instant or offset date-time (`2026-11-25T10:00:00Z`, `...+05:30`) or a zone-less local date-time, as epoch ms; null when it is none of those. */
+    private fun iso(v: String): Long? {
+        if (v.length > 40) return null
+        try { return java.time.Instant.parse(v).toEpochMilli() } catch (e: DateTimeException) { /* next */ }
+        try { return java.time.OffsetDateTime.parse(v).toInstant().toEpochMilli() } catch (e: DateTimeException) { /* next */ }
+        return try { java.time.LocalDateTime.parse(v).atZone(zone()).toInstant().toEpochMilli() } catch (e: DateTimeException) { null }
+    }
+
+    /** `from`/`since` and `to`/`until`: epoch milliseconds, a local day `YYYY-MM-DD` (`to` = the end of that day) or an ISO-8601 date-time. Null = not given. */
     private fun bound(v: String?, end: Boolean): Long? {
         if (v.isNullOrEmpty()) return null
         if (MS.matches(v)) return v.toLong()
-        if (!DAY.matches(v)) throw Bad()
+        if (!DAY.matches(v)) return iso(v) ?: throw Bad()
         val d = try { LocalDate.parse(v) } catch (e: DateTimeException) { throw Bad() }
         val z = zone()
         return if (end) d.plusDays(1).atStartOfDay(z).toInstant().toEpochMilli() - 1 else d.atStartOfDay(z).toInstant().toEpochMilli()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pulls the phone's read-only Developer dump (/api/dump/...) into a LOCAL folder for offline experiments.
 
-  python3 tools/pull_dump.py [host:port] [--out DIR] [--from DAY] [--to DAY] [--no-photos] [--vectors] [--space nomic|siglip2] [--dtype float32|float16]
+  python3 tools/pull_dump.py [host:port] [--out DIR] [--since T] [--until T] [--limit N] [--no-photos] [--no-scenes]
   python3 tools/pull_dump.py --selftest
 
 Needs: Developer mode ON in the app and a paired session (tools/m1-run.sh pair <host:port> <code> <fp8>). The state it reads is the same as the
@@ -12,13 +12,11 @@ Output (default ~/Desktop/rokid/dumps/<dump_id>/, mode 0700, never inside a git 
   manifest.json  README.md  marks.json  pins.json
   YYYY-MM-DD/<momentId>/moment.json  and  YYYY-MM-DD/<momentId>/frames/<frameId>.jpg
   scenes/YYYY-MM-DD.json
-  vectors/<space>.bin + vectors/<space>.index.json        (ONLY with --vectors)
 Resumable: a file that exists is skipped (files are written to a temp name and renamed, so a half file is never taken as done). Prints counts only.
 The dump contains the owner's saved locations and place names: treat the folder as private (it is created 0700; keep it off cloud sync and out of git).
 Stdlib only, Python 3.8+.
 """
 import argparse
-import base64
 import datetime
 import hashlib
 import http.client
@@ -32,7 +30,6 @@ import time
 import urllib.parse
 
 DEFAULT_ROOT = os.path.join("~", "Desktop", "rokid", "dumps")
-SPACES = ("nomic", "siglip2")
 PAGE = 200
 MAX_RETRY = 6
 SAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -49,7 +46,6 @@ This folder holds YOUR private data (saved locations, place names, photos, notes
 - scenes/YYYY-MM-DD.json   the Scenes that start that (local) day
 - marks.json               every mark (voice/tap "remember this")
 - pins.json                the user's pinned places (coordinates, note, attached Moment)
-- vectors/<space>.bin + .index.json   only when pulled with --vectors; row i of the .bin is items[i] of the index
 
 ## moment.json fields
 id, startMs, endMs (epoch ms, phone clock; endMs = startMs + 999), type (FRAME or MARK Moment), text (timestamp + visible memory text),
@@ -74,12 +70,6 @@ id, atMs, source, name, frameId, momentId, photo, createdAt
 
 ## pins.json
 id, name, kind, lat, lon, radiusM, parentId, note, momentId, pinnedAt
-
-## vectors (only with --vectors)
-.bin = rows of little-endian floats, dtype and dim in the index json (float32 by default). Read without numpy:
-  struct.unpack('<%df' % dim, data[i*dim*4:(i+1)*dim*4])      with numpy:  np.fromfile(path, dtype='<f4').reshape(-1, dim)   ('<f2' for float16)
-index.items[i]: kind (memory = a text vector of a memory, frame = an image vector of a photo), id, spaceId.
-space nomic = text vectors of memories + image vectors in the Nomic space; siglip2 = SigLIP 2 image vectors. Vectors are optional: you can embed the photos and texts yourself.
 
 ## privacy
 Read-only copy. It never contains the database key, pairing tokens, API keys or app settings. Forgotten items are not in it.
@@ -134,6 +124,7 @@ class Api:
     def __init__(self, hostport, scheme, auth, pin, sleep=time.sleep):
         self.hostport, self.scheme, self.auth, self.pin, self.sleep = hostport, scheme, auth, pin, sleep
         self.requests = 0
+        self.limit = PAGE
         self.conn = None
 
     def _connect(self):
@@ -192,7 +183,7 @@ class Api:
         after = None
         while True:
             q = dict(query or {})
-            q["limit"] = str(PAGE)
+            q["limit"] = str(self.limit)
             if after:
                 q["after"] = after
             j = self.json(path, q)
@@ -241,7 +232,7 @@ def find_photo(mdir, fid):
 
 
 def pull(api, out, args, say=print):
-    counts = dict(moments=0, moments_skipped=0, photos=0, photos_skipped=0, photos_missing=0, scenes=0, marks=0, pins=0, vectors=0)
+    counts = dict(moments=0, moments_skipped=0, photos=0, photos_skipped=0, photos_missing=0, scenes=0, marks=0, pins=0)
     man = api.json("/api/dump/manifest")
     c = man.get("counts", {})
     say("manifest: moments=%s scenes=%s marks=%s pins=%s frames=%s locations=%s" % tuple(c.get(k, "?") for k in ("moments", "scenes", "marks", "pins", "frames", "locations")))
@@ -307,44 +298,8 @@ def pull(api, out, args, say=print):
     if not os.path.exists(os.path.join(out, "pins.json")):
         dump_json(os.path.join(out, "pins.json"), pins)
 
-    # Vectors are OPT-IN: skipped unless --vectors
-    if args.get("vectors"):
-        for space in args.get("spaces") or SPACES:
-            counts["vectors"] += pull_vectors(api, out, space, args.get("dtype", "float32"))
-
     say("done: " + " ".join("%s=%d" % kv for kv in counts.items()))
     return out, counts
-
-
-def pull_vectors(api, out, space, dtype):
-    """vectors/<space>[-d<dim>].bin (rows of little-endian floats) + .index.json; a file pair that exists is skipped."""
-    vdir = os.path.join(out, "vectors")
-    width = 2 if dtype == "float16" else 4
-    files = {}   # dim -> (rows list, items list)
-    done = os.path.join(vdir, space + ".index.json")
-    if os.path.exists(done):
-        return 0
-    n = 0
-    for it in api.pages("/api/dump/vectors", {"space": space, "dtype": dtype}):
-        raw = base64.b64decode(it["data"])
-        dim = it["dim"]
-        if it.get("dtype") not in (dtype,) or len(raw) != dim * width:
-            continue   # a malformed or non-float row is not part of a regular matrix
-        rows, items = files.setdefault(dim, ([], []))
-        rows.append(raw)
-        items.append({"kind": it["kind"], "id": it["id"], "spaceId": it["spaceId"]})
-        n += 1
-    first = True
-    for dim in sorted(files):
-        name = space if first else "%s-d%d" % (space, dim)
-        rows, items = files[dim]
-        write_atomic(os.path.join(vdir, name + ".bin"), b"".join(rows))
-        if first:
-            first = False
-        dump_json(os.path.join(vdir, name + ".index.json"), {"space": space, "dtype": dtype, "dim": dim, "count": len(items), "items": items})
-    if not files:   # nothing stored for this space: still mark it done so a rerun does not ask again
-        dump_json(done, {"space": space, "dtype": dtype, "dim": 0, "count": 0, "items": []})
-    return n
 
 
 # ---------------------------------------------------------------- self test (fake server, no phone)
@@ -352,7 +307,6 @@ def pull_vectors(api, out, space, dtype):
 def selftest():
     import http.server
     import shutil
-    import struct
     import threading
 
     TOKEN = "TOKEN-DO-NOT-WRITE-123"
@@ -365,9 +319,7 @@ def selftest():
 
     moments = [moment(ms1, 1), moment(ms2, 2)]
     scenes = [{"id": "s1", "startMs": ms1, "momentIds": [moments[0]["id"]], "clusters": []}, {"id": "s2", "startMs": ms2, "momentIds": [moments[1]["id"]], "clusters": []}]
-    vec = struct.pack("<3f", 1.0, -2.0, 0.5)
-    half = struct.pack("<3e", 1.0, -2.0, 0.5) if hasattr(struct, "pack") else b""
-    state = {"count": {}, "throttle": 1, "bad_token": 0}
+    state = {"count": {}, "throttle": 1, "bad_token": 0, "q": {}}
 
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -392,6 +344,7 @@ def selftest():
             q = dict(urllib.parse.parse_qsl(u.query))
             p = u.path
             state["count"][p] = state["count"].get(p, 0) + 1
+            state["q"][p] = q
             if self.headers.get("Authorization") != "Bearer " + TOKEN:
                 state["bad_token"] += 1
                 return self.js({"error": "unauthorized"}, 401)
@@ -416,13 +369,6 @@ def selftest():
                 if m.group(1).startswith("f"):
                     return self.send(200, b"\xff\xd8\xff\xe0JPEG-" + m.group(1).encode(), "image/jpeg")
                 return self.js({"error": "not_found"}, 404)
-            if p == "/api/dump/vectors":
-                dt = q.get("dtype", "float32")
-                data = base64.b64encode(half if dt == "float16" else vec).decode()
-                items = [{"kind": "frame", "id": "f1", "spaceId": "S", "dim": 3, "dtype": dt, "data": data}]
-                if q.get("space") == "nomic":
-                    items.insert(0, {"kind": "memory", "id": "m1", "spaceId": "S", "dim": 3, "dtype": dt, "data": data})
-                return self.js({"items": items, "count": len(items), "next": None})
             return self.js({"error": "not_found"}, 404)
 
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -459,10 +405,8 @@ def selftest():
         check(json.load(open(os.path.join(out, "marks.json")))[0]["id"] == "mk:1:1", "marks.json")
         check(json.load(open(os.path.join(out, d1, moments[0]["id"], "moment.json")))["location"]["lat"] == 1.5, "location kept in moment.json")
         check(os.path.isfile(os.path.join(out, "README.md")) and os.path.isfile(os.path.join(out, "manifest.json")), "README and manifest")
-        check(not os.path.exists(os.path.join(out, "vectors")), "vectors are skipped by default")
         check((os.stat(out).st_mode & 0o777) == 0o700, "folder mode 0700")
         check(any("moments=2" in l and "photos=2" in l and "photos_missing=2" in l for l in lines), "counts line: " + " | ".join(lines))
-        check(state["count"].get("/api/dump/vectors", 0) == 0, "no vector request without --vectors")
         # resumable: a second run fetches no photo and rewrites nothing
         photos_before = sum(v for k, v in state["count"].items() if k.endswith("/photo"))
         mt = os.stat(os.path.join(out, d1, moments[0]["id"], "moment.json")).st_mtime_ns
@@ -472,13 +416,11 @@ def selftest():
         check(photos_after - photos_before == 2, "second run asks only for the 2 photos the phone no longer has (got %d)" % (photos_after - photos_before))
         check(os.stat(os.path.join(out, d1, moments[0]["id"], "moment.json")).st_mtime_ns == mt, "existing moment.json untouched")
         check(any("moments=0" in l and "moments_skipped=2" in l and "photos_skipped=2" in l for l in lines2), "resume counts: " + " | ".join(lines2))
-        # vectors on request, float16 option
-        main(["--out", out, "--vectors", "--space", "siglip2"], say=lambda l: None, sleep=lambda s: None)
-        idx = json.load(open(os.path.join(out, "vectors", "siglip2.index.json")))
-        check(idx["count"] == 1 and idx["dim"] == 3 and idx["dtype"] == "float32" and os.path.getsize(os.path.join(out, "vectors", "siglip2.bin")) == 12, "siglip2 vectors written")
-        main(["--out", out, "--vectors", "--space", "nomic", "--dtype", "float16"], say=lambda l: None, sleep=lambda s: None)
-        idx = json.load(open(os.path.join(out, "vectors", "nomic.index.json")))
-        check(idx["count"] == 2 and idx["dtype"] == "float16" and os.path.getsize(os.path.join(out, "vectors", "nomic.bin")) == 12 and idx["items"][0]["kind"] == "memory", "nomic float16 vectors written")
+        # query params: --since/--until/--limit reach the phone; --limit out of range is refused
+        main(["--out", os.path.join(root, "dump4"), "--since", "2026-11-20", "--until", "2026-11-25T10:00:00Z", "--limit", "7"], say=lambda l: None, sleep=lambda s: None)
+        mq = state["q"].get("/api/dump/moments", {})
+        check(mq.get("from") == "2026-11-20" and mq.get("to") == "2026-11-25T10:00:00Z" and mq.get("limit") == "7", "since/until/limit sent: %r" % mq)
+        check(main(["--out", os.path.join(root, "dump5"), "--limit", "0"], say=lambda l: None, sleep=lambda s: None) != 0, "limit 0 is an error")
         # the token is on no file the client wrote
         leaked = []
         for dp, _, fs in os.walk(out):
@@ -512,13 +454,11 @@ def main(argv=None, say=print, sleep=time.sleep):
     ap = argparse.ArgumentParser(description="Pull the phone's read-only Developer dump into a local folder (outside git).")
     ap.add_argument("hostport", nargs="?", help="host:port (default: the paired host in the pairing state); over USB use 127.0.0.1:PORT after adb forward")
     ap.add_argument("--out", help="output folder (default ~/Desktop/rokid/dumps/<dump_id>/); refused inside a git tree")
-    ap.add_argument("--from", dest="from_", help="first day YYYY-MM-DD (local) or epoch ms")
-    ap.add_argument("--to", help="last day YYYY-MM-DD (local, inclusive) or epoch ms")
+    ap.add_argument("--since", "--from", dest="from_", help="start: day YYYY-MM-DD (local), ISO-8601 date-time or epoch ms (--from is the old name)")
+    ap.add_argument("--until", "--to", dest="to", help="end: day YYYY-MM-DD (local, inclusive), ISO-8601 date-time or epoch ms (--to is the old name)")
+    ap.add_argument("--limit", type=int, default=PAGE, help="items per request, 1-%d (default %d)" % (PAGE, PAGE))
     ap.add_argument("--no-photos", action="store_true", help="metadata only")
     ap.add_argument("--no-scenes", action="store_true", help="skip scenes")
-    ap.add_argument("--vectors", action="store_true", help="ALSO pull stored embeddings (off by default: you can embed on the laptop)")
-    ap.add_argument("--space", action="append", choices=SPACES, help="with --vectors: which space (repeatable; default both)")
-    ap.add_argument("--dtype", choices=("float32", "float16"), default="float32", help="with --vectors")
     ap.add_argument("--scheme", choices=("http", "https"), help="default: $M1_SCHEME or https")
     ap.add_argument("--state", help="pairing state dir (default ${TMPDIR:-/tmp}/m1-run-<uid>)")
     ap.add_argument("--selftest", action="store_true", help="run the built-in test against a fake server and exit")
@@ -534,7 +474,10 @@ def main(argv=None, say=print, sleep=time.sleep):
             raise Fatal("host:port expected")
         scheme = a.scheme or os.environ.get("M1_SCHEME") or "https"
         api = Api(hp, scheme, auth, pin, sleep)
-        args = {"from": a.from_, "to": a.to, "photos": not a.no_photos, "no_scenes": a.no_scenes, "vectors": a.vectors, "spaces": a.space, "dtype": a.dtype}
+        if not 1 <= a.limit <= PAGE:
+            raise Fatal("--limit must be 1-%d" % PAGE)
+        api.limit = a.limit
+        args = {"from": a.from_, "to": a.to, "photos": not a.no_photos, "no_scenes": a.no_scenes, "limit": a.limit}
         pull(api, a.out, args, say)
         return 0
     except Fatal as e:

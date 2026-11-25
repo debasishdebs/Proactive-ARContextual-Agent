@@ -144,33 +144,6 @@ class DumpReaderTest {
         db.forgetDao().insertTombstone(ForgetTombstoneEntity("f1", 1)); assertNull(reader().photo("f1"))
     }
 
-    @Test fun vectorsPerSpaceDimDtypeAndForgottenFramesLeftOut() = runBlocking {
-        seed(1, 2)
-        val v = VectorCodec.encode(floatArrayOf(1f, -2f, 0.5f))
-        val sig = "siglip2-b16-224@x|v|d=768"
-        db.frameVectorDao().upsert(listOf(FrameVectorEntity("f1", sig, v), FrameVectorEntity("f2", sig, v), FrameVectorEntity("f1", "space_n", v)))
-        db.openHelper.writableDatabase.execSQL("INSERT INTO memory_vector(memoryId, spaceId, blob) VALUES ('m1', 'space_n', ?)", arrayOf<Any>(v))
-        db.forgetDao().insertTombstone(ForgetTombstoneEntity("f2", 1))
-        val r = reader()
-        val s = r.vectors("siglip2", null, 200, false)!!
-        assertEquals(listOf("f1"), s.map { it.json["id"]!!.jsonPrimitive.content }); assertEquals("3", s[0].json["dim"]!!.jsonPrimitive.content); assertEquals("float32", s[0].json["dtype"]!!.jsonPrimitive.content)
-        assertTrue(Base64.getDecoder().decode(s[0].json["data"]!!.jsonPrimitive.content).contentEquals(v))
-        val n = r.vectors("nomic", null, 200, true)!!
-        assertEquals(listOf("memory:m1", "frame:f1"), n.map { it.json["kind"]!!.jsonPrimitive.content + ":" + it.json["id"]!!.jsonPrimitive.content })
-        val half = Base64.getDecoder().decode(n[0].json["data"]!!.jsonPrimitive.content)
-        assertEquals("float16", n[0].json["dtype"]!!.jsonPrimitive.content)
-        assertEquals(listOf(0x00, 0x3C, 0x00, 0xC0, 0x00, 0x38), half.map { it.toInt() and 0xFF }) // 1.0, -2.0, 0.5 as little-endian halves
-        // paging across the memory and frame parts
-        val a = r.vectors("nomic", null, 1, false)!!; val b = r.vectors("nomic", a.last().cursor, 1, false)!!; val c = r.vectors("nomic", b.last().cursor, 1, false)!!
-        assertEquals(listOf("memory", "frame"), (a + b).map { it.json["kind"]!!.jsonPrimitive.content }); assertTrue(c.isEmpty())
-        assertNull(r.vectors("other", null, 10, false))
-    }
-
-    @Test fun halfConversionRoundsAndHandlesTheEdges() {
-        assertEquals(0x3C00, DumpReader.floatToHalf(1f)); assertEquals(0x7C00, DumpReader.floatToHalf(1e9f)); assertEquals(0xFC00, DumpReader.floatToHalf(-1e9f)); assertEquals(0, DumpReader.floatToHalf(0f))
-        assertEquals(0x3555, DumpReader.floatToHalf(1f / 3f)); assertEquals(0x0001, DumpReader.floatToHalf(5.9604645e-8f)); assertTrue(DumpReader.floatToHalf(Float.NaN) and 0x7C00 == 0x7C00)
-    }
-
     @Test fun manifestHasCountsRangeFieldsAndNoSecret() = runBlocking {
         seed(1, 2)
         db.momentLocationDao().insertIfAbsent(loc(id(1), "f1"))
@@ -212,7 +185,7 @@ class DumpReaderTest {
         fx.mark("mk:1:1", MS + 1000)
         db.frameVectorDao().upsert(listOf(FrameVectorEntity("f1", "siglip2-x", VectorCodec.encode(floatArrayOf(1f)))))
         val r = reader()
-        val others = listOf(r.manifest().toString(), r.scenes(0, Long.MAX_VALUE, null, 9).toString(), r.marks(0, Long.MAX_VALUE, null, 9).joinToString { it.json.toString() }, r.vectors("siglip2", null, 9, false)!!.joinToString { it.json.toString() })
+        val others = listOf(r.manifest().toString(), r.scenes(0, Long.MAX_VALUE, null, 9).toString(), r.marks(0, Long.MAX_VALUE, null, 9).joinToString { it.json.toString() })
         others.forEach { assertFalse(it, "41.123456" in it || "73.654321" in it) }
         assertTrue("41.123456" in all(r).single().json.toString())
     }
