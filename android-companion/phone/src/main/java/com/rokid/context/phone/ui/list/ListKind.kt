@@ -45,24 +45,37 @@ enum class ListKind(val title: String, val searchHint: String, val empty: String
     }
 }
 
-/** Which items a period's list holds, as a small key for the route: the period and the day it was opened on (so the window is the one the Activity page showed). */
-data class ListScope(val period: Period, val anchor: LocalDate) {
-    val key: String get() = "${period.name}:$anchor"
-    fun millis(zone: ZoneId): LongRange = PeriodWindow.of(period, anchor).millis(zone)
+/**
+ * Which items a period's list holds, as a small key for the route: the period and the day it was opened on (so the window is the one the Activity page showed). With a [range] (the Activity page's custom range,
+ * Range chip) the list holds that date and time range instead and the period is only the chip the page was on; the key then ends with the range (`WEEK:2026-10-12:2026-10-05T09:00|2026-10-07T17:30`). A key
+ * without a range is the old key and reads as before.
+ */
+data class ListScope(val period: Period, val anchor: LocalDate, val range: DateTimeRange? = null) {
+    val key: String get() = "${period.name}:$anchor" + (range?.let { ":" + RangeFilter.encode(it) } ?: "")
+    fun millis(zone: ZoneId): LongRange = range?.let { RangeFilter.millis(it, zone) } ?: PeriodWindow.of(period, anchor).millis(zone)
 
     companion object {
+        /** The length of an ISO local date (`2026-10-12`). */
+        private const val DAY = 10
+
         fun parse(raw: String?): ListScope? {
             val at = raw?.indexOf(':') ?: return null
             if (at <= 0) return null
             val period = Period.entries.firstOrNull { it.name == raw.substring(0, at) } ?: return null
-            val day = runCatching { LocalDate.parse(raw.substring(at + 1)) }.getOrNull() ?: return null
-            return ListScope(period, day)
+            val rest = raw.substring(at + 1)
+            val day = runCatching { LocalDate.parse(rest.take(DAY)) }.getOrNull() ?: return null
+            val tail = rest.drop(DAY)
+            if (tail.isEmpty()) return if (rest.length == DAY) ListScope(period, day) else null
+            // The old key was the date and nothing else (an old key with anything else after the date never parsed); a range follows after one more colon.
+            if (!tail.startsWith(":")) return null
+            val range = RangeFilter.decode(tail.drop(1)) ?: return null
+            return ListScope(period, day, range)
         }
     }
 }
 
 /** The route of the list of [kind] over a period: the Activity cards and "See all" use it, so a Month of any size opens with a key, not its ids. */
-fun listView(kind: ListKind, period: Period, anchor: LocalDate): String = Routes.listIn(kind, ListScope(period, anchor).key)
+fun listView(kind: ListKind, period: Period, anchor: LocalDate, range: DateTimeRange? = null): String = Routes.listIn(kind, ListScope(period, anchor, range).key)
 
 /** THE entry point for a small set: the route of the common list of [kind] over [ids] (raw ids of that kind). Rows call previewMoment on tap. An empty [ids] shows the kind's empty state. */
 fun listView(kind: ListKind, ids: List<String>): String = Routes.list(kind, ids)

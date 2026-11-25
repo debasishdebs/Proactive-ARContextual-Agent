@@ -245,4 +245,6 @@ data class ActivityUiState(
     val marks: List<MarkRowUi> = emptyList(),
     /** The level the page browses (Photos, Moments, Scenes); the default is the page as it always was. */
     val granularity: Granularity = Granularity.DEFAULT,
+    /** The custom date and time range (the Range chip), or null for the period. With one, [header] names it and the page shows its days like a Week or a Month. */
+    val range: com.rokid.context.phone.ui.list.DateTimeRange? = null,
 )

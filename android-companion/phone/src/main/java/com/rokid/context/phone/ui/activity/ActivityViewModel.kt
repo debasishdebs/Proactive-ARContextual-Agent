@@ -45,11 +45,27 @@ class ActivityViewModel(
     private val scenes: com.rokid.context.memory.SceneRepository? = null,
 ) : ViewModel() {
     private val period = MutableStateFlow(initial)
+    /** The custom date and time range (Range chip); null means the period. Kept for as long as the page lives, like the period. */
+    private val range = MutableStateFlow<com.rokid.context.phone.ui.list.DateTimeRange?>(null)
     /** (local date, zone) at each clock tick; re-queries and regroups when either changes (midnight, or a zone change noticed on the next tick). */
     private val today = clock.map { ms -> zone().let { DayBucket.dayOf(ms, it) to it } }.distinctUntilChanged()
 
-    private val content: Flow<ActivityUiState> = combine(period, today) { p, dz -> Triple(p, dz.first, dz.second) }.distinctUntilChanged().flatMapLatest { (p, d, z) ->
-        sort.order.flatMapLatest { o -> query(p, d, z, o) }
+    private val content: Flow<ActivityUiState> = combine(period, range, today) { p, r, dz -> Triple(p, r, dz) }.distinctUntilChanged().flatMapLatest { (p, r, dz) ->
+        sort.order.flatMapLatest { o -> if (r != null) rangeQuery(p, r, dz.first, dz.second, o) else query(p, dz.first, dz.second, o) }
+    }
+
+    /** A custom range: the counts and the marks of exactly that range, and its days as rows (and bars while it is short enough to read) like a Week or a Month. */
+    private fun rangeQuery(p: Period, rg: com.rokid.context.phone.ui.list.DateTimeRange, d: java.time.LocalDate, z: ZoneId, o: ActivitySort): Flow<ActivityUiState> {
+        val ms = com.rokid.context.phone.ui.list.RangeFilter.millis(rg, z)
+        val first = rg.start.toLocalDate(); val last = rg.end.toLocalDate()
+        val span = java.time.temporal.ChronoUnit.DAYS.between(first, last) + 1
+        val w = PeriodWindow(if (span <= 7) Period.WEEK else Period.MONTH, first, last.plusDays(1))
+        return withScenes(ms, combine(timeline.framesIn(ms), timeline.visibleMemoriesIn(ms), asks.timesIn(ms), nudges.timesIn(ms), marks.marksIn(ms)) { frames, mems, a, n, k ->
+            val fc = ActivityModel.countByDay(frames.map { it.ts }, w, z)
+            val mc = ActivityModel.countByDay(mems.map { it.createdAt }, w, z)
+            ActivityUiState(p, com.rokid.context.phone.ui.list.RangeFilter.label(rg), tiles = Tiles(frames.size, mems.size, a.size, n.size), bars = if (span <= MAX_BAR_DAYS) ActivityModel.bars(w, fc) else emptyList(),
+                dayRows = ActivityModel.dayRows(w, fc, mc, d, o), today = d, sort = o, marks = MarkRows.rows(k, z, withDay = true), range = rg)
+        })
     }
 
     private fun query(p: Period, d: java.time.LocalDate, z: ZoneId, o: ActivitySort): Flow<ActivityUiState> {
@@ -75,10 +91,19 @@ class ActivityViewModel(
         return combine(base, repo.startsIn(r).map { it.size }.distinctUntilChanged()) { s, n -> s.copy(tiles = s.tiles.copy(scenes = n)) }
     }
 
+    private companion object { const val MAX_BAR_DAYS = 62 }
+
     val state: StateFlow<ActivityUiState> = combine(content, StatusUi.flow(glasses, pipeline, clock, storagePct, index), granularity.level) { c, s, g -> c.copy(status = s, granularity = g) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ActivityUiState(period = initial))
 
-    fun selectPeriod(p: Period) { period.value = p }
+    /** A period chip: it also ends a custom range, so the chips are the way back. */
+    fun selectPeriod(p: Period) { period.value = p; range.value = null }
+    /** Shows the date and time range from [start] to [end] (to the minute, both ends included); false, and nothing changes, when [start] is after [end]. */
+    fun selectRange(start: java.time.LocalDateTime, end: java.time.LocalDateTime): Boolean {
+        val r = com.rokid.context.phone.ui.list.RangeFilter.of(start, end) ?: return false
+        range.value = r; return true
+    }
+    fun clearRange() { range.value = null }
     fun selectSort(o: ActivitySort) = sort.set(o)
     fun selectGranularity(g: Granularity) = granularity.set(g)
     fun togglePause() = pipeline.toggle()
