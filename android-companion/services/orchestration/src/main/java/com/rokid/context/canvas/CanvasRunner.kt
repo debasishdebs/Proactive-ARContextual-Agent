@@ -94,7 +94,7 @@ class CanvasRunner(
     private val scenes: SceneRunSource? = null,
     /** The recent watch values of the phone hub a watch run uses (estimate, start and again right after the fence capture); null = no watch runs. */
     private val watch: WatchRunSource? = null,
-    /** Canvas v2.2: extra estimate refusals of a pipeline (fixed tokens, for example `offline_only` for a model node that needs a remote endpoint under Offline only). Empty = none. Photo estimates only; every model node checks again at call time. */
+    /** Canvas v2.2: extra estimate refusals of a pipeline (fixed tokens, for example `offline_only` for a model node that needs a remote endpoint under Offline only). Empty = none. Added to the photo, Moment, Scene and watch estimates alike (so each says `offline_only` at estimate time); every model node checks again at call time. */
     private val preflight: suspend (Pipeline) -> List<String> = { emptyList() },
 ) {
     /** Room v16: a pass-through keeps its input's caption proof only while the captions are exactly those the proved call wrote. */
@@ -343,6 +343,7 @@ class CanvasRunner(
         if (res.size != ids.size) reasons += "some moments have no photos any more"
         if (PipelineValidator.validate(p).isNotEmpty()) reasons += "pipeline has problems"
         if (c.nominal > MAX_NOMINAL_CALLS) reasons += "more than $MAX_NOMINAL_CALLS model calls"
+        reasons += preflight(p)
         if (reasons.isNotEmpty()) return Estimate.Refused(reasons)
         val token = tokens.issue(PipelineHash.of(p), ids, bindingOf(res).joinToString("\n"))
         synchronized(modelsByToken) { modelsByToken[token] = listOf(modelsJson(c.models)) }
@@ -367,6 +368,7 @@ class CanvasRunner(
         if (res.size != ids.size) reasons += "some scenes do not exist any more"
         if (PipelineValidator.validate(p).isNotEmpty()) reasons += "pipeline has problems"
         if (c.nominal > MAX_NOMINAL_CALLS) reasons += "more than $MAX_NOMINAL_CALLS model calls"
+        reasons += preflight(p)
         if (reasons.isNotEmpty()) return Estimate.Refused(reasons)
         val token = tokens.issue(PipelineHash.of(p), ids, bindingOfScenes(res).joinToString("\n"))
         synchronized(modelsByToken) { modelsByToken[token] = listOf(modelsJson(c.models)) }
@@ -438,6 +440,7 @@ class CanvasRunner(
         if (items.size > MAX_PHOTOS) reasons += "more than $MAX_PHOTOS watch values"
         if (PipelineValidator.validate(p).isNotEmpty()) reasons += "pipeline has problems"
         if (c.nominal > MAX_NOMINAL_CALLS) reasons += "more than $MAX_NOMINAL_CALLS model calls"
+        reasons += preflight(p)
         if (reasons.isNotEmpty()) return Estimate.Refused(reasons)
         val token = tokens.issue(PipelineHash.of(p), listOf(windowKey(fromMs, toMs)), WatchMotion.binding(items))
         synchronized(modelsByToken) { modelsByToken[token] = listOf(modelsJson(c.models)) }
