@@ -49,7 +49,7 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         FrameSweep.sweep(applicationContext)
         // settled mark-undo cleanup obligations (`mark_cleanup_owed:`) are pruned here too, so an abandoned one cannot accumulate
         runCatching { com.rokid.context.canvas.marks.MarkRecorder.pruneSettledOwed(graph.db.canvasSlice3Dao()) { ForgetActions.cleanupStillOwed(applicationContext, it) } }
-        val retention = Retention(graph, service, usedBytes = { StorageMeter.usedBytes(applicationContext) }, protectedFrames = { QuotaProtection.frames(applicationContext) })
+        val retention = Retention(graph, service, usedBytes = { StorageMeter.usedBytes(applicationContext) }, protectedFrames = { QuotaProtection.frames(applicationContext) }, exemptPhotos = DeveloperFlags.retentionP2(applicationContext))
         if (DeveloperFlags.pauseRetention(applicationContext)) {
             // P0: the Developer "Pause clean-up" switch skips EVERY deleting step, quota eviction included (default ON for the retention candidate). One counts-only line says what would be due.
             val p = runCatching { retention.plan(settings, now) }.getOrNull()
@@ -97,7 +97,39 @@ internal class Retention(
     private val protectedFrames: suspend () -> Set<String>? = { emptySet() },
     /** Quota eviction takes at most this many photos per round (and stops inside a round as soon as their files cover what is over). */
     private val quotaChunk: Int = QUOTA_CHUNK,
+    /** Retention P2 (Developer flag `retentionP2`, default OFF): photo expiry (steps 4, 5 and 7 of [run]) skips the photos a place card, a mark or a pin points to, or a place memory cites. OFF = the unchanged selection. */
+    private val exemptPhotos: Boolean = false,
 ) {
+    /** The photos found exempt so far in this pass (only used with [exemptPhotos]); the outside-the-database set is read once and cached. A null set = unreadable = fail closed. */
+    private val exemptKnown = HashSet<String>()
+    private var outside: Set<String>? = null
+    private var outsideRead = false
+    private suspend fun outsideSet(): Set<String>? {
+        if (!outsideRead) { outside = runCatching { protectedFrames() }.getOrNull(); outsideRead = true }
+        return outside
+    }
+
+    /**
+     * Retention P2: the first [max] photos [select] returns that are not exempt. [select] is asked for `max + (exempt ids known)` rows so an exempt photo at the head of the list can never starve the rest or loop forever. With the flag OFF it is
+     * exactly `select(max)`. Fail closed: with the flag ON and the outside set unreadable nothing is returned (nothing expires), and one counts-only line says so.
+     */
+    private suspend fun dueNotExempt(max: Int, select: suspend (Int) -> List<String>): List<String> {
+        if (!exemptPhotos) return select(max)
+        val out = outsideSet() ?: run { PcLog.milestone(LOG_TAG, "photo exemption unreadable: photo expiry skipped"); return emptyList() }
+        val dao = graph.db.forgetDao()
+        while (true) {
+            val asked = max + exemptKnown.size
+            val ids = select(asked)
+            val fresh = ids.filter { it !in exemptKnown }
+            val before = exemptKnown.size
+            fresh.filter { it in out }.forEach { exemptKnown += it }
+            val rest = fresh.filter { it !in exemptKnown }
+            rest.chunked(EXEMPT_BIND).forEach { exemptKnown += dao.explicitlyKeptAmong(it, ForgetRadius.ms()) }
+            val result = ids.filter { it !in exemptKnown }
+            if (result.size >= max || ids.size < asked || exemptKnown.size == before) return result.take(max)
+        }
+    }
+
     /** [deletedUndescribed] is 0 by construction (expiry requires a citing memory); it is kept as the Diagnostics counter that proves it. */
     data class Summary(val skippedDeleted: Int = 0, val deletedUndescribed: Int = 0, val demoted: Int = 0, val photosExpired: Int = 0)
 
@@ -113,15 +145,15 @@ internal class Retention(
         val dao = graph.db.forgetDao()
         val since = if (s.perKindSince > 0L) s.perKindSince else nowMs
         fun forever(d: Int) = d == MemorySettings.FOREVER
-        val photos = if (forever(s.photoDays)) 0 else dao.linkedPhotosDue(since, s.photoDays * DAY, nowMs, PROTECT_MS, if (describeBeforeDeleteReady) 1 else 0, GRACE_DAYS * DAY, COUNT_CAP).size
+        val photos = if (forever(s.photoDays)) 0 else dueNotExempt(COUNT_CAP) { dao.linkedPhotosDue(since, s.photoDays * DAY, nowMs, PROTECT_MS, if (describeBeforeDeleteReady) 1 else 0, GRACE_DAYS * DAY, it) }.size
         val over = runCatching { s.quotaBytes > 0 && usedBytes() > s.quotaBytes }.getOrDefault(false)
         val protect = if (over) runCatching { protectedFrames() }.getOrNull()?.takeIf { it.size <= MAX_PROTECT } else null
         return Plan(
             demoteDue = dao.countDemotable(nowMs - s.recallHours * HOUR),
-            skippedPhotosDue = dao.skippedPhotosDue(since, s.skippedPhotoDays * DAY, nowMs, PROTECT_MS, COUNT_CAP).size,
+            skippedPhotosDue = dueNotExempt(COUNT_CAP) { dao.skippedPhotosDue(since, s.skippedPhotoDays * DAY, nowMs, PROTECT_MS, it) }.size,
             photosDue = photos,
             vectorsDue = if (forever(s.imageVectorDays)) 0 else dao.vectorFramesBefore(nowMs - s.imageVectorDays * DAY, COUNT_CAP).size,
-            legacyDue = if (forever(s.photoDays)) 0 else dao.orphanFramesBefore(nowMs - s.photoDays * DAY, COUNT_CAP).size,
+            legacyDue = if (forever(s.photoDays)) 0 else dueNotExempt(COUNT_CAP) { dao.orphanFramesBefore(nowMs - s.photoDays * DAY, it) }.size,
             quotaDue = if (protect == null) 0 else dao.quotaPhotosDue(nowMs - QUOTA_MIN_AGE_DAYS * DAY, ForgetRadius.ms(), protectList(protect), COUNT_CAP).size,
         )
     }
@@ -202,7 +234,7 @@ internal class Retention(
         // 4. Ordinary skipped photos.
         var skipped = 0
         for (round in 0 until MAX_ROUNDS) {
-            val ids = dao.skippedPhotosDue(since, s.skippedPhotoDays * DAY, nowMs, PROTECT_MS, CHUNK)
+            val ids = dueNotExempt(CHUNK) { dao.skippedPhotosDue(since, s.skippedPhotoDays * DAY, nowMs, PROTECT_MS, it) }
             if (ids.isEmpty()) break
             beforeSkippedExpiry(ids)
             val r = service.expirePhotos(ids, recheckSkipped = true) // S4: a photo described since the selection is kept
@@ -216,7 +248,7 @@ internal class Retention(
             val window = s.photoDays * DAY
             val ready = if (describeBeforeDeleteReady) 1 else 0
             for (round in 0 until MAX_ROUNDS) {
-                val ids = dao.linkedPhotosDue(since, window, nowMs, PROTECT_MS, ready, GRACE_DAYS * DAY, CHUNK)
+                val ids = dueNotExempt(CHUNK) { dao.linkedPhotosDue(since, window, nowMs, PROTECT_MS, ready, GRACE_DAYS * DAY, it) }
                 if (ids.isEmpty()) break
                 onChunk(service.expirePhotos(ids, requireLinked = true))
             }
@@ -232,7 +264,7 @@ internal class Retention(
         // 7. Legacy frames (no frame_meta): expired once older than the Photos setting and uncited.
         for (round in 0 until MAX_ROUNDS) {
             if (s.photoDays == MemorySettings.FOREVER) break // legacy photos follow the Photos setting
-            val frames = dao.orphanFramesBefore(nowMs - s.photoDays * DAY, CHUNK)
+            val frames = dueNotExempt(CHUNK) { dao.orphanFramesBefore(nowMs - s.photoDays * DAY, it) }
             if (frames.isEmpty()) break
             onChunk(service.expireOrphanFrames(frames)) // its own path, no cascade of any kind; the expiry marker keeps it "expired", not "forgotten"
         }
@@ -256,6 +288,8 @@ internal class Retention(
         private const val QUOTA_ROUNDS = 400
         /** SQLite binds at most 32,766 variables: the protected list is capped well below it. */
         private const val MAX_PROTECT = 20_000
+        /** Ids bound per `explicitlyKeptAmong` call. */
+        private const val EXEMPT_BIND = 500
         private const val HOUR = 3_600_000L
         private const val DAY = 24 * HOUR
         /** Spec §P6.4: a photo described for describe-before-delete is kept this long past its deadline. */

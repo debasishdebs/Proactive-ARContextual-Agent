@@ -329,6 +329,9 @@ fun DiagnosticsScreen(
     /** P0 retention fix: "Pause clean-up" skips the nightly expiry entirely. Default ON in the retention-fix candidate (nothing expires until it is turned OFF); shown only with [developerMode]. */
     pauseRetention: Boolean = true,
     onPauseRetention: (Boolean) -> Unit = {},
+    /** Retention P2: photo expiry skips the photos a place card, a mark or a pin points to. Default OFF; shown only with [developerMode]. */
+    retentionP2: Boolean = false,
+    onRetentionP2: (Boolean) -> Unit = {},
     /** Map zones P1: the new full-height Map zones screen. Default OFF (the shipped Pause zones screen); shown only with [developerMode]. */
     mapZonesV2: Boolean = false,
     onMapZonesV2: (Boolean) -> Unit = {},
@@ -499,6 +502,13 @@ fun DiagnosticsScreen(
                             Text("Off (default). Gates the dry-run Test run logic (window picker, E2E record, live tap limits). No screen uses it yet; nothing is sent or written.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
                         }
                         Switch(checked = canvasTestRun, onCheckedChange = onCanvasTestRun, modifier = Modifier.testTag("canvas_test_run_switch"))
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Keep important photos (Retention P2)", style = MaterialTheme.typography.titleSmall)
+                            Text("Off (default): clean-up removes photos by their Photos setting only. On: photos that a place card, a mark or a pin points to (or a place memory cites) are left out of photo clean-up. Text is never deleted by clean-up either way.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                        }
+                        Switch(checked = retentionP2, onCheckedChange = onRetentionP2, modifier = Modifier.testTag("retention_p2_switch"))
                     }
                     NoticeText(CanvasSessionCopy.note(devSessionHours), tag = "dev_session_note")
                     testPlace?.invoke()
