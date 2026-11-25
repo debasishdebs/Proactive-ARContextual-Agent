@@ -35,3 +35,5 @@ The phone refuses a row for a missing Moment or anchor, a forgotten (tombstoned)
 
 - `summary.md`: counts only (Moments total, with proposal, blank, by source, by age bucket, by day).
 - `proposals.tsv`: `momentId, lat, lon, source, ageSeconds`. It holds coordinates: keep it on the Mac, never commit or share it.
+
+See also (the other direction): the read-only Developer dump `tools/pull_dump.py` pulls Moments, Scenes, marks, pins and their locations from the same paired session (`GET /api/dump/...`, Developer mode and a paired session, USB `adb forward`). Design: docs/superpowers/plans/handoffs/dump-api-2026-11-26.md.

@@ -1,0 +1,163 @@
+package com.rokid.context.phone.canvas.api
+
+import com.rokid.context.canvas.dump.DumpItem
+import com.rokid.context.canvas.dump.DumpPhoto
+import com.rokid.context.canvas.dump.DumpSource
+import com.rokid.context.phone.canvas.server.ApiHandler
+import com.rokid.context.phone.canvas.server.CanvasAuth
+import com.rokid.context.phone.canvas.server.CanvasRouter
+import com.rokid.context.phone.canvas.server.AssetSource
+import com.rokid.context.phone.canvas.server.HostPolicy
+import com.rokid.context.phone.canvas.server.HttpRequest
+import com.rokid.context.phone.canvas.server.HttpResponse
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class DumpRoutesTest {
+    private class Fake : DumpSource {
+        var moments: List<DumpItem> = (1..5).map { DumpItem("m$it", buildJsonObject { put("id", "m$it") }) }
+        var calls = 0
+        var wipeOnRead: (() -> Unit)? = null
+        val lastArgs = mutableListOf<String>()
+        override suspend fun manifest(): JsonObject { calls++; wipeOnRead?.invoke(); return buildJsonObject { put("dump_id", "dump-x"); put("counts", buildJsonObject { put("moments", 5) }) } }
+        override suspend fun moments(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem> { calls++; lastArgs += "$fromMs|$toMs|$after|$limit"; wipeOnRead?.invoke(); return moments.filter { after == null || it.cursor > after }.take(limit) }
+        override suspend fun scenes(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem> = emptyList()
+        override suspend fun marks(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem> = emptyList()
+        override suspend fun pins(): List<JsonObject> = listOf(buildJsonObject { put("id", "p1"); put("lat", 1.5) })
+        override suspend fun photo(frameId: String): DumpPhoto? = if (frameId == "f1") DumpPhoto(byteArrayOf(1, 2, 3), "image/jpeg") else null
+        override suspend fun vectors(space: String, after: String?, limit: Int, float16: Boolean): List<DumpItem>? = if (space == "nomic") listOf(DumpItem("m:1", buildJsonObject { put("id", "x"); put("dtype", if (float16) "float16" else "float32") })) else null
+    }
+
+    private val src = Fake()
+    private var dev = true
+    private var gen = 0L
+    private var now = 1_000_000L
+    private fun routes(max: Int = 60) = DumpRoutes({ dev }, src, { gen }, { java.time.ZoneOffset.UTC }, { now }, max)
+    private fun get(path: String, q: Map<String, String> = emptyMap(), m: String = "GET", r: DumpRoutes = routes()) = runBlocking { r.handle(HttpRequest(m, path, q, emptyMap(), ByteArray(0))) }
+    private fun json(r: HttpResponse?) = Json.parseToJsonElement(String(r!!.body)).jsonObject
+    private fun code(r: HttpResponse?) = json(r)["error"]?.jsonPrimitive?.content
+
+    @Test fun notThisGroupsPathIsNullAndOtherMethodsAre405() {
+        assertNull(get("/api/moments/repair")); assertNull(get("/api/dumpx/manifest"))
+        for (m in listOf("POST", "PUT", "DELETE", "PATCH")) assertEquals(m, 405, get("/api/dump/manifest", m = m)!!.status)
+    }
+
+    @Test fun developerModeOffIs403OnEveryRouteAndReadsNothing() {
+        dev = false
+        listOf("manifest", "moments", "scenes", "marks", "pins", "frames/f1/photo", "vectors").forEach { p -> val r = get("/api/dump/$p", mapOf("space" to "nomic")); assertEquals(p, 403, r!!.status); assertEquals("developer_mode_off", code(r)) }
+        assertEquals(0, src.calls)
+    }
+
+    @Test fun manifestAndPagesAreJsonAndCursorPaged() {
+        assertEquals("dump-x", json(get("/api/dump/manifest"))["dump_id"]!!.jsonPrimitive.content)
+        val p1 = json(get("/api/dump/moments", mapOf("limit" to "2")))
+        assertEquals(2, p1["count"]!!.jsonPrimitive.content.toInt()); assertEquals("m2", p1["next"]!!.jsonPrimitive.content)
+        val p3 = json(get("/api/dump/moments", mapOf("after" to "m4", "limit" to "2")))
+        assertEquals(1, p3["count"]!!.jsonPrimitive.content.toInt()); assertEquals(JsonNull, p3["next"])
+        assertEquals(1, json(get("/api/dump/pins"))["count"]!!.jsonPrimitive.content.toInt())
+    }
+
+    @Test fun limitIsCappedAt200AndBadParametersAre400() {
+        get("/api/dump/moments", mapOf("limit" to "9999")); assertTrue(src.lastArgs.last().endsWith("|200"))
+        listOf(mapOf("limit" to "0"), mapOf("limit" to "x"), mapOf("after" to "a b"), mapOf("after" to "a/../b"), mapOf("from" to "yesterday"), mapOf("to" to "2026-13-40")).forEach { q -> assertEquals(q.toString(), 400, get("/api/dump/moments", q)!!.status) }
+        assertEquals(400, get("/api/dump/vectors")!!.status); assertEquals(400, get("/api/dump/vectors", mapOf("space" to "other"))!!.status); assertEquals(400, get("/api/dump/vectors", mapOf("space" to "nomic", "dtype" to "float64"))!!.status)
+    }
+
+    @Test fun fromAndToTakeDaysInTheLocalZoneOrEpochMs() {
+        get("/api/dump/moments", mapOf("from" to "2026-11-25", "to" to "2026-11-25"))
+        assertEquals("1795564800000|1795651199999|null|200", src.lastArgs.last())
+        get("/api/dump/moments", mapOf("from" to "1000", "to" to "2000")); assertEquals("1000|2000|null|200", src.lastArgs.last())
+    }
+
+    @Test fun aPageStopsAtTwoMegabytesAndHandsBackACursor() {
+        val big = "x".repeat(900_000)
+        src.moments = (1..5).map { DumpItem("m$it", buildJsonObject { put("id", "m$it"); put("pad", big) }) }
+        val r = get("/api/dump/moments")!!
+        assertTrue(r.body.size <= DumpSource.MAX_PAGE_BYTES)
+        val j = json(r); assertEquals(2, j["count"]!!.jsonPrimitive.content.toInt()); assertEquals("m2", j["next"]!!.jsonPrimitive.content)
+        src.moments = listOf(DumpItem("m1", buildJsonObject { put("pad", "y".repeat(3_000_000)) }))
+        assertEquals("one oversize item is still delivered (never an endless empty page)", 1, json(get("/api/dump/moments"))["count"]!!.jsonPrimitive.content.toInt())
+    }
+
+    @Test fun photoIsStreamedWithItsTypeAndNoStoreAndAMissingOneIs404() {
+        val r = get("/api/dump/frames/f1/photo")!!
+        assertEquals(200, r.status); assertEquals("image/jpeg", r.contentType); assertEquals(listOf<Byte>(1, 2, 3), r.body.toList()); assertEquals("no-store", r.headers["Cache-Control"])
+        assertEquals(404, get("/api/dump/frames/gone/photo")!!.status)
+        assertEquals(400, get("/api/dump/frames/a b/photo")!!.status)
+        assertEquals(404, get("/api/dump/frames/f1/other")!!.status); assertEquals(404, get("/api/dump/nothing")!!.status)
+    }
+
+    @Test fun vectorsDtypeIsPassedAndAnUnknownSpaceIs400() {
+        assertEquals("float16", json(get("/api/dump/vectors", mapOf("space" to "nomic", "dtype" to "float16")))["items"]!!.jsonArray[0].jsonObject["dtype"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun rateLimitedAfterTheBudgetWithinOneSecondAndFreshAfterIt() {
+        val r = routes(max = 3)
+        repeat(3) { assertEquals(200, get("/api/dump/pins", r = r)!!.status) }
+        val limited = get("/api/dump/pins", r = r)!!
+        assertEquals(429, limited.status); assertEquals("rate_limited", code(limited)); assertEquals("1", limited.headers["Retry-After"])
+        now += 1_001; assertEquals(200, get("/api/dump/pins", r = r)!!.status)
+    }
+
+    @Test fun deleteAllWhileReadingAnswersNothingButStopped() {
+        src.wipeOnRead = { gen++ }
+        val r = get("/api/dump/moments")!!
+        assertEquals(409, r.status); assertEquals("dump_stopped", code(r)); assertFalse(String(r.body).contains("m1"))
+        src.wipeOnRead = null; assertEquals(200, get("/api/dump/moments")!!.status)
+    }
+
+    @Test fun developerModeGoingOffWhileReadingAnswersNothing() {
+        src.wipeOnRead = { dev = false }
+        assertEquals(403, get("/api/dump/manifest")!!.status)
+    }
+
+    @Test fun aFailingReaderIsAFixed500WithoutTheExceptionText() {
+        val boom = object : DumpSource by src { override suspend fun manifest(): JsonObject = throw IllegalStateException("secret-detail-xyz") }
+        val r = runBlocking { DumpRoutes({ true }, boom).handle(HttpRequest("GET", "/api/dump/manifest", emptyMap(), emptyMap(), ByteArray(0))) }!!
+        assertEquals(500, r.status); assertFalse(String(r.body).contains("secret-detail-xyz"))
+    }
+
+    @Test fun noAnswerCarriesATokenKeyOrSecretFieldName() {
+        val all = listOf("manifest", "moments", "pins", "scenes", "marks").map { String(get("/api/dump/$it")!!.body) }
+        all.forEach { t -> listOf("token", "apikey", "api_key", "passphrase", "sqlcipher", "maptiler", "authorization").forEach { assertFalse("$it in $t", t.lowercase().contains(it)) } }
+    }
+
+    // ---- behind the real router: pairing and the Host policy are the router's, exactly as for the repair and location-import routes ----
+
+    private val auth = CanvasAuth(clock = { 5_000L })
+    private val hosts = HostPolicy(port = { 8765 }, lanIp = { null })
+    private val routed = ApiHandler { req -> runBlocking { routes().handle(req) } ?: HttpResponse.error(404, "not_found", "Not found.") }
+    private val router = CanvasRouter(auth, hosts, routed, AssetSource { null })
+    private fun viaRouter(token: String?, host: String = "127.0.0.1:8765", path: String = "/api/dump/manifest") =
+        router.handle(HttpRequest("GET", path, emptyMap(), buildMap { put("host", host); if (token != null) put("authorization", "Bearer $token") }, ByteArray(0)))
+
+    @Test fun withoutAPairedSessionTheRouterAnswers401AndTheReaderIsNeverCalled() {
+        assertEquals(401, viaRouter(null).status); assertEquals(401, viaRouter("wrong").status); assertEquals(0, src.calls)
+    }
+
+    @Test fun aPairedSessionOnLoopbackIsServedAndAnyOtherHostIs421() {
+        val t = auth.newWebViewToken()
+        assertEquals(200, viaRouter(t).status); assertEquals(200, viaRouter(t, host = "localhost:8765").status)
+        for (h in listOf("192.168.1.5:8765", "evil.example:8765", "127.0.0.1:9999", "10.0.0.2")) assertEquals(h, 421, viaRouter(t, host = h).status)
+        dev = false; assertEquals(403, viaRouter(t).status)
+    }
+
+    @Test fun theLogLineTemplateNeverCarriesAFrameId() {
+        val logs = mutableListOf<String>()
+        val t = auth.newWebViewToken()
+        CanvasRouter(auth, hosts, routed, AssetSource { null }) { logs += it }.handle(HttpRequest("GET", "/api/dump/frames/f1/photo", mapOf("after" to "secret"), mapOf("host" to "127.0.0.1:8765", "authorization" to "Bearer $t"), ByteArray(0)))
+        assertEquals(1, logs.size); assertFalse(logs[0].contains("f1")); assertFalse(logs[0].contains("secret"))
+    }
+}

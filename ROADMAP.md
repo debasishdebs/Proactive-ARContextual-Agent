@@ -98,6 +98,7 @@ Feature batches are minor releases, fixes are patches (1.x.y). Release branches 
 | 1.5.0 | date-range filter on lists, MapTiler street map key |
 | 1.6.0 | Room v18: card history, Moment location, GPS backfill, offline notice on the zones map, network-return trigger |
 | 1.7.0 | test place, photo/URL import, embedding match |
+| 1.7.0 (dev) | Developer dump API (`/api/dump`, `tools/pull_dump.py`): BUILT, device check pending |
 | 1.8.0 | Retention P2, map zones P1 |
 | 1.9.x | canvas line (old v2.1-v2.5) |
 | 1.10.0 | offline vision model (old 1.4.5) |
