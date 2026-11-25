@@ -30,9 +30,10 @@ class ModelNodesTest {
         assertNull(NodeTypes.byType(ModelNodeTypes.ROUTE))
     }
 
-    @Test fun onOffersTheThreeTypesNotLiveable() {
+    @Test fun onOffersEveryModelAndRuleTypeNotLiveable() {
         NodeTypes.modelNodesEnabled = { true }
-        assertEquals(NodeTypes.all.size + 3, NodeTypes.available().size)
+        assertEquals(NodeTypes.all.size + 8, NodeTypes.available().size)
+        assertEquals(8, ModelNodeTypes.all.size)
         for (t in ModelNodeTypes.all) { assertFalse(t.liveable); assertNotNull(NodeTypes.resolve(t.type, 2)); assertNull(NodeTypes.resolve(t.type, 1)) }
     }
 
@@ -104,5 +105,22 @@ class ModelNodesTest {
         assertNull(c(NodeBackendPref.AUTO, ModelPrivacy.OFFLINE_ONLY, Backend.OFFLINE))
         assertNull(c(NodeBackendPref.AUTO, ModelPrivacy.AUTO, Backend.ONLINE))
         assertEquals(NodeBackendPref.AUTO, NodeBackendPref.parse("garbage"))
+    }
+
+    @Test fun ruleSetsAreOffWithTheFlagAndBranchPassFailOrDropped() {
+        for (t in listOf(ModelNodeTypes.RULE_ALL, ModelNodeTypes.RULE_ANY, ModelNodeTypes.RULE_NOT, ModelNodeTypes.RULE_DEBOUNCE, ModelNodeTypes.RULE_RATE)) assertNull(t, NodeTypes.byType(t))
+        NodeTypes.modelNodesEnabled = { true }
+        for (t in listOf(ModelNodeTypes.RULE_ALL, ModelNodeTypes.RULE_ANY, ModelNodeTypes.RULE_NOT)) assertEquals(listOf("pass", "fail"), NodeTypes.byType(t)!!.branches(JsonObject(emptyMap())))
+        for (t in listOf(ModelNodeTypes.RULE_DEBOUNCE, ModelNodeTypes.RULE_RATE)) assertEquals(listOf("pass", "dropped"), NodeTypes.byType(t)!!.branches(JsonObject(emptyMap())))
+    }
+
+    @Test fun conditionsAreValidatedLikeRowsWithoutABranch() {
+        val c = { rows: String -> PipelineNode("a", ModelNodeTypes.RULE_ALL, "a", p("conditions" to rows)) }
+        assertTrue(ModelNodeTypes.paramProblems("a", c("""[{"field":"label","op":"==","value":"indoor"},{"field":"confidence","op":">=","value":0.7}]""")).isEmpty())
+        assertTrue(ModelNodeTypes.paramProblems("a", c("""[{"field":"x","op":"exists"}]""")).isEmpty())
+        assertEquals(1, ModelNodeTypes.paramProblems("a", c("[]")).size)
+        assertEquals(1, ModelNodeTypes.paramProblems("a", c("""[{"field":"x","op":"~","value":1}]""")).size)
+        assertEquals(1, ModelNodeTypes.paramProblems("a", c((1..13).joinToString(",", "[", "]") { """{"field":"x","op":"exists"}""" })).size)
+        assertEquals(1, ModelNodeTypes.paramProblems("a", PipelineNode("a", ModelNodeTypes.RULE_NOT, "a", JsonObject(emptyMap()))).size)
     }
 }

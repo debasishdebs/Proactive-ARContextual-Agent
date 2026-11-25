@@ -16,12 +16,22 @@ import kotlinx.serialization.json.put
 /**
  * Canvas v2.2 (design 2026-11-24, section 2.2): the model, classifier, router and rule node types. They are registered ONLY while `NodeTypes.modelNodesEnabled()` is true (Developer flag `canvasModelNodes`,
  * default OFF, fail closed): with the flag off a graph that holds one is "unknown type" for the validator and the palette. Every one is `liveable = false` (a test or an experiment, never published).
- * Built here: `model.classify`, `model.route`, `rule.table`. Parked, not registered (no executor): `model.text`, `model.vision`, `embed.match`, `rule.when`, `rule.all/any/not`, `rule.debounce/rate`.
+ * Built here: `model.classify`, `model.route`, `rule.table`, and the rule sets that need no change to the glasses `ExprProgram`: `rule.all/any/not` (the same condition rows as `rule.table`, over the ONE incoming item: there is no fan-in) and
+ * `rule.debounce/rate` (over the items of one run, by frame time). Parked, not registered (no executor): `model.text`, `model.vision`, `embed.match`, `rule.when` (needs a field term in the shared `ExprProgram`).
  */
 object ModelNodeTypes {
     const val CLASSIFY = "model.classify"
     const val ROUTE = "model.route"
     const val RULE_TABLE = "rule.table"
+    const val RULE_ALL = "rule.all"
+    const val RULE_ANY = "rule.any"
+    const val RULE_NOT = "rule.not"
+    const val RULE_DEBOUNCE = "rule.debounce"
+    const val RULE_RATE = "rule.rate"
+
+    const val PASS = "pass"
+    const val FAIL = "fail"
+    const val DROPPED = "dropped"
 
     const val ELSE = "other"
 
@@ -40,6 +50,15 @@ object ModelNodeTypes {
 
     val ruleTableSchema = ParamSchema(listOf(ParamSpec("rows", ParamKind.TEXT, label = "Rows (JSON list)", maxLen = 4_000)))
 
+    val conditionSchema = ParamSchema(listOf(ParamSpec("conditions", ParamKind.TEXT, label = "Conditions (JSON list of field, op, value)", maxLen = 3_000)))
+    val debounceSchema = ParamSchema(listOf(ParamSpec("quietMs", ParamKind.INT, label = "Quiet time (ms)", min = 1_000.0, max = 3_600_000.0, step = 1_000.0, default = JsonPrimitive(10_000), sweep = true)))
+    val rateSchema = ParamSchema(listOf(
+        ParamSpec("maxItems", ParamKind.INT, label = "Most items", min = 1.0, max = 50.0, step = 1.0, default = JsonPrimitive(1), sweep = true),
+        ParamSpec("perMs", ParamKind.INT, label = "Per window (ms)", min = 1_000.0, max = 3_600_000.0, step = 1_000.0, default = JsonPrimitive(60_000), sweep = true),
+    ))
+    private val passFail: (JsonObject) -> List<String> = { listOf(PASS, FAIL) }
+    private val passDropped: (JsonObject) -> List<String> = { listOf(PASS, DROPPED) }
+
     val all: List<NodeType> = listOf(
         NodeType(CLASSIFY, "Classify", modelInputs, PortType.JSON, branches = { labelBranches(it) }, sinceSchema = 2, category = Category.AI_CLASSIFY, executor = ExecutorKind.PROMPT,
             short = "classify", params = modelParams, liveable = false, cost = CostSpec(modelCalls = 1), family = Family.CONDITION,
@@ -50,6 +69,16 @@ object ModelNodeTypes {
         NodeType(RULE_TABLE, "Rule table", setOf(PortType.JSON, PortType.NUMBER), PortType.JSON, branches = { RuleTable.branches(it) }, sinceSchema = 2, category = Category.CHECKS,
             executor = ExecutorKind.TABLE, short = "rules", params = ruleTableSchema, liveable = false, family = Family.CONDITION,
             hint = "First matching row wins; no model, no network."),
+        NodeType(RULE_ALL, "All of", setOf(PortType.JSON, PortType.NUMBER), PortType.JSON, branches = passFail, sinceSchema = 2, category = Category.CHECKS, executor = ExecutorKind.TABLE, short = "all",
+            params = conditionSchema, liveable = false, family = Family.CONDITION, hint = "pass when every condition holds for the item, else fail. No model, no network."),
+        NodeType(RULE_ANY, "Any of", setOf(PortType.JSON, PortType.NUMBER), PortType.JSON, branches = passFail, sinceSchema = 2, category = Category.CHECKS, executor = ExecutorKind.TABLE, short = "any",
+            params = conditionSchema, liveable = false, family = Family.CONDITION, hint = "pass when at least one condition holds for the item, else fail."),
+        NodeType(RULE_NOT, "None of", setOf(PortType.JSON, PortType.NUMBER), PortType.JSON, branches = passFail, sinceSchema = 2, category = Category.CHECKS, executor = ExecutorKind.TABLE, short = "not",
+            params = conditionSchema, liveable = false, family = Family.CONDITION, hint = "pass when no condition holds for the item (the negation of Any of), else fail."),
+        NodeType(RULE_DEBOUNCE, "Debounce", setOf(PortType.JSON, PortType.NUMBER), PortType.JSON, branches = passDropped, sinceSchema = 2, category = Category.CHECKS, executor = ExecutorKind.BUILTIN, short = "debounce",
+            params = debounceSchema, liveable = false, family = Family.CONDITION, hint = "The first item of a burst passes; items closer than the quiet time to the one before are dropped. Needs frames with a capture time."),
+        NodeType(RULE_RATE, "Rate limit", setOf(PortType.JSON, PortType.NUMBER), PortType.JSON, branches = passDropped, sinceSchema = 2, category = Category.CHECKS, executor = ExecutorKind.BUILTIN, short = "rate",
+            params = rateSchema, liveable = false, family = Family.CONDITION, hint = "At most N items pass per window; the rest are dropped. Needs frames with a capture time."),
     )
 
     /** The labels of a classify or route node plus `none` (always present). Invalid or missing labels give just `none`; the validator reports the problem. */
@@ -63,6 +92,7 @@ object ModelNodeTypes {
             if (raw.size != ok.size || ok.size !in ClassifySpec.MIN_LABELS..ClassifySpec.MAX_LABELS) listOf("node $id: labels must be 2..12 distinct short words (not none)") else emptyList()
         }
         RULE_TABLE -> if (RuleTable.parse(n.params) == null) listOf("node $id: rows must be 1..24 valid rules") else emptyList()
+        RULE_ALL, RULE_ANY, RULE_NOT -> if (RuleTable.parseConditions(n.params) == null) listOf("node $id: conditions must be 1..${RuleTable.MAX_CONDITIONS} valid conditions") else emptyList()
         else -> emptyList()
     }
 }
@@ -120,24 +150,36 @@ object ClassifySpec {
  */
 object RuleTable {
     const val MAX_ROWS = 24
+    const val MAX_CONDITIONS = 12
     private val OPS = setOf("==", "!=", ">", ">=", "<", "<=", "in", "contains", "exists")
     private val BRANCH = Regex("[A-Za-z][A-Za-z0-9_]{0,23}")
     data class Row(val field: String, val op: String, val value: JsonElement?, val branch: String)
 
     fun parse(params: JsonObject): List<Row>? {
-        val text = (params["rows"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        val arr = array(params, "rows", MAX_ROWS) ?: return null
+        return arr.map { e -> row(e as? JsonObject ?: return null, needBranch = true) ?: return null }
+    }
+
+    /** The conditions of `rule.all/any/not`: the same rows without a branch (1..[MAX_CONDITIONS]). */
+    fun parseConditions(params: JsonObject): List<Row>? {
+        val arr = array(params, "conditions", MAX_CONDITIONS) ?: return null
+        return arr.map { e -> row(e as? JsonObject ?: return null, needBranch = false) ?: return null }
+    }
+
+    private fun array(params: JsonObject, key: String, max: Int): JsonArray? {
+        val text = (params[key] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
         val arr = runCatching { Json.parseToJsonElement(text) as? JsonArray }.getOrNull() ?: return null
-        if (arr.size !in 1..MAX_ROWS) return null
-        return arr.map { e ->
-            val o = e as? JsonObject ?: return null
-            val field = (o["field"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() && it.length <= 64 } ?: return null
-            val op = (o["op"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it in OPS } ?: return null
-            val branch = (o["branch"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { BRANCH.matches(it) && it != ModelNodeTypes.ELSE } ?: return null
-            val value = o["value"]
-            if (op != "exists" && (value == null || value is JsonNull)) return null
-            if (op == "in" && value !is JsonArray) return null
-            Row(field, op, value, branch)
-        }
+        return arr.takeIf { it.size in 1..max }
+    }
+
+    private fun row(o: JsonObject, needBranch: Boolean): Row? {
+        val field = (o["field"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() && it.length <= 64 } ?: return null
+        val op = (o["op"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it in OPS } ?: return null
+        val branch = if (needBranch) (o["branch"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { BRANCH.matches(it) && it != ModelNodeTypes.ELSE } ?: return null else ""
+        val value = o["value"]
+        if (op != "exists" && (value == null || value is JsonNull)) return null
+        if (op == "in" && value !is JsonArray) return null
+        return Row(field, op, value, branch)
     }
 
     fun branches(params: JsonObject): List<String> = (parse(params)?.map { it.branch }?.distinct() ?: emptyList()) + ModelNodeTypes.ELSE

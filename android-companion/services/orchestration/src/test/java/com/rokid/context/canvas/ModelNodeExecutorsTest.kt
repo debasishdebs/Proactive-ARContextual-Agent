@@ -147,4 +147,53 @@ class ModelNodeExecutorsTest {
         assertEquals(listOf("not_bound"), ModelNodePreflight.reasons(p, { ModelPrivacy.AUTO }, { null }))
         assertFalse(ModelNodePreflight.reasons(p, { error("x") }, { Backend.ONLINE }).isEmpty())
     }
+
+    // ---- rule sets (no ExprProgram change) ----
+
+    private fun json(vararg kv: Pair<String, Any>) = CanvasValue.Json(buildJsonObject { kv.forEach { (k, v) -> if (v is Number) put(k, v) else put(k, v.toString()) } })
+    private fun cond(type: String, rows: String) = PipelineNode("r", type, "r", buildJsonObject { put("conditions", rows) })
+    private fun runRule(type: String, rows: String, v: CanvasValue) = runBlocking { exec(type).run(cond(type, rows), listOf(item("f1", v)), ctx { "" }).single() }
+    private val two = """[{"field":"label","op":"==","value":"indoor"},{"field":"confidence","op":">=","value":0.7}]"""
+
+    @Test fun allAnyNotCombineTheConditionsOverTheOneItem() {
+        val both = json("label" to "indoor", "confidence" to 0.9); val one = json("label" to "indoor", "confidence" to 0.3); val none = json("label" to "outdoor", "confidence" to 0.1)
+        assertEquals(listOf("pass", "fail", "fail"), listOf(both, one, none).map { runRule(ModelNodeTypes.RULE_ALL, two, it).branch })
+        assertEquals(listOf("pass", "pass", "fail"), listOf(both, one, none).map { runRule(ModelNodeTypes.RULE_ANY, two, it).branch })
+        assertEquals(listOf("fail", "fail", "pass"), listOf(both, one, none).map { runRule(ModelNodeTypes.RULE_NOT, two, it).branch })
+        assertEquals("the item passes on unchanged", both, runRule(ModelNodeTypes.RULE_ALL, two, both).value)
+        assertEquals(0, runRule(ModelNodeTypes.RULE_ALL, two, both).calls)
+    }
+
+    @Test fun ruleSetsFailClosedOnBadParamsAndNonJsonInput() {
+        assertEquals("BAD_PARAMS", runRule(ModelNodeTypes.RULE_ANY, "nope", json("a" to 1)).error)
+        assertEquals("BAD_INPUT", runRule(ModelNodeTypes.RULE_ANY, two, CanvasValue.Photo).error)
+        assertEquals(0, exec(ModelNodeTypes.RULE_ALL).nominalCalls(cond(ModelNodeTypes.RULE_ALL, two), 50) + exec(ModelNodeTypes.RULE_DEBOUNCE).maxCalls(cond(ModelNodeTypes.RULE_DEBOUNCE, ""), 50))
+    }
+
+    private fun timed(type: String, params: JsonObject, vararg ids: String) = runBlocking {
+        exec(type).run(PipelineNode("t", type, "t", params), ids.map { item(it) }, ctx { "" }).associate { it.frameId to (it.branch ?: it.error) }
+    }
+    private fun fid(sec: Int) = "${1_793_891_000_000L + sec * 1000L}_rokid_x.v2"
+
+    @Test fun debounceKeepsTheFirstOfABurstWhateverTheListedOrder() {
+        val q = buildJsonObject { put("quietMs", 10_000) }
+        val r = timed(ModelNodeTypes.RULE_DEBOUNCE, q, fid(30), fid(0), fid(5), fid(12), fid(35))
+        assertEquals(mapOf(fid(0) to "pass", fid(5) to "dropped", fid(12) to "dropped", fid(30) to "pass", fid(35) to "dropped"), r)
+        assertEquals("a gap of exactly the quiet time passes", "pass", timed(ModelNodeTypes.RULE_DEBOUNCE, q, fid(0), fid(10))[fid(10)])
+    }
+
+    @Test fun rateAllowsAtMostNPerWindowAndStateIsNotSharedBetweenCalls() {
+        val p = buildJsonObject { put("maxItems", 2); put("perMs", 10_000) }
+        val ids = arrayOf(fid(0), fid(2), fid(4), fid(11), fid(12), fid(13))
+        val first = timed(ModelNodeTypes.RULE_RATE, p, *ids)
+        assertEquals(listOf("pass", "pass", "dropped", "pass", "pass", "dropped"), ids.map { first[it] })
+        assertEquals("a second call starts empty", first, timed(ModelNodeTypes.RULE_RATE, p, *ids))
+    }
+
+    @Test fun timeRulesFailClosedWithoutAFrameTime() {
+        val r = timed(ModelNodeTypes.RULE_DEBOUNCE, JsonObject(emptyMap()), "f1", fid(0))
+        assertEquals("NO_TIME", r["f1"]); assertEquals("pass", r[fid(0)])
+        assertEquals(null, RuleTimeExecutor.frameTimeMs("f1")); assertEquals(1_793_891_000_000L, RuleTimeExecutor.frameTimeMs(fid(0)))
+        assertEquals(Int.MAX_VALUE, exec(ModelNodeTypes.RULE_RATE).chunkSize(PipelineNode("t", ModelNodeTypes.RULE_RATE, "t", JsonObject(emptyMap()))))
+    }
 }

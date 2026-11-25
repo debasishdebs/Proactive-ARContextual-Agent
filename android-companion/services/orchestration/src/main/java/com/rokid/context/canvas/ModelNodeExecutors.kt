@@ -29,7 +29,9 @@ import kotlin.coroutines.cancellation.CancellationException
  * is intersected with the privacy mode first ([ModelNodeBackend], fixed refusal tokens), and nothing is sent when it says no.
  */
 object ModelNodeExecutors {
-    private val map: Map<String, NodeExecutor> = listOf<NodeExecutor>(ModelClassifyExecutor(ModelNodeTypes.CLASSIFY), ModelClassifyExecutor(ModelNodeTypes.ROUTE), RuleTableExecutor).associateBy { it.type }
+    private val map: Map<String, NodeExecutor> = listOf<NodeExecutor>(ModelClassifyExecutor(ModelNodeTypes.CLASSIFY), ModelClassifyExecutor(ModelNodeTypes.ROUTE), RuleTableExecutor,
+        RuleConditionExecutor(ModelNodeTypes.RULE_ALL), RuleConditionExecutor(ModelNodeTypes.RULE_ANY), RuleConditionExecutor(ModelNodeTypes.RULE_NOT),
+        RuleTimeExecutor(ModelNodeTypes.RULE_DEBOUNCE), RuleTimeExecutor(ModelNodeTypes.RULE_RATE)).associateBy { it.type }
     fun all(): Map<String, NodeExecutor> = map
 }
 
@@ -111,6 +113,74 @@ object RuleTableExecutor : NodeExecutor {
             val v = it.value as? CanvasValue.Json ?: return@map NodeResult(it.frameId, null, error = "BAD_INPUT")
             NodeResult(it.frameId, v, branch = RuleTable.pick(rows, v.value))
         }
+    }
+}
+
+/**
+ * `rule.all` / `rule.any` / `rule.not`: the condition rows of `rule.table` over the ONE incoming item (no fan-in, so no combining of other nodes' branches). all = every condition holds, any = at least one, not = none holds.
+ * The item passes on unchanged on `pass` or `fail`. No model, no network, no change to the glasses expression program.
+ */
+class RuleConditionExecutor(override val type: String) : NodeExecutor {
+    override val chunkLocal = true
+    override fun nominalCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+    override fun maxCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+
+    override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext): List<NodeResult> {
+        val rows = RuleTable.parseConditions(node.params) ?: return items.map { NodeResult(it.frameId, null, error = "BAD_PARAMS") }
+        return items.map {
+            val v = it.value as? CanvasValue.Json ?: return@map NodeResult(it.frameId, null, error = "BAD_INPUT")
+            val hits = rows.count { r -> RuleTable.matches(r, v.value) }
+            val pass = when (type) { ModelNodeTypes.RULE_ALL -> hits == rows.size; ModelNodeTypes.RULE_ANY -> hits > 0; else -> hits == 0 }
+            NodeResult(it.frameId, v, branch = if (pass) ModelNodeTypes.PASS else ModelNodeTypes.FAIL)
+        }
+    }
+}
+
+/**
+ * `rule.debounce` / `rule.rate`: time rules over the items of ONE run, by frame capture time (the epoch-milliseconds prefix of a frame id; an item without one fails closed with `NO_TIME`, a fixed token). All items of the node arrive in
+ * ONE call (chunk size = everything, at most 50 per run), so the state is local to the call and nothing leaks between runs. The value passes on unchanged on `pass` or `dropped`.
+ * debounce: an item closer than `quietMs` to the item BEFORE it (any item, dropped or not) is dropped, so a burst yields its first item. rate: at most `maxItems` pass per `perMs` window (sliding, counted over passed items).
+ */
+class RuleTimeExecutor(override val type: String) : NodeExecutor {
+    override fun chunkSize(node: PipelineNode) = Int.MAX_VALUE
+    override fun nominalCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+    override fun maxCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+
+    private fun intParam(n: PipelineNode, k: String, def: Int, lo: Int, hi: Int) = ((n.params[k] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull ?: def).coerceIn(lo, hi)
+
+    override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext): List<NodeResult> {
+        val timed = items.map { it to frameTimeMs(it.frameId) }
+        val out = HashMap<String, NodeResult>()
+        val usable = ArrayList<Pair<CanvasItem, Long>>()
+        for ((it, t) in timed) {
+            val v = it.value as? CanvasValue.Json
+            when { v == null -> out[it.frameId] = NodeResult(it.frameId, null, error = "BAD_INPUT"); t == null -> out[it.frameId] = NodeResult(it.frameId, null, error = "NO_TIME"); else -> usable += it to t }
+        }
+        val sorted = usable.sortedWith(compareBy({ it.second }, { it.first.frameId }))
+        if (type == ModelNodeTypes.RULE_DEBOUNCE) {
+            val quiet = intParam(node, "quietMs", 10_000, 1_000, 3_600_000)
+            var prev: Long? = null
+            for ((it, t) in sorted) {
+                val drop = prev != null && t - prev < quiet
+                out[it.frameId] = NodeResult(it.frameId, it.value, branch = if (drop) ModelNodeTypes.DROPPED else ModelNodeTypes.PASS)
+                prev = t
+            }
+        } else {
+            val max = intParam(node, "maxItems", 1, 1, 50); val per = intParam(node, "perMs", 60_000, 1_000, 3_600_000)
+            val passed = ArrayDeque<Long>()
+            for ((it, t) in sorted) {
+                while (passed.isNotEmpty() && t - passed.first() >= per) passed.removeFirst()
+                val ok = passed.size < max
+                if (ok) passed.addLast(t)
+                out[it.frameId] = NodeResult(it.frameId, it.value, branch = if (ok) ModelNodeTypes.PASS else ModelNodeTypes.DROPPED)
+            }
+        }
+        return items.map { out[it.frameId] ?: NodeResult(it.frameId, null, error = "no_result") }
+    }
+
+    companion object {
+        /** The capture time in epoch milliseconds from a frame id such as `1793891036623_rokid_...`; null when the id has no such prefix (UNVERIFIED on a device). */
+        fun frameTimeMs(frameId: String): Long? = frameId.substringBefore('_').takeIf { it.length in 13..14 && it.all(Char::isDigit) }?.toLongOrNull()
     }
 }
 
