@@ -28,8 +28,8 @@ fun envOrDefault(key: String, default: String): String = env[key].orEmpty().ifBl
 // No API key or other secret may be compiled into the APK; keys live only in the on-device KeyVault.
 val secretName = Regex("(?i)(KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)")
 
-// The street-map tile key is the ONE named exception (MAP_TILES_KEY; the test NoSecretsInBuildConfigTest names it too): a map-tile client key is embedded in the APK by design and is NOT secret (restrict it by app/referrer in the provider's dashboard).
-// Read from android-companion/local.properties (untracked) or the environment; empty by default, and an empty key means a release build shows the grid only. NEVER commit a value.
+// The street-map tile key is entered in Settings and stored on the phone (KeyVault). MAP_TILES_KEY is only a DEBUG-build dev fallback (NoSecretsInBuildConfigTest names it); the RELEASE field is always "" (verifyNoReleaseMapKey fails assembleRelease otherwise).
+// The debug value is read from android-companion/local.properties (untracked) or the environment. NEVER commit a value.
 val mapTilesKey: String = run {
     val lp = Properties().also { p -> rootDir.resolve("local.properties").takeIf { it.isFile }?.inputStream()?.use { p.load(it) } }
     (lp.getProperty("PCA_MAP_TILES_KEY") ?: System.getenv("PCA_MAP_TILES_KEY") ?: "").trim()
@@ -56,7 +56,6 @@ android {
         }
 
         require(Regex("[A-Za-z0-9_-]{0,80}").matches(mapTilesKey)) { "PCA_MAP_TILES_KEY must be letters, digits, - or _ only" }
-        buildConfigField("String", "MAP_TILES_KEY", "\"$mapTilesKey\"")
 
         publicField("AZURE_KG_ENDPOINT", envOrDefault("AZURE_KG_ENDPOINT", ""))
         publicField("AZURE_KG_DEPLOYMENT", envOrDefault("AZURE_KG_DEPLOYMENT", "gpt-5.4"))
@@ -67,7 +66,9 @@ android {
     }
 
     buildTypes {
+        debug { buildConfigField("String", "MAP_TILES_KEY", "\"$mapTilesKey\"") }
         release {
+            buildConfigField("String", "MAP_TILES_KEY", "\"\"")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -154,3 +155,14 @@ dependencies {
 
 // Compose UI tests need ui-test-manifest's host activity, which is debug-only; release unit tests would have none.
 androidComponents { beforeVariants(selector().withBuildType("release")) { it.enableUnitTest = false } }
+
+// Release must carry no map key: the generated release BuildConfig is checked before any release APK or bundle is built. The message never prints a value.
+val verifyNoReleaseMapKey = tasks.register("verifyNoReleaseMapKey") {
+    dependsOn("generateReleaseBuildConfig")
+    val cfg = layout.buildDirectory.file("generated/source/buildConfig/release/com/rokid/context/BuildConfig.java")
+    doLast {
+        val line = cfg.get().asFile.readLines().singleOrNull { it.contains(" MAP_TILES_KEY ") } ?: error("release BuildConfig has no MAP_TILES_KEY field to verify")
+        check(line.contains("MAP_TILES_KEY = \"\";")) { "The release build carries a compiled map key; it must be empty (the key is entered in Settings)." }
+    }
+}
+tasks.configureEach { if (name == "assembleRelease" || name == "bundleRelease") dependsOn(verifyNoReleaseMapKey) }

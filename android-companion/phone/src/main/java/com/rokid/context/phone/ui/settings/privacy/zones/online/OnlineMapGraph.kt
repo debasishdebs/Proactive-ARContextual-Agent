@@ -18,29 +18,46 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import kotlin.coroutines.resume
 
-/** The app's one street-map wiring: the saved switch, the tile cache in the app cache folder and (only when the build has a provider) the tile source. Built on first use. */
-class OnlineMapGraph private constructor(app: Context) {
-    val provider: OnlineProvider? = OnlineProvider.select(BuildConfig.MAP_TILES_KEY, BuildConfig.DEBUG)
+/**
+ * One street-map wiring: the saved switch, the tile cache in the app cache folder and (only when a map key is set in Settings, or this is a debug build with the dev key) the tile source.
+ * Built fresh each time the map screen opens, so a key entered in Settings applies at once. Without a key there is no provider and nothing reaches the network.
+ */
+class OnlineMapGraph private constructor(private val app: Context, private val keys: MapKeyStore) {
     private val root = cacheRoot(app)
-    val source: OnlineTileSource? = provider?.let {
-        // The User-Agent names the app only (the same one the Place Guide fetchers use): no email, no personal data.
-        OnlineTileSource(it, UrlConnectionTileTransport(), OnlineTileDiskCache(root, it.cacheId), UrlConnectionPlaceHttp.DEFAULT_USER_AGENT,
-            offlineOnly = { com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() != com.rokid.context.core.net.ModelPrivacy.AUTO },
-            dataGate = com.rokid.context.ai.datasaver.DataSaverGraph.get(app))
-    }
-    val model = OnlineMapModel(OnlineMapStore(app.getSharedPreferences(OnlineMapStore.PREFS, Context.MODE_PRIVATE)), provider != null, provider?.name ?: "MapTiler", stop = { source?.stop() }) { purge(root) }
-    val deps = OnlineMapDeps(model, source, AndroidCentreFix(app))
+    private var current: Built? = null
 
+    private inner class Built(key: String) {
+        // debug = false on purpose: the unkeyed OpenStreetMap fallback is not used at runtime; no key means no tile request at all.
+        val provider: OnlineProvider? = OnlineProvider.select(key, debug = false)
+        val source: OnlineTileSource? = provider?.let {
+            // The User-Agent names the app only (the same one the Place Guide fetchers use): no email, no personal data.
+            OnlineTileSource(it, UrlConnectionTileTransport(), OnlineTileDiskCache(root, it.cacheId), UrlConnectionPlaceHttp.DEFAULT_USER_AGENT,
+                offlineOnly = { com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() != com.rokid.context.core.net.ModelPrivacy.AUTO },
+                dataGate = com.rokid.context.ai.datasaver.DataSaverGraph.get(app))
+        }
+        val model = OnlineMapModel(OnlineMapStore(app.getSharedPreferences(OnlineMapStore.PREFS, Context.MODE_PRIVATE)), provider != null, provider?.name ?: "MapTiler", stop = { source?.stop() }) { purge(root) }
+        val deps = OnlineMapDeps(model, source, AndroidCentreFix(app), keyControl())
+    }
+
+    private fun keyControl() = MapKeyControl(keys.hasKey(), keys.hasStoredKey(), keys::save) { keys.clear() }
+
+    val provider: OnlineProvider? get() = current?.provider
+
+    /** A fresh wiring from the key as it is now; the previous one is stopped. */
+    @Synchronized fun deps(): OnlineMapDeps {
+        current?.source?.stop()
+        return Built(keys.key()).also { current = it }.deps
+    }
     companion object {
         const val CACHE_DIR = "online_tiles"
         private fun cacheRoot(app: Context) = File(app.cacheDir, CACHE_DIR)
         private fun purge(root: File) { runCatching { root.deleteRecursively() } }
 
         @Volatile private var instance: OnlineMapGraph? = null
-        fun get(context: Context): OnlineMapGraph = instance ?: synchronized(this) { instance ?: OnlineMapGraph(context.applicationContext).also { instance = it } }
+        fun get(context: Context): OnlineMapGraph = instance ?: synchronized(this) { instance ?: OnlineMapGraph(context.applicationContext, MapKeyStore(com.rokid.context.ai.EncryptedKeyVault(context), MapKeyStore.fallbackFor(BuildConfig.DEBUG, BuildConfig.MAP_TILES_KEY))).also { instance = it } }
 
         /** Delete all (and the resume of an interrupted one): `MemoryWipe` clears the prefs file and deletes the cache folder itself; this resets the in-memory switch and consent. */
-        fun wipeListener(): OnlineMapWipeListener = OnlineMapWipeListener { instance?.model }
+        fun wipeListener(): OnlineMapWipeListener = OnlineMapWipeListener { instance?.current?.model }
     }
 }
 

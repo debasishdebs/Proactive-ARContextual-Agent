@@ -191,7 +191,7 @@ class SettingsDeps(
             contextSources = AppContextSources(app),
             zoneEditor = { com.rokid.context.phone.ui.settings.privacy.zones.ControllerZoneEditor(com.rokid.context.phone.zone.ZoneGraph.get(app)) },
             offlineMap = { com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapDeps(com.rokid.context.phone.ui.settings.privacy.zones.tiles.AndroidMapFiles(app), com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapStore.get(app)) },
-            onlineMap = { com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineMapGraph.get(app).deps },
+            onlineMap = { com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineMapGraph.get(app).deps() },
             momentLocation = com.rokid.context.phone.ui.settings.privacy.AppMomentLocation(app),
             networkOnline = { com.rokid.context.phone.ui.settings.privacy.zones.networkOnlineFlow(app) },
             locationGranted = {

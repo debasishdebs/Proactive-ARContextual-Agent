@@ -103,11 +103,11 @@ class OnlineMapWipeListener(private val model: () -> OnlineMapModel?) : com.roki
 }
 
 /** What the zones screen is built with to offer the street map and "Centre on me" (null in builds and tests without them). [source] is null when the build has no tile provider. */
-class OnlineMapDeps(val model: OnlineMapModel, val source: RasterTileSource?, val fix: CentreFix?)
+class OnlineMapDeps(val model: OnlineMapModel, val source: RasterTileSource?, val fix: CentreFix?, val keys: com.rokid.context.phone.ui.settings.privacy.zones.online.MapKeyControl? = null)
 
 object OnlineMapWords {
     fun switchLabel(provider: String) = "Show a street map (downloads map tiles from $provider)"
-    const val UNAVAILABLE = "A street map is not available in this build (no map-tile key). The plain grid is used."
+    const val UNAVAILABLE = "Add a map key in Settings to turn on the street map. The plain grid is used until then."
     const val DIALOG_TITLE = "Download map tiles?"
     fun dialogBody(provider: String) = "With this on, the app asks $provider for map pictures (tiles) of the area you are looking at on this screen. What is sent: the tile requests, which reveal roughly where you are looking on the map, and your IP address, to the tile provider. " +
         "Nothing else is sent. Your zones and coordinates are not sent as such, and nothing is requested while this screen is closed. Tiles are kept on the phone (up to 50 MB) until you turn this off or use Delete all."

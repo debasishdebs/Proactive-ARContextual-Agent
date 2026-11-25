@@ -140,7 +140,8 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
     }
     val networkOnline by remember(deps) { deps.networkOnline() }.collectAsStateWithLifecycle(true)
     val offline = deps.offlineMap?.let { make -> remember { make() } }
-    val online = deps.onlineMap?.let { make -> remember { make() } }?.let { d -> rememberOnlinePanel(d, ::granted, vm::requestLocation) }
+    var keyEpoch by remember { mutableStateOf(0) } // a saved or cleared map key rebuilds the street-map wiring
+    val online = deps.onlineMap?.let { make -> remember(keyEpoch) { make() } }?.let { d -> rememberOnlinePanel(d, ::granted, vm::requestLocation) { keyEpoch++ } }
     val seedPanel = seed?.let { c ->
         val seedVm = viewModel(key = "seed_map") { SeedMapViewModel(c) }
         val seedState by seedVm.state.collectAsStateWithLifecycle()
@@ -163,7 +164,7 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
  * one-shot "Centre on me". Location is read ONLY here, on the tap, with the existing permission; the result is held in screen state and never stored or logged.
  */
 @Composable
-internal fun rememberOnlinePanel(d: OnlineMapDeps, granted: () -> Boolean, askPermission: () -> Unit): OnlineMapPanel {
+internal fun rememberOnlinePanel(d: OnlineMapDeps, granted: () -> Boolean, askPermission: () -> Unit, onKeyChanged: () -> Unit = {}): OnlineMapPanel {
     val ui by d.model.ui.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var foreground by remember { mutableStateOf(false) }
@@ -193,7 +194,7 @@ internal fun rememberOnlinePanel(d: OnlineMapDeps, granted: () -> Boolean, askPe
             if (p == null) note = OnlineMapWords.NO_FIX else centre = CentreRequest(++seq, p)
         }
     }
-    return OnlineMapPanel(ui, d.source.takeIf { ui.enabled && ui.available }, foreground, centre, busy, note, d.model::requestEnabled, d.model::confirmFirst, d.model::cancelFirst, tap, { note = null }, d.fix != null)
+    return OnlineMapPanel(ui, d.source.takeIf { ui.enabled && ui.available }, foreground, centre, busy, note, d.model::requestEnabled, d.model::confirmFirst, d.model::cancelFirst, tap, { note = null }, d.fix != null, d.keys, onKeyChanged)
 }
 
 /** A PMTiles file has no registered MIME type, so the picker is not narrowed. */
@@ -223,6 +224,8 @@ class OnlineMapPanel(
     val centreOnMe: () -> Unit,
     val dismissNote: () -> Unit,
     val canCentre: Boolean = true,
+    val keys: com.rokid.context.phone.ui.settings.privacy.zones.online.MapKeyControl? = null,
+    val keyChanged: () -> Unit = {},
 )
 
 /** What the zones screen needs to show seeded areas and pins and to seed the drawn box (null where the build has no Place Guide). [seedMode] = opened from Place Guide "Pick on the map". */
@@ -361,12 +364,13 @@ private fun SeededAreasCard(p: SeedPanel) {
 internal fun OnlineMapCard(p: OnlineMapPanel) {
     SettingsCard {
         Text("Street map", style = MaterialTheme.typography.titleMedium)
-        if (!p.ui.available) { NoticeText(OnlineMapWords.UNAVAILABLE, tag = "online_unavailable"); return@SettingsCard }
+        if (!p.ui.available) { NoticeText(OnlineMapWords.UNAVAILABLE, tag = "online_unavailable"); p.keys?.let { MapKeyField(it, p.keyChanged) }; return@SettingsCard }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(OnlineMapWords.switchLabel(p.ui.providerName), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
             Switch(p.ui.enabled, { p.setEnabled(it) }, modifier = Modifier.testTag("online_switch"))
         }
         NoticeText("Off by default. When on, the tile provider receives requests for the area you are looking at, and your IP address, only while this screen is open. Tiles are kept on the phone (up to 50 MB) until you turn this off or use Delete all. An offline file you choose below is used instead.", tag = "online_note")
+        p.keys?.let { MapKeyField(it, p.keyChanged) }
     }
 }
 

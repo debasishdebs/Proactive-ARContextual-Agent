@@ -112,7 +112,8 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
     LaunchedEffect(zones.requestPermission) { if (zones.requestPermission) { zonesVm.permissionPromptShown(); launcher.launch(LOCATION_PERMISSIONS) } }
     LaunchedEffect(ui.savedTick) { if (ui.savedTick > 0 && !granted()) zonesVm.requestLocation() } // a saved zone with location off: the same prompt the shipped screen shows
     val offline = deps.offlineMap?.let { m -> remember { m() } }
-    val online = deps.onlineMap?.let { m -> remember { m() } }?.let { d -> rememberOnlinePanel(d, ::granted, zonesVm::requestLocation) }
+    var keyEpoch by remember { mutableStateOf(0) } // a saved or cleared map key rebuilds the street-map wiring
+    val online = deps.onlineMap?.let { m -> remember(keyEpoch) { m() } }?.let { d -> rememberOnlinePanel(d, ::granted, zonesVm::requestLocation) { keyEpoch++ } }
     // p23On is the nested Developer flag mapZonesP23 (default OFF), read by the destination; density is the production control.
     LaunchedEffect(p23On, zones.rows, zones.protectedMode) {
         mapVm.setEditGuard(if (p23On) zones.rows.associate { it.zone.id to ZoneEditPolicy.reshapeBlock(it.chip.level, it.inside, zones.protectedMode) } else null)

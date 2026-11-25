@@ -9,6 +9,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.ui.theme.PcTheme
@@ -35,13 +36,13 @@ class OnlineMapCardTest {
     @After fun tearDown() = vms.forEach { it.cancelScope() }
     private val calls = mutableListOf<String>()
 
-    private fun show(available: Boolean = true): OnlineMapModel {
+    private fun show(available: Boolean = true, keys: com.rokid.context.phone.ui.settings.privacy.zones.online.MapKeyControl? = null): OnlineMapModel {
         val zones = ZonesViewModel(FakeZoneEditor(), elapsed = { 1_000L }, newId = { "z" }, work = main.dispatcher).also { vms += it }
         val model = OnlineMapModel(OnlineMapStore(), available) { calls += "purge" }
         compose.setContent {
             val s by zones.state.collectAsStateWithLifecycle()
             val ui by model.ui.collectAsStateWithLifecycle()
-            val panel = OnlineMapPanel(ui, null, true, null, false, null, model::requestEnabled, model::confirmFirst, model::cancelFirst, { calls += "centre" }, {})
+            val panel = OnlineMapPanel(ui, null, true, null, false, null, model::requestEnabled, model::confirmFirst, model::cancelFirst, { calls += "centre" }, {}, keys = keys, keyChanged = { calls += "changed" })
             PcTheme { ZonesScreen(s, ZonesCallbacks.of(zones, back = {}), null, panel) }
         }
         return model
@@ -83,5 +84,31 @@ class OnlineMapCardTest {
         show(available = false)
         scrollTo("online_unavailable"); compose.onNodeWithTag("online_unavailable").assertExists()
         compose.onNodeWithTag("online_switch").assertDoesNotExist()
+    }
+
+    @Test fun withoutAKeyTheNoticeAndTheKeyFieldShow_savingAKeyRebuilds_andTheFieldIsHiddenByDefault() {
+        val saved = mutableListOf<String>()
+        show(available = false, keys = com.rokid.context.phone.ui.settings.privacy.zones.online.MapKeyControl(false, false, { saved += it; true }, { calls += "clear" }))
+        scrollTo("online_unavailable"); compose.onNodeWithTag("online_unavailable").assertExists()
+        scrollTo("map_key_field"); compose.onNodeWithTag("map_key_field").performTextInput("abc_DEF-123")
+        compose.onNodeWithTag("map_key_clear").assertDoesNotExist() // nothing stored yet
+        compose.onNodeWithTag("map_key_save").performClick(); compose.waitForIdle()
+        assertEquals(listOf("abc_DEF-123"), saved)
+        assertEquals(listOf("changed"), calls)
+    }
+
+    @Test fun aKeyThatIsNotAPlainKeyIsRefusedBeforeItIsStored() {
+        val saved = mutableListOf<String>()
+        show(available = false, keys = com.rokid.context.phone.ui.settings.privacy.zones.online.MapKeyControl(false, false, { saved += it; true }, {}))
+        scrollTo("map_key_field"); compose.onNodeWithTag("map_key_field").performTextInput("a b?key=1")
+        compose.onNodeWithTag("map_key_save").performClick(); compose.waitForIdle()
+        assertEquals(emptyList<String>(), saved)
+        assertEquals(emptyList<String>(), calls)
+    }
+
+    @Test fun aStoredKeyOffersClear() {
+        show(available = true, keys = com.rokid.context.phone.ui.settings.privacy.zones.online.MapKeyControl(true, true, { true }, { calls += "clear" }))
+        scrollTo("map_key_clear"); compose.onNodeWithTag("map_key_clear").performClick(); compose.waitForIdle()
+        assertEquals(listOf("clear", "changed"), calls)
     }
 }
