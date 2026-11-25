@@ -21,6 +21,8 @@ class SceneCentroidSourceRulesTest {
         // the Scene deletion, the Forget choke points and the wipe
         // WP12a: the producer (reads the revision and writes the row in one transaction, flag sceneCentroids)
         "SceneCentroidProducer.kt",
+        // WP12b: the shadow reader (read only, the current row of a pin's Scene; the line logs counts only)
+        "PinSceneCentroids.kt",
         "DerivedStaleDao.kt", "ForgetService.kt", "ForgetExecutor.kt", "MomentForget.kt", "WipeDao.kt", "Families.kt", "ForgetPolicy.kt", "DeletionGraph.kt", "DesignDivergence.kt",
     )
 

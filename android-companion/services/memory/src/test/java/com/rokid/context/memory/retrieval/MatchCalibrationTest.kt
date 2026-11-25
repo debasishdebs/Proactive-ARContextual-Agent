@@ -111,4 +111,27 @@ class MatchCalibrationTest {
         val tiny = MatchCalibration.looTrials(mapOf("A" to listOf(floatArrayOf(1f, 0f), floatArrayOf(0f, 1f))), emptyList(), MatchCalibration.RefMode.CENTROID)
         assertEquals(0, tiny.single().scores.single().second) // the probe (0,1) vs the ref alone (1,0)
     }
+
+    @Test fun `margin sweep and accept at 95 and 98`() {
+        // Truth A wins by a big margin (2 trials); the wrong pin wins by a tiny margin (1 trial, truth B).
+        val trials = listOf(
+            MatchCalibration.Trial("A", listOf("A" to 900, "B" to 300)),
+            MatchCalibration.Trial("A", listOf("A" to 800, "B" to 400)),
+            MatchCalibration.Trial("B", listOf("A" to 700, "B" to 690)),
+            MatchCalibration.Trial("A", listOf("A" to 650)), // no runner-up: margin null, always passes
+        )
+        assertEquals(10, trials[2].margin); assertNull(trials[3].margin)
+        val sweep = MatchCalibration.marginSweep(trials)
+        assertEquals(listOf(0, 10, 400, 600), sweep.map { it.minMargin })
+        assertEquals(4, sweep[0].shown); assertEquals(3, sweep[0].correct)
+        assertEquals(4, sweep[1].shown) // the 10-milli lead still passes
+        assertEquals(1.0, sweep[2].precision, 0.0); assertEquals(3, sweep[2].shown)
+        assertEquals(400, MatchCalibration.marginForPrecision(trials, 0.95))
+        val at = MatchCalibration.acceptAt(trials)
+        assertEquals(setOf(0.95, 0.98), at.keys)
+        assertEquals(800, at[0.95]); assertEquals(800, at[0.98]) // 700 is wrong, so 650 and 700 are out
+        val r = MatchCalibration.evaluate(trials)
+        assertEquals(800, r.acceptAt95); assertTrue(MatchCalibration.report("t", r).contains("acceptAt95=800 acceptAt98=800"))
+        assertTrue(MatchCalibration.marginReport("t", trials).contains("marginForPrecision95=400"))
+    }
 }

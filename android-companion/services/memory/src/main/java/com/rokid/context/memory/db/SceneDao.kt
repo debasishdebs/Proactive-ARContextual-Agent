@@ -23,6 +23,8 @@ abstract class SceneDao : DerivedStaleDao() {
     @Query("SELECT * FROM scene WHERE hourStartMs >= :fromHour AND hourStartMs <= :toHour ORDER BY startMs, sceneId") abstract suspend fun scenesInHours(fromHour: Long, toHour: Long): List<SceneEntity>
     @Query("SELECT * FROM scene_part WHERE sceneId = :id ORDER BY partTimeMs, kind, refId") abstract suspend fun parts(id: String): List<ScenePartEntity>
     @Query("SELECT * FROM scene_part WHERE sceneId IN (:ids) ORDER BY sceneId, partTimeMs, kind, refId") abstract suspend fun partsOf(ids: List<String>): List<ScenePartEntity>
+    /** The Scene parts (kind MOMENT) that hold these Moments: which Scene a pin's Moment sits in (WP12b, read only). */
+    @Query("SELECT * FROM scene_part WHERE kind = 'MOMENT' AND refId IN (:momentIds)") abstract suspend fun momentPartsOf(momentIds: List<String>): List<ScenePartEntity>
     @Query("SELECT COUNT(*) FROM scene") abstract suspend fun sceneCount(): Int
     @Query("SELECT COUNT(*) FROM scene_part") abstract suspend fun partCount(): Int
     @Query("DELETE FROM scene_part WHERE sceneId IN (:ids)") abstract suspend fun deleteParts(ids: List<String>)

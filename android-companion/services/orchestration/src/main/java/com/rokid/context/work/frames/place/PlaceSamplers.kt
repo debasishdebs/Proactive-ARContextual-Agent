@@ -136,7 +136,7 @@ object PlaceSamplers {
     /** One shadow scorer plus the reference-vector cache it owns (so a caller can register both for the eager clears). */
     internal class Built(val shadow: PlaceShadow, val refs: PinReferenceVectors)
 
-    private fun build(app: Context, zoneBlocked: suspend () -> Boolean, photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?, countMoments: Boolean = true, embedder: suspend () -> com.rokid.context.memory.ImageTextEmbedder?): Built {
+    private fun build(app: Context, zoneBlocked: suspend () -> Boolean, photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?, countMoments: Boolean = true, centroid: Boolean = false, embedder: suspend () -> com.rokid.context.memory.ImageTextEmbedder?): Built {
         val db = { MemoryGraph.get(app).db }
         val gate = { com.rokid.context.provenance.ProvenanceGate(db()) }
         // One reference-vector cache per shadow, in memory only (see PinReferenceVectors). The shadow itself is created lazily by [create], so with the flag off none of this is ever allocated.
@@ -147,7 +147,14 @@ object PlaceSamplers {
             mayEmbed = { KeyframeGraph.get(app).power.mayRunBackground(com.rokid.context.work.budget.BackgroundWork.IMAGE_VECTORS) },
             zoneBlocked = zoneBlocked, generation = { MemoryWipe.generation.get() }, scope = refScope, elapsed = android.os.SystemClock::elapsedRealtime,
         )
+        // WP12b: the centroid shadow (Nomic side only; flag placeShadowCentroid, default OFF). Counts-only `place shadow3` line, nothing else.
+        val centroidShadow = if (!centroid) null else CentroidShadow(
+            enabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowCentroid(app) },
+            centroids = PinSceneCentroids(db(), { PlaceGraph.pins(app).pins().mapNotNull { p -> p.momentId?.let { p.id to it } }.toMap() })::read,
+            log = { PcLog.i(TAG, it) },
+        )
         val shadow = PlaceShadow(
+            centroid = centroidShadow,
             packMoments = { com.rokid.context.orchestration.forget.DeveloperFlags.packMoments(app) },
             onMoments = { total, n -> if (countMoments) { PackMomentStats.record(total, n); PcLog.i(TAG, "place pack moments v=1 pack=$total pin=$n") } },
             embedder = embedder,
@@ -164,7 +171,7 @@ object PlaceSamplers {
     /** The shadow scorer over the ACTIVE image-text space (today only the on-device Nomic bundle, and only when the user bound it); absent space = `shadow=na`. Reads the flag on every attempt. */
     internal fun shadowFor(app: Context, zoneBlocked: suspend () -> Boolean, photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?): PlaceShadow {
         val spaces by lazy { com.rokid.context.work.frames.scene.SpaceImageSpaces(MemoryGraph.get(app).spaces, AiGraph.get(app).embedders) }
-        val b = build(app, zoneBlocked, photoOf) { spaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } }
+        val b = build(app, zoneBlocked, photoOf, centroid = true) { spaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } }
         ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[0], b.refs::clear)
         ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[1], b.shadow::clear)
         ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[2], PackMomentStats::clear)
@@ -178,7 +185,7 @@ object PlaceSamplers {
      */
     internal fun shadowCompareFor(app: Context, zoneBlocked: suspend () -> Boolean, photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?): SiglipShadowCompare {
         val nomicSpaces by lazy { com.rokid.context.work.frames.scene.SpaceImageSpaces(MemoryGraph.get(app).spaces, AiGraph.get(app).embedders) }
-        val n = build(app, zoneBlocked, photoOf) { nomicSpaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } }
+        val n = build(app, zoneBlocked, photoOf, centroid = true) { nomicSpaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } }
         val sigHolder = SiglipHolder(app)
         val s = build(app, zoneBlocked, photoOf, countMoments = false, embedder = { sigHolder.get() }) // one count per attempt: the Nomic side counts
         ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[0]) { n.refs.clear(); s.refs.clear() }

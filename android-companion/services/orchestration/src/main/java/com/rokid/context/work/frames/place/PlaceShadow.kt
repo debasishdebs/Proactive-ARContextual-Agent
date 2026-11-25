@@ -39,6 +39,8 @@ class PlaceShadow(
     private val packMoments: () -> Boolean = { false },
     /** Counts only: (pack candidates, pin candidates) of one score, called only when [packMoments] is ON. */
     private val onMoments: (pack: Int, pin: Int) -> Unit = { _, _ -> },
+    /** WP12b: the centroid shadow (flag `placeShadowCentroid`, default OFF; null = none). Called with the dwell vector after the normal score, in this attempt's fence; it only logs counts and can never change the outcome. */
+    private val centroid: CentroidShadow? = null,
 ) {
     private val cache = object : LinkedHashMap<String, FloatArray>(16, 0.75f, true) { override fun removeEldestEntry(e: MutableMap.MutableEntry<String, FloatArray>?) = size > CACHE_MAX }
     private var cacheGen = Long.MIN_VALUE
@@ -66,6 +68,8 @@ class PlaceShadow(
         if (!live()) return ShadowOutcome.DROPPED
         val cands = moments.map { m -> m.toScorer(refs[m.id].orEmpty(), texts[m.id]) }
         val result = CandidateScorer.score(q, cands)
+        if (!live()) return ShadowOutcome.DROPPED
+        centroid?.let { c -> try { c.observe(q, e.spaceId, pins.map { it.id }, live) } catch (x: CancellationException) { throw x } catch (_: Exception) { } }
         if (!live()) return ShadowOutcome.DROPPED
         // The last word before a score leaves: the reference photos are asked about once more, so a Forget that landed since they were read (single Moment, link change, wipe) drops this score.
         if (refs.values.any { it.isNotEmpty() } && !(try { refsStillValid(refs, e) } catch (c: CancellationException) { throw c } catch (_: Exception) { false })) return ShadowOutcome.DROPPED

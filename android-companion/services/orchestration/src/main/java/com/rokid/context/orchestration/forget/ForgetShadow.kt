@@ -61,6 +61,14 @@ object DeveloperFlags {
     fun setSceneCentroids(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(SCENE_CENTROIDS, on).apply() }
 
     /**
+     * v18 WP12b: the Place Guide CENTROID shadow (a captured frame scored against each pin's Scene centroid, one counts-only `place shadow3` log line). Rides on [PLACE_SHADOW_SCORE] (it is called from that shadow) and
+     * needs [SCENE_CENTROIDS] rows to exist. No UI effect, no card, no call change. OFF by default (also OFF when the prefs cannot be read); no UI.
+     */
+    const val PLACE_SHADOW_CENTROID = "placeShadowCentroid"
+    fun placeShadowCentroid(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_SHADOW_CENTROID, false) }.getOrDefault(false)
+    fun setPlaceShadowCentroid(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_SHADOW_CENTROID, on).apply() }
+
+    /**
      * Canvas v2.1 Test run (design 2026-11-24): stored-window and trace sources, the per-node inspector, the E2E record and the bounded live tap. Every Test run is a dry-run (no send, no delivery, no publish, no
      * write to user data; Save only through `CanvasRunSave`). Needs Developer mode as well. OFF by default (also OFF when the prefs cannot be read); no extra UI beyond the Developer row.
      */

@@ -19,6 +19,8 @@ object MatchCalibration {
     /** One probe against every pin: the pin id and its image-channel score in milli (max cosine over that pin's reference vectors, like [CandidateScorer]). */
     class Trial(val truthPin: String?, val scores: List<Pair<String, Int>>) {
         val top: Pair<String, Int>? get() = scores.maxWithOrNull(compareBy<Pair<String, Int>> { it.second }.thenByDescending { it.first })
+        /** Top-1 minus top-2 in milli; null with fewer than two scored pins (no runner-up: the lead is unbounded). */
+        val margin: Int? get() = scores.map { it.second }.sortedDescending().let { if (it.size >= 2) it[0] - it[1] else null }
     }
 
     class Distribution(val n: Int, val min: Int, val p10: Int, val p50: Int, val p90: Int, val max: Int, val mean: Int) {
@@ -30,6 +32,7 @@ object MatchCalibration {
     class Result(
         val positives: Distribution, val negatives: Distribution, val probes: Int, val probesWithTruth: Int, val pins: Int,
         val top1Correct: Int, val best: Point?, val acceptAtPrecision: Int?, val rejectBelow: Int?, val targetPrecision: Double, val curve: List<Point>,
+        val acceptAt95: Int? = null, val acceptAt98: Int? = null,
     )
 
     /** Scores every probe against every pin. A pin without a usable reference vector is skipped. Vectors are L2-normalised here. */
@@ -84,6 +87,28 @@ object MatchCalibration {
         }
     }
 
+    /** One row of the margin sweep: top-1 is "shown" when its lead over the runner-up is at least [minMargin] (a missing runner-up always passes). */
+    class MarginPoint(val minMargin: Int, val shown: Int, val correct: Int, val precision: Double, val recall: Double)
+
+    /** Margin sweep (WP12b): for each distinct observed margin (and 0), what showing only leads of at least that size would do. Ascending by margin. Offline tooling only; nothing here is a threshold. */
+    fun marginSweep(trials: List<Trial>): List<MarginPoint> {
+        val withTruth = trials.count { it.truthPin != null }
+        val cuts = (trials.mapNotNull { it.margin } + 0).distinct().sorted()
+        return cuts.map { m ->
+            val passing = trials.filter { it.top != null && (it.margin ?: Int.MAX_VALUE) >= m }
+            val correct = passing.count { it.truthPin != null && it.top?.first == it.truthPin }
+            MarginPoint(m, passing.size, correct, if (passing.isEmpty()) 1.0 else correct.toDouble() / passing.size, if (withTruth == 0) 0.0 else correct.toDouble() / withTruth)
+        }
+    }
+
+    /** The lowest top-1 score at which precision is at least [target] (null = never reached). One entry per target, e.g. 0.95 and 0.98. */
+    fun acceptAt(trials: List<Trial>, targets: List<Double> = ACCEPT_TARGETS): Map<Double, Int?> = targets.associateWith { evaluate(trials, it).acceptAtPrecision }
+
+    /** The smallest margin whose shown top-1s reach [target] precision, null when none does (or nothing is shown). */
+    fun marginForPrecision(trials: List<Trial>, target: Double): Int? = marginSweep(trials).firstOrNull { it.shown > 0 && it.precision >= target }?.minMargin
+
+    val ACCEPT_TARGETS = listOf(0.95, 0.98)
+
     fun evaluate(trials: List<Trial>, targetPrecision: Double = 0.98): Result {
         val pos = ArrayList<Int>(); val neg = ArrayList<Int>()
         for (t in trials) for ((pin, s) in t.scores) if (pin == t.truthPin) pos += s else neg += s
@@ -98,11 +123,13 @@ object MatchCalibration {
             Point(th, shown, correct, prec, rec, if (prec + rec == 0.0) 0.0 else 2 * prec * rec / (prec + rec))
         }
         val best = curve.maxWithOrNull(compareBy<Point> { it.f1 }.thenBy { it.threshold })
-        val acceptAt = curve.firstOrNull { it.shown > 0 && it.precision >= targetPrecision }?.threshold
+        val acceptAt = acceptFrom(curve, targetPrecision)
         // Below this score the top-1 was never the right pin: a pin scoring under it is safe to reject (no correct top-1 lost). Null when no correct top-1 exists.
         val lowestCorrect = trials.filter { it.truthPin != null && it.top?.first == it.truthPin }.minOfOrNull { it.top!!.second }
-        return Result(dist(pos), dist(neg), trials.size, withTruth, trials.flatMap { t -> t.scores.map { it.first } }.toSet().size, top1Correct, best, acceptAt, lowestCorrect, targetPrecision, curve)
+        return Result(dist(pos), dist(neg), trials.size, withTruth, trials.flatMap { t -> t.scores.map { it.first } }.toSet().size, top1Correct, best, acceptAt, lowestCorrect, targetPrecision, curve, acceptFrom(curve, 0.95), acceptFrom(curve, 0.98))
     }
+
+    private fun acceptFrom(curve: List<Point>, target: Double): Int? = curve.firstOrNull { it.shown > 0 && it.precision >= target }?.threshold
 
     internal fun dist(v: List<Int>): Distribution {
         if (v.isEmpty()) return Distribution.EMPTY
@@ -120,7 +147,15 @@ object MatchCalibration {
         val b = r.best
         if (b == null) appendLine("  bestThreshold=none") else appendLine("  bestThreshold=${b.threshold} shown=${b.shown} correct=${b.correct} precision=${pct(b.precision)} recall=${pct(b.recall)} f1=${pct(b.f1)}")
         appendLine("  acceptAtPrecision${(r.targetPrecision * 100).roundToInt()}=${r.acceptAtPrecision ?: "none"} rejectBelow=${r.rejectBelow ?: "none"}")
+        appendLine("  acceptAt95=${r.acceptAt95 ?: "none"} acceptAt98=${r.acceptAt98 ?: "none"}")
         appendLine("  separation(p10 same - p90 other)=${r.positives.p10 - r.negatives.p90}")
+    }
+
+    /** The margin sweep as ASCII rows: counts and milli only. */
+    fun marginReport(name: String, trials: List<Trial>): String = buildString {
+        appendLine("space=$name marginSweep (minMargin shown correct precision recall)")
+        for (p in marginSweep(trials)) appendLine("  ${p.minMargin} ${p.shown} ${p.correct} ${pct(p.precision)} ${pct(p.recall)}")
+        appendLine("  marginForPrecision95=${marginForPrecision(trials, 0.95) ?: "none"} marginForPrecision98=${marginForPrecision(trials, 0.98) ?: "none"}")
     }
 
     private fun pct(x: Double) = "${(x * 1000).roundToInt() / 10.0}%"
