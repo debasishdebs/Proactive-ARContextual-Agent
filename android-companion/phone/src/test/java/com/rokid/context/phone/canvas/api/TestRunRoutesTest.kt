@@ -17,6 +17,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -42,7 +43,10 @@ class TestRunRoutesTest {
         override fun offlineOnly() = offline
         override suspend fun zoneHeldOrUnknown() = zone
         override suspend fun estimate(pipelineId: String, version: Int?, frameIds: List<String>): Estimate { estimates++; return Estimate.Ok(frameIds.size, 2, 3, listOf(ModelLabel("n1", "ep", "m")), "tok", null) }
-        override suspend fun start(pipelineId: String, version: Int?, frameIds: List<String>, token: String): String { if (startBusy) throw CanvasRunner.Busy(); starts += frameIds; return "run1" }
+        var asks = mutableListOf<TestRunPort.ReplayAsk?>(); var sourceAlive = true
+        override suspend fun replaySourceAvailable(runId: String) = sourceAlive && runId == "src1"
+        override suspend fun start(pipelineId: String, version: Int?, frameIds: List<String>, token: String, replay: TestRunPort.ReplayAsk?): String { if (startBusy) throw CanvasRunner.Busy(); starts += frameIds; asks += replay; return "run1" }
+        override suspend fun determinism(replayRunId: String, sourceRunId: String) = if (replayRunId == "run1" && sourceRunId == "src1") kotlinx.serialization.json.buildJsonObject { put("line", "3/3 items identical") } else null
         override suspend fun startTap(pipelineId: String, version: Int?, maxMin: Int, maxFrames: Int, maxPhotosSent: Int, token: String): String? { taps++; return tapId }
         override suspend fun stopTap(runId: String): Boolean { stopped += runId; return runId == "run1" }
     }
@@ -155,6 +159,41 @@ class TestRunRoutesTest {
         val ok = obj(tap("""{"pipelineId":"p1","confirmToken":"t"}"""))
         assertEquals("run1", ok["runId"]!!.jsonPrimitive.content); assertEquals("5", ok["maxMin"]!!.jsonPrimitive.content); assertEquals("0", ok["maxPhotosSent"]!!.jsonPrimitive.content)
         assertEquals(400, tap("""{"pipelineId":"p1"}""").status)
+    }
+
+    private fun withToken(extra: String) = win.dropLast(1) + ""","confirmToken":"tok",$extra}"""
+
+    @Test fun replayAndSeedReachThePortAndAVanishedSourceIsRefusedBeforeAnyStart() {
+        assertEquals(200, call("/api/runs", withToken(""""replay":{"fromRunId":"src1","onMiss":"live"},"modelSeed":7"""))!!.status)
+        assertEquals(TestRunPort.ReplayAsk("src1", true, 7), port.asks.single())
+        port.asks.clear()
+        call("/api/runs", withToken(""""replay":{"fromRunId":"src1"}"""))
+        assertEquals("the default miss is an item error, never a live call", TestRunPort.ReplayAsk("src1", false, null), port.asks.single())
+        port.asks.clear()
+        call("/api/runs", withToken(""""modelSeed":9"""))
+        assertEquals(TestRunPort.ReplayAsk(null, false, 9), port.asks.single())
+        port.asks.clear()
+        call("/api/runs", win.dropLast(1) + ""","confirmToken":"tok"}""")
+        assertNull("a plain test run asks for neither", port.asks.single())
+        val n = port.starts.size
+        port.sourceAlive = false
+        val r = call("/api/runs", withToken(""""replay":{"fromRunId":"src1"}"""))!!
+        assertEquals(422, r.status); assertEquals("replay_source_gone", obj(r)["problems"]!!.jsonArray.single().jsonPrimitive.content)
+        assertEquals("nothing started", n, port.starts.size)
+        port.sourceAlive = true
+        for (b in listOf(""""replay":{"fromRunId":"src1","onMiss":"maybe"}""", """"replay":{}""", """"replay":"src1"""", """"modelSeed":0""", """"modelSeed":"7""""))
+            assertEquals(b, 400, call("/api/runs", withToken(b))!!.status)
+        val e = obj(call("/api/e2e", withToken(""""replay":{"fromRunId":"src1"}"""))); assertEquals("run1", e["runId"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun determinismIsAGatedReadOfTwoRuns() {
+        fun get(p: String, q: Map<String, String>) = runBlocking { routes().handle(HttpRequest("GET", p, q, emptyMap(), ByteArray(0))) }!!
+        assertEquals("3/3 items identical", obj(get("/api/runs/run1/determinism", mapOf("against" to "src1")))["line"]!!.jsonPrimitive.content)
+        assertEquals(404, get("/api/runs/run2/determinism", mapOf("against" to "src1")).status)
+        assertEquals(400, get("/api/runs/run1/determinism", emptyMap()).status)
+        assertEquals(405, call("/api/runs/run1/determinism", "{}")!!.status)
+        flag = false
+        assertEquals(403, get("/api/runs/run1/determinism", mapOf("against" to "src1")).status)
     }
 
     @Test fun stopEndsATapAndUnknownIs404() {

@@ -74,7 +74,7 @@ class RecordedOutputsExecutor(
             val hit = rec != null && rec.row.status == "OK" &&
                 InputKey.of(rec.nodeType, rec.nodeParams, rec.row.promptVersion, rec.row.model, rec.upstreamOutputJson) == want
             val value = if (hit) decode(rec!!.row.outputJson) else null
-            if (hit && value != null) out[i] = NodeResult(it.frameId, value, rec!!.row.branch, calls = 0) else misses += i
+            if (hit && value != null) out[i] = NodeResult(it.frameId, value, rec!!.row.branch, meta = com.rokid.context.canvas.CallMeta(0, null, null, rec.row.model, rec.row.promptVersion, null, calls = 0), calls = 0) else misses += i
         }
         if (misses.isNotEmpty()) {
             if (onMissLive) {
@@ -120,5 +120,50 @@ object DeterminismReport {
             if (first == null) same++ else drift.merge(first, 1, Int::plus)
         }
         return Report(frames.size, same, drift)
+    }
+}
+
+/**
+ * What a run asks for beyond a live run (design 1.6): REPLAYED when [source] is set (model nodes are served from that run's own rows), SEEDED when [seed] is set (the model nodes send the seed and temperature 0). Both may be set: a live miss
+ * of a REPLAYED run is then also seeded. [label] is the prompt version and fixed model label this run would use for a node.
+ */
+class RunReplay(
+    val source: RecordedSource?,
+    val onMissLive: Boolean = false,
+    val seed: Int? = null,
+    val label: suspend (PipelineNode) -> Pair<Int?, String?> = { null to null },
+) {
+    init { require(seed == null || seed > 0) { "bad_seed" } }
+
+    fun wrap(node: PipelineNode, inner: NodeExecutor?): NodeExecutor? =
+        if (inner != null && source != null && RecordedOutputsExecutor.wrapsType(node.type)) RecordedOutputsExecutor(inner, source, onMissLive, label) else inner
+}
+
+/** The recorded rows of a finished run, read once from the database. NO new column: the upstream value is the upstream node's own row, found through the source run's own pipeline. */
+class DaoRecordedSource(private val dao: com.rokid.context.memory.db.CanvasDao, private val runId: String) : RecordedSource {
+    private class Loaded(val pipeline: com.rokid.context.ai.canvas.Pipeline, val rows: Map<Pair<String, String>, CanvasRunItemEntity>)
+    private var loaded: Loaded? = null
+    private var gone = false
+
+    private suspend fun load(): Loaded? {
+        loaded?.let { return it }
+        if (gone) return null
+        val run = dao.run(runId)
+        val p = run?.takeIf { it.status == "DONE" }?.let { com.rokid.context.ai.canvas.PipelineJson.decode(it.pipelineJson).getOrNull() }
+        if (p == null) { gone = true; return null }
+        return Loaded(p, dao.items(runId).associateBy { it.frameId to it.nodeId }).also { loaded = it }
+    }
+
+    override suspend fun available(): Boolean = load() != null
+
+    override suspend fun recorded(frameId: String, nodeId: String): RecordedRow? {
+        val l = load() ?: return null
+        val node = l.pipeline.nodes.firstOrNull { it.id == nodeId } ?: return null
+        val row = l.rows[frameId to nodeId] ?: return null
+        val incoming = l.pipeline.edges.filter { it.to == nodeId }
+        // exactly one upstream node has a defined "upstream value"; anything else gives null, which can only cause a miss (never a wrong hit)
+        val upRow = incoming.singleOrNull()?.let { l.rows[frameId to it.from] }
+        val up = upRow?.outputJson?.takeUnless { j -> runCatching { ((Json.parseToJsonElement(j) as? JsonObject)?.get("kind") as? JsonPrimitive)?.content == "photo" }.getOrDefault(false) }
+        return RecordedRow(row, up, node.type, node.params)
     }
 }

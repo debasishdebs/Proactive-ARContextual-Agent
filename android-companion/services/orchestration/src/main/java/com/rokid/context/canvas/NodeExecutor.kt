@@ -63,7 +63,15 @@ class RunContext(
     val modelPrivacy: () -> com.rokid.context.core.net.ModelPrivacy = { com.rokid.context.core.net.ModelPrivacy.OFFLINE_ONLY },
     /** Canvas v2.2: the kind of endpoint [Role] is bound to now (null = none or unreadable: fail closed). */
     val boundBackend: suspend (Role) -> com.rokid.context.core.net.Backend? = { null },
-)
+    /** Canvas v2.1 SEEDED level: when set, the model nodes that build their own request send `seed = this` and `temperature = 0` (best effort online; the providers that take no seed ignore it). Null (every live caller) = nothing changes. */
+    val seed: Int? = null,
+) {
+    /** The same context with [seed] set (the run asked for the SEEDED level). */
+    fun withSeed(seed: Int?): RunContext = if (seed == this.seed) this else RunContext(runId, runner, model, prompts, persona, bindings, now, callClass, liveness, modelPrivacy, boundBackend, seed)
+
+    /** The two request fields of the SEEDED level, or nulls. */
+    val requestTemperature: Double? get() = if (seed != null) 0.0 else null
+}
 
 interface NodeExecutor {
     val type: String
