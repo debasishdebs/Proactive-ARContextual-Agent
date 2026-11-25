@@ -373,7 +373,11 @@ class CanvasGraph(
             val extras = lazy { CanvasExtras.create(app, scope, DeveloperModeStore.get(app).enabled) }
             val maintenance = lazy { CanvasMaintenance(MemoryGraph.get(app).db.canvasDao()) }
             val graph = CanvasGraph(
-                auth, BackendCore(backend, extras, listOf(helper.browserRoutes)), AssetSource { name -> runCatching { app.assets.open("canvas/$name").use { it.readBytes() } }.getOrNull() },
+                auth, BackendCore(backend, extras, listOf(helper.browserRoutes), testRun = { b -> com.rokid.context.phone.canvas.api.TestRunRoutes(DeveloperModeStore.get(app).enabled::value, { com.rokid.context.orchestration.forget.DeveloperFlags.canvasTestRun(app) },
+            // the zone state is the hub's own (fails closed until the hub installs it); it lives here, not in the backend, which must stay free of the location graph
+            object : com.rokid.context.phone.canvas.api.TestRunPort by b {
+                override suspend fun zoneHeldOrUnknown(): Boolean = try { HubGraph.get(app); com.rokid.context.canvas.moment.MomentLocationGraph.zoneBlockedNow() } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (e: Exception) { true }
+            }) }), AssetSource { name -> runCatching { app.assets.open("canvas/$name").use { it.readBytes() } }.getOrNull() },
                 DeveloperModeStore.get(app).enabled, wifiIp = { LanAddress.wifiIpv4(app) }, scope = scope, log = { port.log(Level.I, TAG, it) },
                 tlsFactory = { KeystoreTlsIdentity(app) }, prune = { maintenance.value.pruneTraces() },
                 helperAuth = helper.auth, helperApi = helper.routes, helperNative = helper.native, helperConfirm = helper.adapter, helperSession = helper.session,
@@ -386,8 +390,10 @@ class CanvasGraph(
 }
 
 /** [CanvasCore] over the one [CanvasBackendImpl] (built on first use, then reused). */
-class BackendCore(private val backend: Lazy<CanvasBackendImpl>, private val extras: Lazy<CanvasExtras>? = null, private val helperExtras: List<com.rokid.context.phone.canvas.api.ApiExtra> = emptyList()) : CanvasCore {
-    private val apiLazy = lazy { CanvasApi(backend.value, extras = (extras?.value?.extras ?: emptyList()) + helperExtras) }
+class BackendCore(private val backend: Lazy<CanvasBackendImpl>, private val extras: Lazy<CanvasExtras>? = null, private val helperExtras: List<com.rokid.context.phone.canvas.api.ApiExtra> = emptyList(),
+    /** Canvas v2.1: the Developer-only, default-OFF Test run routes (they read the flag on every call). Asked before the built-in routes, so only a body with a `source` is theirs. */
+    private val testRun: ((CanvasBackendImpl) -> com.rokid.context.phone.canvas.api.ApiExtra)? = null) : CanvasCore {
+    private val apiLazy = lazy { CanvasApi(backend.value, extras = (extras?.value?.extras ?: emptyList()) + helperExtras + listOfNotNull(testRun?.invoke(backend.value))) }
     override val api = ApiHandler { apiLazy.value.handle(it) }
     override suspend fun start() { backend.value.start(); extras?.value?.start() }
     override fun runActive() = backend.isInitialized() && backend.value.runActive()

@@ -19,6 +19,7 @@ import com.rokid.context.ai.canvas.Problem
 import com.rokid.context.ai.canvas.Pipeline
 import com.rokid.context.ai.canvas.PipelineFlows
 import com.rokid.context.ai.canvas.PipelineJson
+import com.rokid.context.ai.canvas.PipelineHash
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.canvas.PipelineValidator
 import com.rokid.context.canvas.AbSpec
@@ -102,10 +103,13 @@ class CanvasBackendImpl(
     ),
     /** The one real Ask of `POST /api/ask/eval` (source `canvas_eval`); tests pass a service over their own graph. */
     private val evalAsk: suspend (String) -> com.rokid.context.orchestration.AskOutcome = { q -> com.rokid.context.orchestration.AskActions.askFrom(app, q, com.rokid.context.orchestration.AskActions.EVAL_SOURCE) },
-) : CanvasBackend {
+) : CanvasBackend, TestRunPort {
     /** Scenes: the read-only executor behind `GET /api/scenes`. */
     private val sceneExec = com.rokid.context.canvas.moment.SceneInputExecutor(MemoryGraph.get(app).db)
     companion object {
+        /** The most frame rows one Test run window reads (the picker then keeps at most 50). */
+        const val TEST_RUN_MAX_FRAMES = 2_000
+
         private val pretty = Json { prettyPrint = true }
         private const val NOT_SET = "not set"
         private const val LIVE_BATCH_NODE = "_batch"
@@ -673,6 +677,38 @@ class CanvasBackendImpl(
         val p = loadPipeline(pipelineId, version) ?: throw IllegalArgumentException("invalid_pipeline")
         return runner.start(p, pipelineId, version, scoped(p, frameIds), token, scope)
     }
+
+    // ---- Canvas v2.1 Test run port (read-only helpers for TestRunRoutes; the routes are Developer-only and default OFF) ----
+
+    override suspend fun facts(pipelineId: String, version: Int?): TestRunPort.Facts? {
+        val p = try { loadPipeline(pipelineId, version) } catch (e: NoSuchElementException) { null } ?: return null
+        val vision = p.nodes.filter { roleOf(it) == Role.VISION_EXTRACT }
+        // fail closed: a vision node whose endpoint cannot be read counts as online
+        val online = vision.any { boundBackendOf(ai, Role.VISION_EXTRACT) != com.rokid.context.core.net.Backend.OFFLINE }
+        return TestRunPort.Facts(PipelineHash.of(p), online, p.nodes.any { it.type == NodeTypes.PY_FN }, vision.firstOrNull()?.let { label(it)?.endpoint })
+    }
+
+    override suspend fun frames(fromMs: Long, toMs: Long): List<com.rokid.context.canvas.window.PickerFrame> {
+        val rows = dao.recentFramesBetween(fromMs, toMs, false, TEST_RUN_MAX_FRAMES)
+        val live = rows.map { it.id }.chunked(200).flatMap { PipelineRecords.framesByIds(app, it).map { f -> f.id } }.toSet()
+        val meta = MemoryGraph.get(app).db.frameMetaDao()
+        return rows.map { r ->
+            com.rokid.context.canvas.window.PickerFrame(r.id, r.ts, r.dwell == true, meta.get(r.id)?.nearDupOf != null, tombstoned = false, photoPresent = r.id in live)
+        }
+    }
+
+    override suspend fun traceWindow(traceId: String): Pair<Long, Long>? =
+        MemoryGraph.get(app).db.canvasSlice3Dao().readableTrace(traceId)
+            // only a trace on the phone clock (an UNMAPPED one is refused: fail closed)
+            ?.takeIf { it.clockQuality == com.rokid.context.memory.db.TraceClock.EXACT || it.clockQuality == com.rokid.context.memory.db.TraceClock.OFFSET_ESTIMATED }
+            ?.let { t -> t.phoneEndMs?.let { e -> t.phoneStartMs to e } }
+
+    /** The KEEP times are not read here yet (the glasses lane join is counts-only and needs a device check): null makes the e2e answer say so. */
+    override suspend fun keeps(traceId: String): List<Long>? = null
+
+    override fun busy(): Boolean = runner.active.value != null
+    override fun offlineOnly(): Boolean = com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() == com.rokid.context.core.net.ModelPrivacy.OFFLINE_ONLY
+    override suspend fun start(pipelineId: String, version: Int?, frameIds: List<String>, token: String): String = startRun(pipelineId, version, frameIds, token)
 
     override suspend fun estimateAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>): Estimate {
         val pa = loadPipeline(a.pipelineId, a.version) ?: return Estimate.Refused(listOf("pipeline is not readable"))
