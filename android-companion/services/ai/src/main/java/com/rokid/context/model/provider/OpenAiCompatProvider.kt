@@ -51,6 +51,7 @@ class OpenAiCompatProvider(
             put("messages", buildJsonArray { add(userMessage(request)) })
             put("temperature", JsonPrimitive(request.temperature ?: DEFAULT_TEMPERATURE))
             put("max_completion_tokens", JsonPrimitive(request.maxTokens ?: ModelRequest.DEFAULT_MAX_TOKENS))
+            request.seed?.let { put("seed", JsonPrimitive(it)) }
             val f = request.format
             if (f is WireFormat.JsonSchema) {
                 put("response_format", buildJsonObject {

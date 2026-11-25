@@ -40,6 +40,8 @@ data class ModelRequest(
     val sources: PayloadSources = PayloadSources.NONE,
     /** Who says whether the photos and memories are still live (and holds the upload slot a delete waits for). Required whenever [sources] or an image is present: absent = refused. */
     val liveness: PhotoLiveness? = null,
+    /** Canvas v2.1 P3 SEEDED level: forwarded by the providers whose API takes one (best effort online, never a promise). Null (every live caller) = nothing is sent. */
+    val seed: Int? = null,
 ) {
     companion object {
         /**
