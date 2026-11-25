@@ -173,7 +173,7 @@ class TestRunRoutes(
         p!!
         if (p.pick.ids.isEmpty()) return refused("no_frames")
         val e = port.estimate(b.idStr("pipelineId"), b.optVersion(), p.pick.ids)
-        PcLog.i("test_run", "estimate picked=${p.pick.ids.size} of=${p.pick.of}")
+        PcLog.i("test_run", "estimate picked=${p.pick.ids.size}")
         return when (e) {
             is Estimate.Ok -> HttpResponse.json(200, JsonObject(estimateJson(e) + pickJson(p)))
             is Estimate.Refused -> HttpResponse.error(422, "refused", "This run is over the limits.", e.reasons)
@@ -187,7 +187,7 @@ class TestRunRoutes(
         // the same deterministic pick as the estimate: the token binds exactly these ids, so a different pick is refused by the runner
         val (ask, askRefusal) = replayAsk(b); if (askRefusal != null) return askRefusal
         val runId = port.start(b.idStr("pipelineId"), b.optVersion(), p.pick.ids, b.tokenStr(), ask)
-        PcLog.i("test_run", "start picked=${p.pick.ids.size} replay=${ask?.fromRunId != null} seeded=${ask?.seed != null}")
+        PcLog.i("test_run", "start picked=${p.pick.ids.size}")
         return HttpResponse.json(200, JsonObject(mapOf("runId" to JsonPrimitive(runId)) + pickJson(p)))
     }
 
@@ -206,7 +206,7 @@ class TestRunRoutes(
         val token = b["confirmToken"]?.let { b.tokenStr() }
         val (ask, askRefusal) = replayAsk(b); if (askRefusal != null) return askRefusal
         if (token != null && p.pick.ids.isNotEmpty()) out["runId"] = JsonPrimitive(port.start(b.idStr("pipelineId"), b.optVersion(), p.pick.ids, token, ask))
-        PcLog.i("test_run", "e2e picked=${p.pick.ids.size} run=${token != null}")
+        PcLog.i("test_run", "e2e picked=${p.pick.ids.size}")
         return HttpResponse.json(200, JsonObject(out))
     }
 
