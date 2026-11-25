@@ -59,6 +59,10 @@ class RunContext(
     val callClass: CallClass = CallClass.EXPERIMENT,
     /** Codex r10: the run's photo liveness, attached to every model call that carries a photo (null = such a call is refused by the router). */
     val liveness: com.rokid.context.model.PhotoLiveness? = null,
+    /** Canvas v2.2: the model privacy mode read now. The default is OFFLINE_ONLY (fail closed): a context built without it makes no remote call through a model node. */
+    val modelPrivacy: () -> com.rokid.context.core.net.ModelPrivacy = { com.rokid.context.core.net.ModelPrivacy.OFFLINE_ONLY },
+    /** Canvas v2.2: the kind of endpoint [Role] is bound to now (null = none or unreadable: fail closed). */
+    val boundBackend: suspend (Role) -> com.rokid.context.core.net.Backend? = { null },
 )
 
 interface NodeExecutor {

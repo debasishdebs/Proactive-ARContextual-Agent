@@ -89,7 +89,7 @@ class NodeProvenance(private val ex: NodeExecutor?) {
 private const val FRAME_FORGET = "frame_forget"
 
 /** A photo forgotten before its upload (codex r10) stops the run like a Forget that voided a helper job. */
-private fun failure(e: Exception): String = when (e) {
+internal fun failure(e: Exception): String = when (e) {
     is com.rokid.context.ai.PhotoForgottenException -> FRAME_FORGET
     is ModelCallException -> e.kind.name
     else -> e.javaClass.simpleName
@@ -98,15 +98,15 @@ private fun failure(e: Exception): String = when (e) {
 /** Summed tokens of a call's attempts: null when no attempt reported any (the provider may not say). */
 private fun sumOrNull(values: List<Int?>): Int? = values.filterNotNull().takeIf { it.isNotEmpty() }?.sum()
 
-private fun List<RoutedReply>.asUsage() = map { CallUsage(it.promptTokens, it.completionTokens, it.model, it.latencyMs) }
+internal fun List<RoutedReply>.asUsage() = map { CallUsage(it.promptTokens, it.completionTokens, it.model, it.latencyMs) }
 
 /** The meta of the ONE row that owns a provider call: the summed tokens of its [attempts] and their count (1 when unknown); S32. */
-private fun ownerMeta(latencyMs: Long, attempts: List<CallUsage>, promptVersion: Int?, batchId: String?) = CallMeta(
+internal fun ownerMeta(latencyMs: Long, attempts: List<CallUsage>, promptVersion: Int?, batchId: String?) = CallMeta(
     latencyMs, sumOrNull(attempts.map { it.promptTokens }), sumOrNull(attempts.map { it.completionTokens }), attempts.lastOrNull { it.model != null }?.model,
     promptVersion, batchId, calls = attempts.size.coerceAtLeast(1),
 )
 
-private fun noCalls(node: PipelineNode, items: Int) = 0
+internal fun noCalls(node: PipelineNode, items: Int) = 0
 
 private fun ceilDiv(n: Int, d: Int) = (n + d - 1) / d
 

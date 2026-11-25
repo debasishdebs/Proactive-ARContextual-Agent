@@ -10,8 +10,11 @@ import org.junit.Test
 /** WP6: `CanvasBackendImpl.create` gains `helperJobs` and `extraExecutors`; without them it behaves as before (WP8 composes, WP6 only opens the seam). */
 class CanvasBackendCreateDefaultsTest {
     @Test fun noExtraExecutorsLeavesTheProductionSetUntouched() {
-        assertEquals(Executors.all().keys, CanvasBackendImpl.composeExecutors(emptyMap()).keys)
-        assertEquals(Executors.all(), CanvasBackendImpl.composeExecutors(emptyMap()))
+        // v2.2: the three model-node executors ride along (their node types resolve only while Developer mode and canvasModelNodes are ON, so nothing can reach them by default)
+        val model = com.rokid.context.canvas.ModelNodeExecutors.all()
+        assertEquals(Executors.all().keys + model.keys, CanvasBackendImpl.composeExecutors(emptyMap()).keys)
+        assertEquals(Executors.all() + model, CanvasBackendImpl.composeExecutors(emptyMap()))
+        assertTrue(model.keys.none { it in Executors.all() }) // the live interpreter's map never has them
     }
 
     @Test fun anExtraExecutorIsAddedAndNeverReplacesABuiltIn() {

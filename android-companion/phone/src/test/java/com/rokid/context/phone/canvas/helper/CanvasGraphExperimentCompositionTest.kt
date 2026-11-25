@@ -18,7 +18,7 @@ class CanvasGraphExperimentCompositionTest {
     @Test fun theRunnerMapHasPyFnAndEveryBuiltIn() {
         val composed = CanvasBackendImpl.composeExecutors(ExperimentExecutors.extras(null, fence))
         assertTrue(composed["py.fn"] is PythonExecutor)
-        assertEquals(Executors.all().keys + "py.fn", composed.keys)
+        assertEquals(Executors.all().keys + "py.fn" + com.rokid.context.canvas.ModelNodeExecutors.all().keys, composed.keys)
     }
 
     @Test fun theLiveInterpretersMapNeverHasIt() {
