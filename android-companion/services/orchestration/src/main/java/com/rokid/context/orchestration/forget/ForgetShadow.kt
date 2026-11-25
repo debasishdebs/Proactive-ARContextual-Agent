@@ -53,6 +53,14 @@ object DeveloperFlags {
     fun setPackMoments(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PACK_MOMENTS, on).apply(); if (!on) com.rokid.context.work.frames.place.ShadowCaches.clearAll() }
 
     /**
+     * v18 WP12a: the Scene centroid producer (`scene_centroid`, the mean of a Scene's member vectors per embedding space). Runs inside the existing Scene rebuild (the 15-minute cadence worker), derived data only, nothing
+     * is shown, sent or prompted. OFF by default (also OFF when the prefs cannot be read); no UI. Turning it OFF stops new rows; existing rows go with their Scene and every Forget as always.
+     */
+    const val SCENE_CENTROIDS = "sceneCentroids"
+    fun sceneCentroids(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(SCENE_CENTROIDS, false) }.getOrDefault(false)
+    fun setSceneCentroids(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(SCENE_CENTROIDS, on).apply() }
+
+    /**
      * Canvas v2.1 Test run (design 2026-11-24): stored-window and trace sources, the per-node inspector, the E2E record and the bounded live tap. Every Test run is a dry-run (no send, no delivery, no publish, no
      * write to user data; Save only through `CanvasRunSave`). Needs Developer mode as well. OFF by default (also OFF when the prefs cannot be read); no extra UI beyond the Developer row.
      */

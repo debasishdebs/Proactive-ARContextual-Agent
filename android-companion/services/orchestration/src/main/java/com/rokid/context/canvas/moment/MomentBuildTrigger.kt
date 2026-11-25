@@ -160,7 +160,18 @@ object SceneTriggers {
     fun get(context: Context): SceneCadence = instance ?: synchronized(this) {
         instance ?: run {
             val db = MemoryGraph.get(context).db
-            val builder = SceneBuilder(db, enabled = { MomentStoreSwitch.DEFAULT_ENABLED }).also { builderInstance = it }
+            val app = context.applicationContext
+            val imageSpaces by lazy { com.rokid.context.work.frames.scene.SpaceImageSpaces(MemoryGraph.get(app).spaces, com.rokid.context.ai.AiGraph.get(app).embedders) }
+            val centroids = SceneCentroidProducer(
+                db, enabled = { com.rokid.context.orchestration.forget.DeveloperFlags.sceneCentroids(app) },
+                // Nomic (the ACTIVE image space) always; SigLIP 2 only while its shadow flag is ON, and then only if it is a registered space (it has stored vectors only then; a space with none gets no row).
+                spaces = {
+                    val siglipOn = com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowSiglip(app)
+                    imageSpaces.targets().filter { it.active || (siglipOn && it.fingerprint.startsWith("siglip2")) }
+                        .map { SceneCentroidProducer.CentroidSpace(it.spaceId, it.fingerprint, it.imageDims) }
+                },
+            )
+            val builder = SceneBuilder(db, enabled = { MomentStoreSwitch.DEFAULT_ENABLED }, centroids = centroids).also { builderInstance = it }
             SceneCadence(db, builder)
         }.also { instance = it }
     }

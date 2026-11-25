@@ -19,6 +19,8 @@ class SceneCentroidSourceRulesTest {
     private val allowed = setOf(
         "SceneCentroid.kt", "ContextDatabase.kt", "DatabaseFactory.kt",
         // the Scene deletion, the Forget choke points and the wipe
+        // WP12a: the producer (reads the revision and writes the row in one transaction, flag sceneCentroids)
+        "SceneCentroidProducer.kt",
         "DerivedStaleDao.kt", "ForgetService.kt", "ForgetExecutor.kt", "MomentForget.kt", "WipeDao.kt", "Families.kt", "ForgetPolicy.kt", "DeletionGraph.kt", "DesignDivergence.kt",
     )
 

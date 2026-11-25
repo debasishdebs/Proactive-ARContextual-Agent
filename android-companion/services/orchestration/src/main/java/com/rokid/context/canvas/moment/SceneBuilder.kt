@@ -69,6 +69,8 @@ class SceneBuilder(
     private val enabled: () -> Boolean = { MomentStoreSwitch.DEFAULT_ENABLED },
     private val clock: () -> Long = System::currentTimeMillis,
     config: SceneConfig = SceneConfig(),
+    /** WP12a: the Scene centroid producer (Developer flag `sceneCentroids`, default OFF; null = none). Run AFTER a rebuild's transaction, never inside it, and its failure never fails the rebuild. */
+    private val centroids: SceneCentroidProducer? = null,
 ) {
     /** [stored] Scenes written (new or changed), [removed] Scenes that no longer exist, [unchanged] Scenes a rebuild left alone. */
     data class Report(val stored: Int, val removed: Int, val unchanged: Int) { companion object { val NONE = Report(0, 0, 0) } }
@@ -82,7 +84,7 @@ class SceneBuilder(
         if (!enabled() || toMs < fromMs) return Report.NONE
         val hourLo = Math.floorDiv(maxOf(fromMs, 0L), SceneConfig.HOUR_MS) * SceneConfig.HOUR_MS
         val hourHi = Math.floorDiv(maxOf(toMs, 0L), SceneConfig.HOUR_MS) * SceneConfig.HOUR_MS
-        return db.withTransaction {
+        val report = db.withTransaction {
             val plans = cutter.cut(source.moments(hourLo, hourHi + SceneConfig.HOUR_MS - 1))
             val existing = dao.scenesInHours(hourLo, hourHi).associateBy { it.sceneId }
             var stored = 0; var unchanged = 0
@@ -91,6 +93,9 @@ class SceneBuilder(
             dao.remove(gone)
             Report(stored, gone.size, unchanged)
         }
+        // Scene centroids (WP12a): one transaction per Scene that reads the revision and writes together; covers changed AND unchanged Scenes (a missing or stale row is filled, a current one is left).
+        centroids?.let { p -> try { p.refreshHours(hourLo, hourHi) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (_: Exception) { } }
+        return report
     }
 
     /** True when the Scene was written (new or changed), false when it was already as planned. */
