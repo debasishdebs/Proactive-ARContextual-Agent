@@ -234,7 +234,8 @@ cert_decision() { # have_set(newline separated) new_apk
   if [ "$(printf '%s\n' "$have" | sort -u)" = "$want" ]; then echo match; return 0; fi
   lin="$(apk_lineage "$apk" || true)"
   [ -n "$lin" ] || { echo mismatch; return 0; }
-  for h in $have; do if printf '%s\n' "$lin" | grep -qx "$h"; then ok=1; fi; done
+  # EVERY installed current signer must be a lineage member (not just one): installed A->B vs candidate A->C shares only the ancestor A, and B never authorised C
+  for h in $have; do if printf '%s\n' "$lin" | grep -qx "$h"; then ok=1; else echo mismatch; return 0; fi; done
   [ "$ok" = 1 ] || { echo mismatch; return 0; }
   for w in $want; do if ! printf '%s\n' "$lin" | grep -qx "$w"; then echo mismatch; return 0; fi; done
   echo lineage
