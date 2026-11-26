@@ -132,6 +132,24 @@ class MarkRecorder(
         true
     }
 
+    /**
+     * Developer IMPORT (`POST /api/import`): restores one mark exactly as exported, with its ORIGINAL id (`mk:<epoch>:<seq>`, `vm:<start>:g` or `mk:phone:<start>`), real kind [source] (tap, voice, phone_voice, retro, ask_tap,
+     * phone_chat), time and creation time. The same fenced insert as a live mark (the deletion generation, the wipe time, a forgotten range and an undone mark all refuse it); [photo] is a fixed photo-state token (`ok` is
+     * stored as `pending`: the photo of this mark, if it is imported too, links on its frame commit). True = stored or already there. The provenance says `clock:imported`; no intent row is made (the dump carries none).
+     */
+    suspend fun importMark(id: String, source: String, atMs: Long, photo: String, createdAt: Long): Boolean = lock.withLock {
+        if (source !in IMPORTABLE_SOURCES || atMs < 0) return@withLock false
+        if (dao.label(id) != null) return@withLock true
+        val state = if (photo == MarkPhotoReason.OK) MarkPhotoReason.PENDING else MarkPhotoReason.clean(photo)
+        val f = fence()
+        val ok = dao.insertLabelFenced(CanvasLabelEntity(id, KIND_MOMENT, source, MOMENT, atMs, provenance = "clock:imported", deletionCounter = f.now().counter, createdAt = createdAt, photo = state), f)
+        if (!ok) return@withLock false
+        log("mark imported")
+        onRecorded(atMs)
+        if (state == MarkPhotoReason.PENDING) dao.linkMarkPhoto(id)?.let { at -> onRecorded(at) }
+        true
+    }
+
     private suspend fun undoLocked(target: String): com.rokid.context.orchestration.forget.ForgetActions.MarkPhotoOutcome? {
         val photo = removeMark(target)
         unjoined.removeAll { it.id == target }
@@ -322,6 +340,8 @@ class MarkRecorder(
         const val PHONE_EPOCH = "phone"
         /** Appended to a mark's provenance when a phone call was active as it was made. */
         const val CALL_TAG = ";call"
+        /** The kinds the import restores (every kind the dump emits). */
+        val IMPORTABLE_SOURCES = setOf(SRC_TAP, SRC_VOICE, SRC_PHONE_VOICE, SRC_RETRO, SRC_ASK_TAP, SRC_PHONE_CHAT)
         private val UNDOABLE = setOf(SRC_TAP, SRC_VOICE, SRC_PHONE_VOICE, SRC_PHONE_CHAT, SRC_RETRO)
         fun labelId(m: MarkMessage) = "mk:${m.epoch}:${m.seq}"
     }

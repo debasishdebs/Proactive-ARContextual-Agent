@@ -98,7 +98,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 db,
                 frames = com.rokid.context.canvas.dumpimport.ImportFrameStore(app, { f, b, t -> com.rokid.context.phone.hub.AtomicJpegWriter.writeStamped(f, b, t) }),
                 memories = com.rokid.context.canvas.dumpimport.ImportMemoryStore(app),
-                recordMark = { m, at -> MarkGraph.recorder(app).onMark(m, com.rokid.context.canvas.marks.MarkArrival(at, true, System.currentTimeMillis())) },
+                recordMark = { k, photo -> MarkGraph.recorder(app).importMark(k.id, k.source, k.atMs, photo, k.createdAt) },
                 build = { ids -> com.rokid.context.canvas.moment.MomentTriggers.builder(app).build(ids) },
                 locationEnabled = { com.rokid.context.orchestration.forget.DeveloperFlags.momentLocation(app) },
                 generation = { MemoryWipe.generation.get() },

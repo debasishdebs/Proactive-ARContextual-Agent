@@ -4,7 +4,6 @@ import com.rokid.context.canvas.dump.DumpReader
 import com.rokid.context.canvas.dump.DumpSource
 
 import androidx.room.withTransaction
-import com.rokid.context.core.model.MarkMessage
 import com.rokid.context.core.model.MarkRef
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.MemoryTier
@@ -35,7 +34,8 @@ object DumpImportParser {
     const val MAX_TEXT = 2000
     private val FRAME_ID = Regex("^[A-Za-z0-9_-]{1,100}$")
     private val MEMORY_ID = Regex("^[A-Za-z0-9_.:-]{1,100}$")
-    private val MARK_ID = Regex("^mk:([A-Za-z0-9-]{1,64}):([0-9]{1,18})$")
+    private val MARK_ID = Regex("^(mk:[A-Za-z0-9-]{1,64}:[0-9]{1,18}|vm:[0-9]{1,18}:g)$")
+    private val MARK_SOURCES = setOf("tap", "voice", "phone_voice", "retro", "ask_tap", "phone_chat")
     private val SOURCE = Regex("^rokid[A-Za-z0-9_]{0,40}$")
     private val HEX = Regex("^[0-9a-fA-F]{1,64}$")
     private val CLASSES = setOf("STATIONARY", "WALKING", "VEHICLE", "UNKNOWN")
@@ -47,7 +47,8 @@ object DumpImportParser {
         val width: Int?, val markRef: String?, val placeLabel: String?, val photo: ByteArray,
     )
     class Memory(val id: String, val frameId: String, val text: String, val type: String, val tags: List<String>, val tier: MemoryTier, val confidence: Double, val review: ReviewState, val createdAt: Long, val derived: Boolean)
-    class Mark(val id: String, val epoch: String, val seq: Long, val atMs: Long)
+    /** A mark as the dump emits it ([source] is the real kind: tap, voice, phone_voice, retro, ask_tap or phone_chat; [photo] its photo state token). */
+    class Mark(val id: String, val source: String, val atMs: Long, val photo: String?, val createdAt: Long)
     class Location(val lat: Double, val lon: Double, val accuracyM: Double, val atMs: Long, val fixAgeMs: Long, val speedClass: String?, val method: String?)
     class MomentItem(
         val id: String, val startMs: Long, val frames: List<Frame>, val memories: List<Memory>, val marks: List<Mark>, val location: Location?,
@@ -56,7 +57,12 @@ object DumpImportParser {
     )
 
     /** One parsed item: a Moment to import, or an object that is skipped with a fixed reason token (`scene`, `pin`, `mark_item`). */
-    sealed class Entry { class Moment(val item: MomentItem) : Entry(); class Skip(val reason: String) : Entry() }
+    sealed class Entry {
+        class Moment(val item: MomentItem) : Entry()
+        class Skip(val reason: String) : Entry()
+        /** A standalone mark item; [momentId] is the Moment the dump says it belongs to (that Moment restores it). */
+        class StandaloneMark(val mark: Mark, val momentId: String?) : Entry()
+    }
 
     class Bad(val index: Int, val reason: String) : Exception(null, null, false, false)
 
@@ -71,7 +77,7 @@ object DumpImportParser {
                 "moment" -> Entry.Moment(moment(o, i))
                 "scene" -> Entry.Skip("scene")
                 "pin" -> Entry.Skip("pin")
-                "mark" -> Entry.Skip("mark_item")
+                "mark" -> markItem(o, i)
                 else -> throw Bad(i, "object_type")
             }
         }
@@ -111,6 +117,22 @@ object DumpImportParser {
         val a = v as? JsonArray ?: throw Bad(i, k)
         if (a.size > max) throw Bad(i, k)
         return a.map { it as? JsonObject ?: throw Bad(i, k) }
+    }
+
+    private fun mark(m: JsonObject, i: Int): Mark {
+        val mid = str(m, "id", i, 130)?.takeIf { MARK_ID.matches(it) } ?: throw Bad(i, "mark_id")
+        val at = long(m, "atMs", i)?.takeIf { it >= 0 } ?: throw Bad(i, "mark_atMs")
+        val source = str(m, "source", i, 20)?.also { if (it !in MARK_SOURCES) throw Bad(i, "mark_source") } ?: "tap"
+        val photo = str(m, "photo", i, 40)?.takeIf { it.isNotBlank() }
+        val created = long(m, "createdAt", i) ?: at
+        if (created < 0) throw Bad(i, "mark_createdAt")
+        return Mark(mid, source, at, photo, created)
+    }
+
+    private fun markItem(o: JsonObject, i: Int): Entry.StandaloneMark {
+        val k = mark(o, i)
+        val mo = str(o, "momentId", i, 20)?.also { if (MomentId.parse(it) == null) throw Bad(i, "momentId") }
+        return Entry.StandaloneMark(k, mo)
     }
 
     private fun moment(o: JsonObject, i: Int): MomentItem {
@@ -164,12 +186,9 @@ object DumpImportParser {
         }
         val marks = ArrayList<Mark>()
         for (m in arr(o, "marks", i, MAX_MARKS)) {
-            val mid = str(m, "id", i, 130) ?: throw Bad(i, "mark_id")
-            val g = MARK_ID.matchEntire(mid) ?: throw Bad(i, "mark_id")
-            val seq = g.groupValues[2].toLongOrNull() ?: throw Bad(i, "mark_id")
-            val at = long(m, "atMs", i) ?: throw Bad(i, "mark_atMs")
-            if (at !in range || marks.any { it.id == mid }) throw Bad(i, "mark_atMs")
-            marks += Mark(mid, g.groupValues[1], seq, at)
+            val k = mark(m, i)
+            if (k.atMs !in range || marks.any { it.id == k.id }) throw Bad(i, "mark_atMs")
+            marks += k
         }
         if (frames.isEmpty() && marks.isEmpty()) throw Bad(i, "empty")
         val loc = (o["location"] as? JsonObject)?.let { l ->
@@ -210,7 +229,8 @@ class DumpImporter(
     private val db: ContextDatabase,
     private val frames: ImportFrameWriter,
     private val memories: ImportMemoryWriter,
-    private val recordMark: suspend (MarkMessage, Long) -> Boolean,
+    /** The mark recorder's import entry ([com.rokid.context.canvas.marks.MarkRecorder.importMark]): original id, kind, time and photo state. */
+    private val recordMark: suspend (DumpImportParser.Mark, String) -> Boolean,
     private val build: suspend (List<String>) -> Unit,
     private val locationEnabled: () -> Boolean,
     private val generation: () -> Long,
@@ -225,6 +245,15 @@ class DumpImporter(
         for (e in entries) {
             if (stopped) { out += "failed" to "stopped"; continue }
             if (e is DumpImportParser.Entry.Skip) { out += "skipped" to e.reason; notImported++; continue }
+            if (e is DumpImportParser.Entry.StandaloneMark) {
+                try {
+                    val r = standaloneMark(e, dedup, dryRun, gen0)
+                    out += r; if (r.first == "created" || r.first == "would_create") nk++
+                } catch (s: Stopped) { stopped = true; out += "failed" to "stopped"
+                } catch (c: kotlinx.coroutines.CancellationException) { throw c
+                } catch (x: Exception) { out += "failed" to "error" }
+                continue
+            }
             val m = (e as DumpImportParser.Entry.Moment).item
             cards += m.skippedPlaceCards
             try {
@@ -243,6 +272,32 @@ class DumpImporter(
             } catch (x: Exception) { out += "failed" to "error" }
         }
         return ImportReport(out, nf, nm, nk, nl, cards, notImported, stopped)
+    }
+
+    /** The photo state a restored mark gets: `pending` only when a photo of this very mark comes with the import (the frame commit links it), else the fixed token `no_frame` or the original reason. */
+    private fun photoState(k: DumpImportParser.Mark, frames: List<DumpImportParser.Frame>): String {
+        val p = k.photo
+        val ref = k.id.removePrefix("mk:")
+        if (p == null) return "no_photo_support"
+        if (p == "ok" || p == "pending") return if (frames.any { it.markRef == ref }) "pending" else "no_frame"
+        return p
+    }
+
+    /**
+     * A mark item of the dump. One that names its Moment (`momentId`) is restored BY that Moment item (`skipped: in_moment`, never a conflict, so a whole dump can be pushed). A mark with no Moment is restored through the
+     * recorder with its real kind, time and photo state; the Moment of its second is rebuilt (a mark-only second is a MARK Moment). A forgotten second is never restored.
+     */
+    private suspend fun standaloneMark(e: DumpImportParser.Entry.StandaloneMark, dedup: Boolean, dryRun: Boolean, gen0: Long): Pair<String, String> {
+        val k = e.mark
+        if (e.momentId != null) return "skipped" to "in_moment"
+        val momentId = try { MomentId.ofMs(k.atMs) } catch (x: IllegalArgumentException) { return "skipped" to "bad_time" }
+        if (db.momentDao().tombstonedAmong(listOf(momentId)).isNotEmpty() || db.canvasSlice3Dao().momentFenced(k.atMs, k.atMs)) return "skipped" to "forgotten"
+        if (db.canvasSlice3Dao().label(k.id) != null) return if (dedup) "skipped" to "dedup" else "conflict" to "exists"
+        if (dryRun) return "would_create" to "ok"
+        check(gen0)
+        val ok = recordMark(k, photoState(k, emptyList())) && db.canvasSlice3Dao().label(k.id)?.atMs == k.atMs
+        if (ok) build(listOf(momentId))
+        return if (ok) "created" to "ok" else "failed" to "not_stored"
     }
 
     private fun check(gen0: Long) { if (generation() != gen0) throw Stopped() }
@@ -264,7 +319,7 @@ class DumpImporter(
         // marks first: a photo that names its mark (frame_meta.markRef) links to it when it is committed
         for (k in m.marks) {
             check(gen0)
-            if (recordMark(MarkMessage(epoch = k.epoch, seq = k.seq, atMs = k.atMs, atElapsedMs = 0), k.atMs) && db.canvasSlice3Dao().label(k.id)?.atMs == k.atMs) nk++ else ok = false
+            if (recordMark(k, photoState(k, m.frames)) && db.canvasSlice3Dao().label(k.id)?.atMs == k.atMs) nk++ else ok = false
         }
         for (f in m.frames) {
             check(gen0)

@@ -2,7 +2,6 @@ package com.rokid.context.canvas.dumpimport
 
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.rokid.context.canvas.marks.MarkArrival
 import com.rokid.context.canvas.marks.MarkRecorder
 import com.rokid.context.canvas.moment.MomentBuilder
 import com.rokid.context.memory.FrameIntake
@@ -64,7 +63,7 @@ class DumpImporterTest {
     }
     private val recorder = MarkRecorder(db.canvasSlice3Dao(), { DaoFence(0, epoch, { gen }, { epoch }) }, { 5 })
     private fun importer() = DumpImporter(
-        db, frameWriter, memoryWriter, { m, at -> recorder.onMark(m, MarkArrival(at, true, 0)) }, { ids -> MomentBuilder(db).build(ids) }, { locOn }, { gen }, { 777L },
+        db, frameWriter, memoryWriter, { k, photo -> recorder.importMark(k.id, k.source, k.atMs, photo, k.createdAt) }, { ids -> MomentBuilder(db).build(ids) }, { locOn }, { gen }, { 777L },
     )
 
     private fun body(frameId: String = "f1", memId: String = "mem1", withLoc: Boolean = true, markId: String? = "mk:ep1:3", momentId: String = id, st: Long = start) = """
@@ -143,7 +142,7 @@ class DumpImporterTest {
     }
 
     @Test fun deleteAllDuringTheImportStopsIt() {
-        val gone = DumpImporter(db, { gen++; frameWriter.store(it) }, memoryWriter, { m, at -> recorder.onMark(m, MarkArrival(at, true, 0)) }, { MomentBuilder(db).build(it) }, { true }, { gen })
+        val gone = DumpImporter(db, { gen++; frameWriter.store(it) }, memoryWriter, { k, photo -> recorder.importMark(k.id, k.source, k.atMs, photo, k.createdAt) }, { MomentBuilder(db).build(it) }, { true }, { gen })
         val r = runBlocking { gone.run(DumpImportParser.parse(body()), false, false) }
         assertTrue(r.stopped)
     }
@@ -167,11 +166,66 @@ class DumpImporterTest {
         bad(good.replace("\"photos\":{\"f1\"", "\"photos\":{\"zz\""))                  // photo for no frame
     }
 
-    @Test fun scenesPinsAndStandaloneMarksAreSkippedNotImported() {
-        val e = DumpImportParser.parse("""{"items":[{"object_type":"scene","id":"s"},{"object_type":"pin","id":"p"},{"object_type":"mark","id":"mk:a:1"}]}""".toByteArray())
+    @Test fun scenesAndPinsAreStillSkipped() {
+        val e = DumpImportParser.parse("""{"items":[{"object_type":"scene","id":"s"},{"object_type":"pin","id":"p"}]}""".toByteArray())
         val r = runBlocking { importer().run(e, false, false) }
-        assertEquals(listOf("skipped" to "scene", "skipped" to "pin", "skipped" to "mark_item"), r.items)
-        assertEquals(3, r.skippedNotImported)
+        assertEquals(listOf("skipped" to "scene", "skipped" to "pin"), r.items)
+    }
+
+    // ---- standalone marks and the real mark kind ----
+    private val markAt = start + 123
+    private fun markBody(mid: String = "mk:ep9:7", source: String = "voice", moment: String? = null, at: Long = markAt, photo: String = "phone_mark_no_photo") =
+        """{"items":[{"object_type":"mark","id":"$mid","atMs":$at,"source":"$source","name":"MOMENT","frameId":null,"momentId":${if (moment == null) "null" else "\u0022$moment\u0022"},"photo":"$photo","createdAt":${at + 5}}]}""".toByteArray()
+    private fun markRows() = runBlocking { db.canvasSlice3Dao().labels().size }
+
+    @Test fun standaloneMarkKeepsItsRealKindIdTimeAndPhotoState() = runBlocking<Unit> {
+        val r = run(markBody())
+        assertEquals(listOf("created" to "ok"), r.items); assertEquals(1, r.marks)
+        val l = db.canvasSlice3Dao().label("mk:ep9:7")!!
+        assertEquals("voice", l.source); assertEquals(markAt, l.atMs); assertEquals(markAt + 5, l.createdAt); assertEquals("phone_mark_no_photo", l.photo)
+        assertNotNull("the second of the mark is rebuilt into a Moment", db.momentDao().moment(MomentId.ofMs(markAt)))
+        val vm = run(markBody(mid = "vm:${markAt}:g", source = "retro"))
+        assertEquals(listOf("created" to "ok"), vm.items); assertEquals("retro", db.canvasSlice3Dao().label("vm:$markAt:g")!!.source)
+    }
+
+    @Test fun standaloneMarkDedupConflictAndDryRun() {
+        assertEquals(listOf("would_create" to "ok"), run(markBody(), dry = true).items); assertEquals(0, markRows())
+        run(markBody())
+        assertEquals(listOf("conflict" to "exists"), run(markBody()).items)
+        assertEquals(listOf("skipped" to "dedup"), run(markBody(), dedup = true).items)
+        assertEquals(1, markRows())
+    }
+
+    @Test fun aMarkThatNamesItsMomentIsRestoredByThatMomentNotAsAConflict() {
+        assertEquals(listOf("skipped" to "in_moment"), run(markBody(moment = id)).items); assertEquals(0, markRows())
+    }
+
+    @Test fun momentMarkKeepsItsKind() = runBlocking<Unit> {
+        run(String(body()).replace("\"atMs\":${start + 20},\"source\":\"tap\"", "\"atMs\":${start + 20},\"source\":\"phone_chat\",\"photo\":\"ok\"").toByteArray())
+        val l = db.canvasSlice3Dao().label("mk:ep1:3")!!
+        assertEquals("phone_chat", l.source); assertEquals("no_frame", l.photo) // its photo is not in this import
+    }
+
+    @Test fun standaloneMarkOfAForgottenSecondIsNeverRestored() = runBlocking<Unit> {
+        db.momentDao().insertTombstones(listOf(MomentTombstoneEntity(MomentId.ofMs(markAt), 1)))
+        assertEquals(listOf("skipped" to "forgotten"), run(markBody()).items); assertEquals(0, markRows())
+    }
+
+    @Test fun standaloneMarkForgetAndDeleteAllLeaveZeroRows() = runBlocking<Unit> {
+        run(markBody())
+        val svc = ForgetService(db, ProposalRepository(db.proposalDao(), db.actionDao(), db)) { 99L }
+        MomentForget(db, svc) { 99L }.forgetMoments(listOf(MomentId.ofMs(markAt)))
+        assertEquals("Forget of the second removes the mark", 0, markRows())
+        run(markBody(mid = "mk:ep9:8", source = "tap", at = start + 5400))
+        assertEquals(1, markRows())
+        db.wipeDao().wipeMemory(99L)
+        assertEquals("Delete all", 0, markRows())
+    }
+
+    @Test fun badMarkItemsAre400() {
+        fun bad(b: ByteArray) { try { DumpImportParser.parse(b); fail() } catch (e: DumpImportParser.Bad) { /* ok */ } }
+        bad(markBody(mid = "nope")); bad(markBody(source = "weird")); bad(markBody(moment = "zz"))
+        bad(String(markBody()).replace("\"atMs\":$markAt", "\"atMs\":\"x\"").toByteArray()); bad(String(markBody()).replace("\"atMs\":$markAt,", "").toByteArray())
     }
 
     @Test fun batchCapIs50() {
