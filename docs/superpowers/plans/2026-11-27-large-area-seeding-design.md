@@ -256,3 +256,219 @@ What bulk does NOT do: it finds only places that have a Wikidata coordinate (the
 2. Loosen the class rule modestly (below), and only for the bulk path where a missed class costs nothing but a larger result.
 
 Classes to add (expected size increase in the trip region, from the counts above): lake Q23397 and glacial/proglacial lake (+5), waterfall Q34038 (+3), mountain pass Q133056 (+7), gompa Q1559394 (+3), national park Q46169 and wildlife refuge Q1377575 and sanctuary/bird sanctuary (+8), protected area Q473972 (+9; these are large areas, give them a radius cap), road bridge Q537127 (+2), park Q22698 and Tibet museum Q1139682 (+2): about +39 places, 53 to about 92 (+74%). A second step, mountain Q8502 and summit Q207326 and sacred mountain Q1595289 (+33, includes Kangchenjunga and Nathu La's range), is worth it in a mountain trip but noisy elsewhere: make it a toggle. Do not add: tea garden Q1827414 (+20, tea estates are mostly not visitor sights), villages, human settlements, constituencies, schools (these are the 479 non-passing items and are what the class rule rightly excludes). Everything together is the 142 figure.
+
+## Class survey Rajasthan 27 Nov (Mac, `tools/measure/measure_classes.py`; class ids, labels and counts only)
+
+Method: the measure_region SPARQL shape (box + English-Wikipedia sitelink join + OPTIONAL P31, ORDER BY ?item, paging, no sub-select), 8 boxes of 220 to 250 km spread over a large semi-arid state (the dense tourist cities, the south with hills and lakes, the east with a tiger reserve, a northern town belt, and two desert boxes, one of them nearly empty), all deduplicated by item; plus the trip box (27.0-28.2 N, 87.9-89.1 E) in one query. 17 SPARQL/label requests for the state survey and trip run, plus 8 label lookups and 9 id searches to verify class ids; every call HTTP 200, no 429, no timeout, serial, 1 request per 2 s, repo-contact User-Agent, hard cap 120. Boxes are rectangles, so a few items of neighbouring countries and states are inside (about 3% of rows are constituencies of other states, districts of another country): the proportions are what matters. Class lists are those of the committed `PlaceCellSource.kt` (HEAD) plus the proposals in sections 9 and 10; the planned classes without a verified id in the repo (proglacial lake, sanctuary, bird sanctuary) were matched by their English label and their ids read back from the data: proglacial lake Q1320719, sanctuary Q29553, bird sanctuary Q2714144.
+
+### 1. Totals (items with an English article and a coordinate, no person)
+| | Rajasthan sample (8 boxes) | Trip box (Sikkim/Darjeeling) |
+|---|---|---|
+| items | 2,745 | 532 |
+| items with no P31 at all | 42 | 9 |
+| pass the strict rule (today: classes + curated) | 208 (7.6%) | 87 (16%) |
+| strict + loose (adds mountain classes, proglacial lake, sanctuary, bird sanctuary) | 212 | 119 |
+| + owner additions (mountain, tea garden, stream, glacier, hill, railway station, bus stop, hydroelectric power station, stadium, mountain ridge, mountain range, mountain railway) | 537 | 172 |
+| + owner-approved place types (see 4) | 612 | 177 |
+| still not admitted | 2,133 (78%) | 355 (67%) |
+
+Reading: the strict rule is the right size for Rajasthan (a class list tuned in Sikkim finds Hindu temples, forts, palaces, lakes, museums, archaeological sites, protected areas there). The owner additions mostly add one class in Rajasthan: railway station (314 items, plus 72 more carry "station located on surface"): 58% of the 537 are stations. Without it the additions are 11 stream, stadium and hill style items. Decision for the owner: stations as a toggle, off by default, in a state with thousands of small halts. In Sikkim the additions are mountains (27), tea gardens (20), streams (9), glaciers (6), stations (6), hills (4), stadiums (4), hydroelectric stations (4). Per-class counts are items carrying the class; an item with two classes is counted in both.
+
+### 2. Rajasthan: top 60 classes among items NOT admitted (strict + loose + owner additions + owner-approved place types)
+| # | QID | Class | Items | Visitor value | Recommendation |
+|---|---|---|---|---|---|
+| 1 | Q56436498 | village in India | 806 | noise | skip |
+| 2 | Q486972 | human settlement | 354 | noise | skip |
+| 3 | Q54375498 | constituency of the Rajasthan Legislative Assembly | 159 | noise | skip |
+| 4 | Q515 | city | 45 | low | skip |
+| 5 | - | (no P31 at all) | 42 | unknown | skip by default; curated QIDs cover the known ones |
+| 6 | Q1149652 | district of India | 41 | noise | skip |
+| 7 | Q3957 | town | 37 | low | skip |
+| 8 | Q3918 | university | 32 | low | skip |
+| 9 | Q131389368 | state private university | 27 | low | skip |
+| 10 | Q4022 | river | 26 | low | optional toggle (area-like, 'rivers') |
+| 11 | Q3914 | school | 26 | noise | skip |
+| 12 | Q122987735 | tehsil of Rajasthan | 26 | noise | skip |
+| 13 | Q532 | village | 26 | noise | skip |
+| 14 | Q56061 | administrative territorial entity | 25 | noise | skip |
+| 15 | Q47481352 | Lok Sabha constituency | 24 | noise | skip |
+| 16 | Q7603893 | state public university | 23 | low | skip |
+| 17 | Q15642541 | human-geographic territorial entity | 22 | noise | skip |
+| 18 | Q1336152 | princely state | 21 | noise | skip |
+| 19 | Q3024240 | historical country | 20 | noise | skip |
+| 20 | Q54375446 | constituency of the Haryana Legislative Assembly | 20 | noise | skip |
+| 21 | Q4671277 | academic institution | 19 | low | skip |
+| 22 | Q24398318 | religious building | 18 | medium | include (generic religious building; mosques, Jain, Sikh shrines) |
+| 23 | Q189004 | college | 14 | low | skip |
+| 24 | Q1248784 | airport | 12 | low | skip |
+| 25 | Q928830 | metro station | 11 | low | skip |
+| 26 | Q54375438 | constituency of the Gujarat Legislative Assembly | 11 | noise | skip |
+| 27 | Q1549591 | big city | 10 | low | skip |
+| 28 | Q1663017 | engineering school | 9 | noise | skip |
+| 29 | Q178561 | battle | 9 | low | skip (event, not a place) |
+| 30 | Q11670533 | elevated station | 8 | low | skip |
+| 31 | Q618123 | geographical feature | 8 | low | skip |
+| 32 | Q41176 | building | 8 | low | skip (too generic) |
+| 33 | Q2732840 | gram panchayat | 7 | noise | skip |
+| 34 | Q94993988 | commercial traffic aerodrome | 7 | low | skip |
+| 35 | Q6558431 | coal-fired power station | 7 | low | skip |
+| 36 | Q54375465 | constituency of the Madhya Pradesh Legislative Assembly | 7 | noise | skip |
+| 37 | Q125907350 | division of Rajasthan | 6 | noise | skip |
+| 38 | Q47531586 | Institute of National Importance | 6 | low | skip |
+| 39 | Q125450892 | former constituency of the Lok Sabha | 6 | noise | skip |
+| 40 | Q16917 | hospital | 6 | low | skip |
+| 41 | Q494230 | medical school | 6 | noise | skip |
+| 42 | Q31855 | research institute | 5 | low | skip |
+| 43 | Q34442 | road | 5 | low | skip |
+| 44 | Q58339518 | town in India | 5 | noise | skip |
+| 45 | Q494829 | bus station | 5 | medium | optional toggle with bus stop (transport) |
+| 46 | Q3257686 | locality | 5 | noise | skip |
+| 47 | Q269770 | boarding school | 4 | noise | skip |
+| 48 | Q682943 | cricket field | 4 | low | optional toggle with stadium |
+| 49 | Q17072837 | medical college in India | 4 | noise | skip |
+| 50 | Q6958514 | Municipal council (India) | 4 | noise | skip |
+| 51 | Q124339643 | former constituency of the Haryana Legislative Assembly | 4 | noise | skip |
+| 52 | Q811979 | built structure | 3 | low | skip |
+| 53 | Q12443800 | state of India | 3 | noise | skip |
+| 54 | Q22808403 | underground station | 3 | low | skip |
+| 55 | Q188055 | siege | 3 | low | skip |
+| 56 | Q3146899 | Diocese of the Catholic Church | 3 | noise | skip |
+| 57 | Q3520135 | deemed university | 3 | noise | skip |
+| 58 | Q62079009 | constituent college | 3 | noise | skip |
+| 59 | Q22808404 | station located on surface | 3 | low | skip (rides with railway station) |
+| 60 | Q124339660 | former constituency of the Rajasthan Legislative Assembly | 3 | noise | skip |
+
+What this says: 90% of what is left is administrative or settlement noise (villages, settlements, assembly constituencies, districts, universities, schools). The heritage classes a traveller wants are all small in Wikidata's P31 (one or two items per class: haveli 1, chhatri 1, ghat 1, castle 1, mausoleum 1, cenotaph 2, dargah 2, gate 2), because most heritage items carry a generic class (palace, fort, Hindu temple, building) or none; the class list cannot be made much richer by adding classes. The remaining visitor-relevant leftovers are religious building (18), fair (2), salt lake, desert, clock tower, fortress, paleontological site, urban park.
+
+### 3. Trip box: top 60 classes among items NOT admitted (same admitted set)
+| # | QID | Class | Items | Visitor value | Recommendation |
+|---|---|---|---|---|---|
+| 1 | Q56436498 | village in India | 104 | noise | skip |
+| 2 | Q486972 | human settlement | 46 | noise | skip |
+| 3 | Q54375505 | constituency of the Sikkim Legislative Assembly | 32 | noise | skip |
+| 4 | Q1530705 | ward of Nepal | 18 | noise | skip |
+| 5 | Q124339661 | former constituency of the Sikkim Legislative Assembly | 11 | noise | skip |
+| 6 | Q1149652 | district of India | 9 | noise | skip |
+| 7 | - | (no P31 at all) | 8 | unknown | skip by default; curated QIDs cover the known ones |
+| 8 | Q3914 | school | 8 | noise | skip |
+| 9 | Q4671277 | academic institution | 6 | low | skip |
+| 10 | Q1352019 | gewog of Bhutan | 5 | noise | skip |
+| 11 | Q12413618 | international border | 5 | noise | skip |
+| 12 | Q133346 | border | 5 | noise | skip |
+| 13 | Q15104814 | land boundary | 5 | noise | skip |
+| 14 | Q122987743 | community development block in West Bengal | 5 | noise | skip |
+| 15 | Q39816 | valley | 4 | medium | optional toggle (valley, area-like) |
+| 16 | Q64062731 | higher secondary school | 4 | noise | skip |
+| 17 | Q4022 | river | 4 | low | optional toggle (area-like, 'rivers') |
+| 18 | Q29467088 | rural municipality of Nepal | 4 | noise | skip |
+| 19 | Q2723540 | Jawahar Navodaya Vidyalaya | 4 | noise | skip |
+| 20 | Q16830604 | census town of India | 4 | noise | skip |
+| 21 | Q56061 | administrative territorial entity | 3 | noise | skip |
+| 22 | Q13100073 | village of the People's Republic of China | 3 | noise | skip |
+| 23 | Q123705 | neighborhood | 3 | low | skip |
+| 24 | Q515 | city | 3 | low | skip |
+| 25 | Q3957 | town | 3 | low | skip |
+| 26 | Q15642541 | human-geographic territorial entity | 3 | noise | skip |
+| 27 | Q131389368 | state private university | 3 | low | skip |
+| 28 | Q34442 | road | 2 | low | skip |
+| 29 | Q47490604 | constituency of the West Bengal Legislative Assembly | 2 | noise | skip |
+| 30 | Q47481352 | Lok Sabha constituency | 2 | noise | skip |
+| 31 | Q18918041 | municipality of West Bengal | 2 | noise | skip |
+| 32 | Q1549591 | big city | 2 | low | skip |
+| 33 | Q22713629 | girls' school | 2 | noise | skip |
+| 34 | Q41176 | building | 2 | low | skip (too generic) |
+| 35 | Q4826838 | autonomous administrative division of India | 2 | noise | skip |
+| 36 | Q811979 | built structure | 2 | low | skip |
+| 37 | Q189004 | college | 2 | low | skip |
+| 38 | Q13058507 | subdivision of West Bengal | 2 | noise | skip |
+| 39 | Q19953632 | former administrative territorial entity | 2 | noise | skip |
+| 40 | Q67388747 | urban school | 2 | noise | skip |
+| 41 | Q1713379 | boys' school | 2 | noise | skip |
+| 42 | Q269770 | boarding school | 2 | noise | skip |
+| 43 | Q44377 | tunnel | 1 | low | skip |
+| 44 | Q11707 | restaurant | 1 | low | skip |
+| 45 | Q1289426 | county of China | 1 | noise | skip |
+| 46 | Q11631078 | athletic training facility | 1 | low | skip |
+| 47 | Q1500350 | township of China | 1 | noise | skip |
+| 48 | Q179700 | statue | 1 | medium | include (statue; statues are photo stops) |
+| 49 | Q1361100 | skyway | 1 | low | skip |
+| 50 | Q39614 | cemetery | 1 | low | skip |
+| 51 | Q1663017 | engineering school | 1 | noise | skip |
+| 52 | Q1080794 | public school | 1 | noise | skip |
+| 53 | Q1143635 | business school | 1 | noise | skip |
+| 54 | Q43229 | organization | 1 | noise | skip |
+| 55 | Q3918 | university | 1 | low | skip |
+| 56 | Q17009433 | Mankhim | 1 | noise | skip |
+| 57 | Q9096832 | paleontological site | 1 | medium | include (fossil park, area-like) |
+| 58 | Q532 | village | 1 | noise | skip |
+| 59 | Q38723 | higher education institution | 1 | low | skip |
+| 60 | Q47531586 | Institute of National Importance | 1 | low | skip |
+
+### 4. Owner-approved place types: resolved ids (read from the real items of the two samples; ids verified through wbgetentities/wbsearchentities)
+| Type | QID(s) | Rajasthan | Trip | Suggested PlaceKinds | areaLike | Note |
+|---|---|---|---|---|---|---|
+| monastery (generic) | Q44613 | 0 | 0 | TEMPLE | no | id verified by search, no item in the samples uses it (Tibetan monasteries use Q54074585, vihara Q844619, already in) |
+| Jain temple | Q2613100 | 19 | 0 | TEMPLE | no | no separate Digambara or Svetambara temple class in the samples (TODO-verify if they exist) |
+| gurdwara | Q337986 | 0 | 1 | TEMPLE | no | |
+| dargah | Q2639699 | 2 | 0 | TOMB (a Sufi saint's tomb) | no | no "Sufi shrine" class found |
+| shrine | Q697295 | 0 | 0 | TEMPLE | no | id by search; no sample item |
+| synagogue | Q34627 | 0 | 0 | none fits: propose WORSHIP (or CHURCH as a stop-gap) | no | |
+| castle | Q23413 | 1 | 0 | FORT | no | |
+| mausoleum | Q162875 | 1 | 0 | TOMB | no | |
+| stepwell | Q1473950 | 9 | 0 | HERITAGE_BUILDING | no | |
+| haveli | Q7882520 | 1 | 0 | HERITAGE_BUILDING | no | |
+| cenotaph | Q321053 | 2 | 0 | MEMORIAL | no | |
+| chhatri | Q936941 | 1 | 0 | MONUMENT | no | cenotaph/chhatri/memorial are three separate classes in the data |
+| ghat | Q1010155 | 1 | 0 | ATTRACTION | yes (a river bank, wide limit) | |
+| dam | Q12323 (+ gravity dam Q3497167) | 17 (+1) | 1 | ATTRACTION | no for the point, radius default | the 17 are mostly small irrigation dams: noisy, but each has an article |
+| reservoir | Q131681 (+ artificial lake Q3215290, intermittent reservoir Q55470036) | 8 (+2, +1) | 0 | ATTRACTION | yes | add all three to the area-like list |
+| city gate | Q53060 "gate" (+ gate building Q2785355) | 2 (+1) | 0 | MONUMENT | no | a dedicated "city gate" class was not seen: TODO-verify |
+| zoo | Q43501 | 4 | 1 | ATTRACTION | no | |
+| heritage hotel | Q27686 "hotel" | 9 | 2 | HERITAGE_BUILDING (or a new LODGING kind) | no | there is no heritage-hotel class (a search finds only individual hotels); all hotels with an article are admitted by Q27686, a few are not heritage |
+Totals in the Rajasthan sample: these types add 75 items on top of the 537 (stepwell 9, Jain temple 19, dam 18, hotel 9, reservoir family 11, zoo 4, gate 3, others 1 to 2). Noisy ones: dam (many small irrigation dams), hotel (not all heritage), zoo (few), gates. No PlaceKinds value fits a synagogue (propose WORSHIP) or a hotel (propose LODGING if the owner wants the guide to mention stays); everything else maps to an existing kind. Proposed new kinds: WORSHIP, LODGING (both optional).
+
+### 5. Recommended class set (merged; default ON unless stated)
+| QID | Label | Category | areaLike | Default | Rajasthan / Trip items |
+|---|---|---|---|---|---|
+| Q4989906 | monument | monument | no | on | 2 / 0 |
+| Q44539, Q842402, Q5393308 | temple, Hindu temple, Buddhist temple | religious | no | on | 19+53 / 1+5 |
+| Q2613100 | Jain temple | religious | no | on (approved) | 19 / 0 |
+| Q337986 | gurdwara | religious | no | on (approved) | 0 / 1 |
+| Q844619, Q54074585, Q1559394, Q44613 | vihara, Tibetan Buddhist monastery, gompa, monastery | religious | no | on | 0 / 14+21+3 |
+| Q180987, Q12539846, Q1456873, Q1091037 | stupa, dagoba, peace pagoda, chorten | religious | no | on (chorten added) | 0 / 1+1 |
+| Q16970, Q2977, Q32815 | church building, cathedral, mosque | religious | no | on | 1+3 / 1 |
+| Q2639699, Q697295, Q34627 | dargah, shrine, synagogue | religious | no | on (approved) | 2 / 0 |
+| Q24398318 | religious building (generic) | religious | no | on (new, 18 in Rajasthan) | 18 / 0 |
+| Q57821, Q1785071, Q57831, Q23413 | fortification, fort, fortress, castle | fort | no | on (fortress new, castle approved) | 3+21+3+1 / 0 |
+| Q16560 | palace | palace | no | on | 20 / 0 |
+| Q839954, Q109607, Q9096832 | archaeological site, ruins, paleontological site | heritage | no | on (paleontological new) | 15+1+2 / 0+1+1 |
+| Q358, Q1081138, Q1473950, Q7882520 | heritage site, historic site, stepwell, haveli | heritage | no | on | 2+3+9+1 / 0 |
+| Q5003624, Q321053, Q936941 | memorial, cenotaph, chhatri | memorial | no | on | 1+2+1 / 0 |
+| Q381885, Q162875 | tomb, mausoleum | tomb | no | on | 1+1 / 0 |
+| Q53060, Q2785355, Q853854 | gate, gate building, clock tower | landmark | no | on (new) | 2+1+2 / 0 |
+| Q179700 | statue | landmark | no | optional toggle with Q1395089 horseshoe curve | 0 / 1 |
+| Q39715 | lighthouse | landmark | no | on | 0 / 0 |
+| Q33506, Q207694, Q17431399, Q1139682, Q787934 | museum, art museum, national museum, Tibet museum, automobile museum | museum | no | on | 16+2 / 1 |
+| Q10500763 | prison museum | museum | no | on | 0 / 0 |
+| Q22698, Q22746, Q167346, Q2416723 | park, urban park, botanical garden, theme park | leisure | yes for parks | on | 8+2 / 1+2 |
+| Q43501 | zoo | leisure | no | on (approved) | 4 / 1 |
+| Q27686 | hotel (covers heritage hotels) | stay | no | on (approved; owner can tune) | 9 / 2 |
+| Q23397, Q211302, Q1320719, Q188025 | lake, glacial lake, proglacial lake, salt lake | water | yes | on | 18+1 / 5+1+1 |
+| Q131681, Q3215290, Q55470036 | reservoir, artificial lake, intermittent reservoir | water | yes | on (approved) | 8+2+1 / 0 |
+| Q12323, Q3497167 | dam, gravity dam | water | no | on (approved; noisy) | 17+1 / 1 |
+| Q34038 | waterfall | water | yes | on | 0 / 4 |
+| Q1010155 | ghat | water | yes | on (approved) | 1 / 0 |
+| Q46169, Q1377575, Q473972, Q29553, Q2714144 | national park, wildlife refuge, protected area, sanctuary, bird sanctuary | nature | yes (radius cap) | on | 4+7+15 / 3+3+9+1+1 |
+| Q133056 | mountain pass | nature | yes | on | 1 / 7 |
+| Q8502, Q207326, Q1595289, Q54050, Q46831, Q740445 | mountain, summit, sacred mountain, hill, mountain range, mountain ridge | nature | yes (radius cap) | toggle "mountains and peaks" (on for a mountain trip) | 4+1+2 / 27+4+2+4+1+1 |
+| Q47521, Q35666 | stream, glacier | nature | yes | toggle "mountains and peaks" | 3 / 9+6 |
+| Q8514, Q170321, Q39816 | desert, wetland, valley | nature | yes | optional toggle, off | 2 / 0+0+4 |
+| Q1827414 | tea garden | leisure | yes | owner decided to include; measured as mostly not a sight, a toggle "tea estates" is the safer default | 0 / 20 |
+| Q55488 (+ Q22808404) | railway station | transport | no | toggle, off by default (314+72 in Rajasthan = 58% of the admitted set) | 314 / 6 |
+| Q494829 + bus stop | bus station, bus stop | transport | no | toggle with stations, off | 5 / 0 |
+| Q420962, Q1497019, Q1395089 | heritage railway, mountain railway, horseshoe curve | transport | no | on | 0 / 1+1+1 |
+| Q1411996, Q15911738 | run-of-river and other hydroelectric power station | infrastructure | no | toggle, off | 0 / 4+1 |
+| Q483110 | stadium | leisure | no | toggle with cricket field Q682943, off | 5 / 4 |
+| Q13409250, Q537127 | aerial lift (ropeway), road bridge | landmark | no | on | 0 / 1+2 |
+| Q288514 | fair | event | no | optional toggle | 2 / 0 |
+Not recommended: villages, human settlements, constituencies, districts, tehsils, universities, schools, colleges, hospitals, airports, metro stations, roads, border classes, battles and sieges, power stations (coal, gas, solar), princely states. Class ids marked TODO-verify: a "city gate" class, Digambara and Svetambara temple, bus stop (Q953806 was not checked) and the heritage-hotel class (none exists).
