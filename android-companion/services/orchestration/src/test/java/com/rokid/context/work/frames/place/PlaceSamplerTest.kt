@@ -572,12 +572,11 @@ class PlaceSamplerTest {
 
     // ---- fallback card ----
 
-    @Test fun offlineNeverCallsTheModelAndShowsNameAndDistanceOnly() = runTest {
+    @Test fun offlineNeverCallsTheModelAndShowsTheStoredIntroAndDistance() = runTest {
         online = false; fix = PlaceFix(north(130.0), LON, 1_000, 10f); poke()      // 130 m centre, 50 m radius: 80 m to the edge
         assertEquals(0, matchCalls.size); assertEquals(listOf(PlaceOutcome.NEARBY), outcomes)
         val c = cards.single()
-        assertEquals(PlaceCard("wd:Q1", "Charminar", "80 m away", "nearby · not checked", PlaceConfidence.NEARBY, "f1"), c)
-        assertFalse("never a summary from a guess", c.line.contains("monument"))
+        assertEquals(PlaceCard("wd:Q1", "Charminar", "$SUMMARY · 80 m away", "nearby · not checked", PlaceConfidence.NEARBY, "f1"), c) // V2a: the stored intro, then the distance; "not checked" stays
         assertTrue(memories.isEmpty())
     }
 
@@ -585,7 +584,7 @@ class PlaceSamplerTest {
         photoOk = false; fix = PlaceFix(north(130.0), LON, 1_000, 10f); poke()
         assertEquals("no photo was matched", 0, matchCalls.size)
         assertEquals(listOf(PlaceOutcome.NEARBY), outcomes)
-        assertEquals(PlaceCard("wd:Q1", "Charminar", "80 m away", "nearby · not checked", PlaceConfidence.NEARBY, "f1"), cards.single())
+        assertEquals(PlaceCard("wd:Q1", "Charminar", "$SUMMARY · 80 m away", "nearby · not checked", PlaceConfidence.NEARBY, "f1"), cards.single())
         assertTrue(memories.isEmpty())
         assertTrue(logs.last(), logs.last().contains("reason=nearby_card call=skipped_data_saver online=true"))
     }
@@ -631,7 +630,7 @@ class PlaceSamplerTest {
 
     @Test fun aFarSecondPlaceDoesNotBlockTheFallback() = runTest {
         online = false; places = listOf(place("wd:Q1", "Charminar"), place("wd:Q4", "Far", lat = north(250.0), kind = "attraction")); poke()
-        assertEquals("Charminar", cards.single().title); assertEquals("here", cards.single().line)
+        assertEquals("Charminar", cards.single().title); assertEquals("$SUMMARY · here", cards.single().line)
     }
 
     // ---- no people path, logs ----

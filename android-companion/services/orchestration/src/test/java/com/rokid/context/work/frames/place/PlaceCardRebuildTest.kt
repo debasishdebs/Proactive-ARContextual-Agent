@@ -24,9 +24,9 @@ class PlaceCardRebuildTest {
         assertEquals("Site A", c.title); assertEquals("A big old place.", c.line); assertEquals(PlaceConfidence.PHOTO, c.confidence); assertEquals("f1", c.frameId)
     }
 
-    @Test fun nearbyRowIsMarkedNearbyAndNeverSummarised() {
+    @Test fun nearbyRowIsMarkedNearbyAndShowsTheStoredIntro() {
         val c = PlaceCardRebuild.card(row("NEARBY", "wd:Q1"), places)!!
-        assertEquals(PlaceConfidence.NEARBY, c.confidence); assertEquals(PlaceCards.NEARBY_LABEL, c.sourceLabel); assertTrue("A big old place" !in c.line)
+        assertEquals(PlaceConfidence.NEARBY, c.confidence); assertEquals(PlaceCards.NEARBY_LABEL, c.sourceLabel); assertEquals("A big old place. It has more text.", c.line) // V2a
     }
 
     @Test fun pinRowUsesTheUsersNoteOrAFixedFallback() {

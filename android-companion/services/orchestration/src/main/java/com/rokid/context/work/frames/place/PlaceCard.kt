@@ -101,9 +101,31 @@ object PlaceCards {
     const val USER_SOURCE = "user"
     const val USER_LABEL = "Your note"
 
-    /** The fallback: name and distance only, never a summary (the place was not checked against the photo). */
-    fun nearby(p: PlaceEntity, distanceM: Double, frameId: String): PlaceCard =
-        PlaceCard(p.id, p.name, distanceText(distanceM), NEARBY_LABEL, PlaceConfidence.NEARBY, frameId)
+    /**
+     * The no-network fallback (V2a): the stored intro of the place (the user's own note for a pin), then the distance, in the card's one [LINE_MAX]-character line; "not checked" stays in the source label. The place
+     * was not matched to the photo, so the card only says what is stored about the nearest place. No stored intro = the distance alone, as before.
+     */
+    fun nearby(p: PlaceEntity, distanceM: Double, frameId: String): PlaceCard {
+        val dist = distanceText(distanceM)
+        val intro = introOf(p, LINE_MAX - DIST_SEP.length - dist.length)
+        return PlaceCard(p.id, p.name, if (intro.isEmpty()) dist else intro + DIST_SEP + dist, NEARBY_LABEL, PlaceConfidence.NEARBY, frameId)
+    }
+
+    const val DIST_SEP = " \u00b7 "
+    /** The stored intro of [p] fitted into [max] characters: a user pin gives its note, a pack place whole sentences from the start of its summary (the card's one-line length rule, see [intro]). */
+    fun introOf(p: PlaceEntity, max: Int): String = if (p.source == USER_SOURCE) userLine(p.summary).take(max.coerceAtLeast(0)) else intro(p.summary, max)
+
+    /** Whole sentences from the start of [summary] while they fit in [max] characters; when even the first does not fit it is cut at a word end with an ellipsis. Empty for an empty summary or no room. */
+    fun intro(summary: String, max: Int = LINE_MAX): String {
+        val one = summary.replace(Regex("\\s+"), " ").trim()
+        if (one.isEmpty() || max < MIN_INTRO) return ""
+        val parts = one.split(Regex("(?<=[.!?。])\\s+"))
+        var out = ""
+        for (s in parts) { val next = if (out.isEmpty()) s else "$out $s"; if (next.length <= max) out = next else break }
+        return out.ifEmpty { cut(parts.first(), max) }
+    }
+
+    private const val MIN_INTRO = 20
 
     fun distanceText(m: Double): String {
         val r = (Math.round(m / 10.0) * 10).toInt()
@@ -116,10 +138,15 @@ object PlaceCards {
         if (one.isEmpty()) return ""
         val end = Regex("[.!?。](?=\\s|$)").find(one)?.range?.last
         val s = if (end != null) one.substring(0, end + 1) else one
-        if (s.length <= LINE_MAX) return s
-        val cut = s.substring(0, LINE_MAX - 1)
-        val at = cut.lastIndexOf(' ')
-        return (if (at > LINE_MAX / 2) cut.substring(0, at) else cut).trimEnd(',', ';', ':', '.', ' ') + "…"
+        return if (s.length <= LINE_MAX) s else cut(s, LINE_MAX)
+    }
+
+    /** [s] cut to at most [max] characters at a word end, with an ellipsis. */
+    private fun cut(s: String, max: Int): String {
+        if (s.length <= max) return s
+        val c = s.substring(0, max - 1)
+        val at = c.lastIndexOf(' ')
+        return (if (at > max / 2) c.substring(0, at) else c).trimEnd(',', ';', ':', '.', ' ') + "…"
     }
 
     /** "Wikipedia · fetched 12 Nov" (the source and the day the pack fetched it). */

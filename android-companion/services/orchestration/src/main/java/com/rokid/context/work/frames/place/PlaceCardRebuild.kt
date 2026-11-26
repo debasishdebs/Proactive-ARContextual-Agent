@@ -30,7 +30,7 @@ object PlaceCardRebuild {
             else -> {
                 val p = places.firstOrNull { it.id == row.placeId } ?: return null
                 when (row.kind) {
-                    "NEARBY" -> PlaceCard(p.id, p.name, PlaceCards.kindLabel(p.kind), PlaceCards.NEARBY_LABEL, PlaceConfidence.NEARBY, frame)
+                    "NEARBY" -> PlaceCard(p.id, p.name, PlaceCards.introOf(p, PlaceCards.LINE_MAX).ifEmpty { PlaceCards.kindLabel(p.kind) }, PlaceCards.NEARBY_LABEL, PlaceConfidence.NEARBY, frame) // the stored intro (V2a); the distance is not stored
                     "PIN" -> PlaceCard(p.id, p.name, PlaceCards.userLine(p.summary).ifEmpty { PIN_FALLBACK_LINE }, PIN_LABEL, PlaceConfidence.PIN, frame)
                     "TEXT" -> PlaceCard(p.id, p.name, PlaceCards.userLine(p.summary).ifEmpty { PIN_FALLBACK_LINE }, SIGN_LABEL, PlaceConfidence.PIN, frame)
                     else -> PlaceCards.photo(p, frame) // PHOTO (POSSIBLE is never rebuilt as a card)
