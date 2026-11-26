@@ -78,7 +78,7 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
                 withContext(Dispatchers.IO) { pack.seedArea(id, box, admit = admit, onProgress = { done, total -> store.progress(key, done, total); updates.trySend(store.get(key).percent) }, onCellMs = { ms -> timing.add(ms) }) }
             } finally { updates.close(); reporter.join() }
         }
-        PcLog.i(TAG, "seed work done failed=${r.failed} partial=${r.partial}")
+        if (r.failed + r.partial > 0) PcLog.i(TAG, "seed work done with failed cells") else PcLog.i(TAG, "seed work done")
         if (r.failed == 0 && r.partial == 0) store.clear(key) // resumed seeds that ended partial keep their counts for the next try
         else store.setFailed(key, r.failed + r.partial) // the FAILED state shows this count and "Retry failed cells" re-queues exactly these
         return Result.success()
@@ -90,7 +90,7 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
         REMOVED -> { store.clear(key); Result.success() }
         else -> if (runAttemptCount >= MAX_WORKER_ATTEMPTS) {
             // give up after the cap: the area ends partial (never "seeding" forever) and "Retry failed cells" / Seed again restarts it
-            PcLog.i(TAG, "seed work gave up after $runAttemptCount attempts")
+            PcLog.i(TAG, "seed work gave up after the retry cap")
             store.setWaiting(key, false)
             Result.failure()
         } else { store.setWaiting(key, true); PcLog.i(TAG, "seed work waits"); Result.retry() }

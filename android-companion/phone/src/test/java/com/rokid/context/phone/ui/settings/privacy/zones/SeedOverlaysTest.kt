@@ -95,7 +95,7 @@ class SeedOverlayModelTest {
 
     @Test fun labelsNameNoCoordinates() {
         val o = SeedOverlays.of(listOf(a, a.copy(id = "seed:2", status = AREA_PARTIAL), a.copy(id = "seed:3", status = AREA_SEEDING)))
-        assertEquals(listOf("Seeded area 1", "Seeded area 2 (some cells failed, will retry)", "Seeded area 3 (seeding)"), o.map { it.label })
+        assertEquals(listOf("Seeded area 1", "Seeded area 2 (some cells failed, will retry)", "Seeded area 3 (not finished, seed again)"), o.map { it.label })
         assertTrue(o.none { it.label.contains("27.") })
     }
 
