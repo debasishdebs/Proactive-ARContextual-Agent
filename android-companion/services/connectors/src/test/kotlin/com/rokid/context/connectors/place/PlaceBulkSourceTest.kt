@@ -40,6 +40,13 @@ class PlaceBulkSourceTest {
 
     private fun titlesOf(url: String) = URLDecoder.decode(url.substringAfter("titles=").substringBefore("&"), "UTF-8").split("|")
 
+    @Test fun curatedVerifiedCoordinateIsStoredAtTheTablePointNotTheLiveOne() = runTest {
+        // Q1961579 is curated and has a verified point; Wikipedia has no coordinate for it, so the 1 km rule cannot check a (changed) live point
+        val net = Net({ _, _ -> sparql(row("Q1961579", "Old Stupa", "Q180987", lat = 8.9, lon = 80.9)) }, { """{"query":{"pages":[]}}""" }, { t -> intros(*t.split("|").toTypedArray()) })
+        val p = WikidataBulkSource(net).fetchBox(box).single()
+        assertEquals(8.351667, p.lat, 1e-9); assertEquals(80.403611, p.lon, 1e-9)
+    }
+
     @Test fun queryHasTheMeasuredShape() {
         val q = WikidataBulkSource.query(box, 2500, 5000)
         for (part in listOf("SERVICE wikibase:box", "schema:isPartOf <https://en.wikipedia.org/>", "OPTIONAL { ?item wdt:P31 ?cls }", "ORDER BY ?item ?cls ?lat ?lon LIMIT 2500 OFFSET 5000", "Point(88.00000 27.00000)", "Point(88.50000 27.50000)")) assertTrue(part in q, part)

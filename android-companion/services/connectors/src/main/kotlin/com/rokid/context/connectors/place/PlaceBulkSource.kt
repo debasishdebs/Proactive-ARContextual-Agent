@@ -13,7 +13,7 @@ import java.util.Locale
 
 /**
  * BULK discovery of one box (owner decision 27 Nov; design 2026-11-27-large-area-seeding-design.md sections 9 and 10, measured on a Mac):
- *  1. ONE Wikidata SPARQL query for the box (`SERVICE wikibase:box`, English-Wikipedia sitelink join, `OPTIONAL wdt:P31`, `ORDER BY ?item`, no sub-select; paged by LIMIT/OFFSET) gives every item with an article and a coordinate;
+ *  1. ONE Wikidata SPARQL query for the box (`SERVICE wikibase:box`, English-Wikipedia sitelink join, `OPTIONAL wdt:P31`, `ORDER BY ?item ?cls ?lat ?lon` (a TOTAL order: tied rows of one item must not swap between pages), no sub-select; paged by LIMIT/OFFSET) gives every item with an article and a coordinate;
  *  2. the app's class rule ([PlaceCellSource.kindOf], people never) keeps the qualifying ones;
  *  3. Wikipedia `prop=coordinates`, 50 titles a call: the 1 km rule (5 km for area-like classes, see [PlaceCellSource.disagreeLimitM]); the stored point stays Wikidata's;
  *  4. Wikipedia intros, 20 titles a call, 3 sentences, ONLY for the places that survived.
@@ -53,6 +53,7 @@ class WikidataBulkSource(
         for (chunk in qualifying.map { it.value.title }.distinct().chunked(COORD_BATCH)) { zoneCheck(); coords += parseCoordinates(http.get(coordinatesUrl(chunk))); calls++ }
         var dropped = 0; var wide = 0
         val kept = qualifying.filter { (q, it) ->
+            if (verified(q) != null) return@filter true // a verified-coordinate place is stored at the table's point, never at the live one (same as the per-cell path)
             val wp = coords[it.title] ?: return@filter true // no Wikipedia coordinate: nothing to compare, kept (as in the per-cell rule)
             val limit = PlaceCellSource.disagreeLimitM(it.classes, q)
             when {
@@ -72,11 +73,14 @@ class WikidataBulkSource(
             val kind = PlaceCellSource.kindOf(it.classes, q, extra)!!
             val cap = PlaceCellSource.radiusCapOf(it.classes)
             val page = intros[it.title]
-            FetchedPlace("wd:$q", null, it.title, kind, it.lat, it.lon, PlaceKinds.defaultRadiusM(kind).coerceAtMost(cap ?: Int.MAX_VALUE), page?.extract.orEmpty(), "wikipedia:en", page?.let { p -> "page:${p.pageId}" } ?: "wikidata:bulk")
+            val vc = verified(q)
+            FetchedPlace("wd:$q", null, it.title, kind, vc?.lat ?: it.lat, vc?.lon ?: it.lon, PlaceKinds.defaultRadiusM(kind).coerceAtMost(cap ?: Int.MAX_VALUE), page?.extract.orEmpty(), "wikipedia:en", page?.let { p -> "page:${p.pageId}" } ?: "wikidata:bulk")
         }
         log("bulk box rows=${items.size} qualifying=${qualifying.size} kept=${out.size} coordDropped=$dropped coordAllowedWide=$wide calls=$calls")
         return out
     }
+
+    private fun verified(q: String) = PlaceCellSource.VERIFIED_COORDINATES[q]?.takeIf { q in PlaceCellSource.CURATED_LANDMARK_QIDS }
 
     /** One SPARQL call: a timeout or a gateway error asks for a smaller box, a rate limit is retried twice. */
     private suspend fun sparql(q: String): String {
