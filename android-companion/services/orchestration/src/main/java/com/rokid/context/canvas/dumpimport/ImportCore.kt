@@ -299,7 +299,7 @@ class ImportReport(
  * Developer IMPORT, the writer. Everything goes through the app's NORMAL write paths (no raw SQL, no DAO insert of a Moment, memory, frame or mark): photos through the frame ingest (frame, `frame_meta`,
  * `frame_state`; original capture time, never "now"), memory text through the memory writer (attribution `imported`, no model call), marks through the [MarkRecorder] (`recordMark`), the Moment through
  * [MomentBuilder] (`build`; a Moment is a projection of its frames, memories and marks, so its id and time are the original ones), and the location through `moment_location` exactly as the recorder and the
- * GPS backfill write it (same table, same forget hooks). No new table or column. The pause-zone guard does NOT re-check imported rows (owner default, unconfirmed); the "Save location with Moments" switch does.
+ * GPS backfill write it (same table, same forget hooks). No new table or column. A location inside or near a pause zone (or while zones are unreadable, or in a paused second) is NOT saved (round 4, as the location import); the "Save location with Moments" switch gates too.
  * A Moment that is forgotten (tombstone or Forget range) is never recreated. Delete all landing mid-import stops the request (`stopped`).
  */
 class DumpImporter(
@@ -320,6 +320,8 @@ class DumpImporter(
     private val cards: ImportCardWriter = ImportCardWriter { "history_off" },
     /** The Scene builder ([ImportSceneStore] in production). */
     private val scenes: ImportSceneWriter = object : ImportSceneWriter { override suspend fun rebuild(fromMs: Long, toMs: Long) {}; override suspend fun derive(sceneId: String, field: String, text: String) = false },
+    /** The pause zones now (null = unreadable, which blocks): a restored point inside or near one is not saved, like the location import. */
+    private val zones: suspend () -> List<com.rokid.context.core.model.zone.PauseZone>? = { emptyList() },
 ) {
     private class Stopped : Exception(null, null, false, false)
 
@@ -495,6 +497,8 @@ class DumpImporter(
                 !locationEnabled() || generation() != gen0 || s3.frameForgetRev() != rev -> false
                 dao.momentTombstoned(m.id) > 0 || (kind == "FRAME" && dao.frameTombstoned(anchorId) > 0) -> false
                 (if (kind == "FRAME") dao.frameAnchorExists(anchorId) else dao.markAnchorExists(anchorId)) == 0 -> false
+                com.rokid.context.core.model.zone.ZoneEvaluator.blocksPoint(zones(), l.lat, l.lon, l.accuracyM.toFloat()) -> false
+                db.pauseDao().countCovering(l.atMs) > 0 -> false
                 else -> dao.insertIfAbsent(MomentLocationEntity(m.id, l.atMs, kind, anchorId, l.lat, l.lon, l.accuracyM, l.fixAgeMs, SOURCE, l.speedClass, l.method, wall())) >= 0
             }
         }

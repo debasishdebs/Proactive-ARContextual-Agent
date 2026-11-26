@@ -121,6 +121,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                     com.rokid.context.memory.db.DaoFence(MemoryWipe.generation.get(), epoch.read(), MemoryWipe.generation::get, epoch::read)
                 }),
                 cards = com.rokid.context.canvas.dumpimport.ImportCardStore(PlaceGraph.history(app), { PlaceGraph.pins(app).pins().map { it.id }.toSet() }),
+                zones = { com.rokid.context.phone.hub.HubGraph.get(app); com.rokid.context.canvas.moment.MomentLocationGraph.zonesNow() },
             )
             return com.rokid.context.phone.canvas.api.ImportRoutes(devMode::value, { com.rokid.context.orchestration.forget.DeveloperFlags.devImport(app) }, importer::run)
         }

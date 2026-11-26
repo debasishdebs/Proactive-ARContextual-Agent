@@ -78,10 +78,12 @@ class DumpImporterTest {
         elapsed = { 0L }, momentAlive = { m -> db.momentDao().photoMomentsOf(listOf(m)).isNotEmpty() },
     )
     @Before fun clearPins() { rawPrefs.edit().clear().commit() }
+    private var zoneList: List<com.rokid.context.core.model.zone.PauseZone>? = emptyList()
     private fun importer() = DumpImporter(
         db, frameWriter, memoryWriter, { k, photo -> recorder.importMark(k.id, k.source, k.atMs, photo, k.createdAt) }, { ids -> MomentBuilder(db).build(ids) }, { locOn }, { gen }, { 777L },
         importPin = { pinning.importPin(it) }, pinIds = { pinStore.pins().map { it.id }.toSet() }, cards = ImportCardStore(history, { pinStore.pins().map { it.id }.toSet() }) { start + 1000 },
         scenes = ImportSceneStore(db, SceneBuilder(db), { DaoFence(0, epoch, { gen }, { epoch }) }),
+        zones = { zoneList },
     )
     private val history = PlaceCardHistory(db, clock = { start + 2000 }, pinActive = { p -> pinStore.pins().any { it.id == p } }, generation = { gen })
     private fun cardRows() = runBlocking { db.placeCardLogDao().cardLogCount() }
@@ -139,6 +141,18 @@ class DumpImporterTest {
         val r = run(body())
         assertEquals(listOf("skipped" to "forgotten"), r.items)
         assertEquals(listOf(0, 0, 0, 0, 0), rows())
+    }
+
+    @Test fun locationInsideAPauseZoneIsNotSaved() = runBlocking<Unit> {
+        zoneList = listOf(com.rokid.context.core.model.zone.PauseZone("z", "Home", 12.4, 77.2, 12.6, 77.3))
+        val r = run(body())
+        assertEquals(0, r.locations); assertEquals(0, db.momentLocationDao().count()); assertEquals(1, r.frames)
+    }
+
+    @Test fun locationWithUnreadableZonesIsNotSaved() = runBlocking<Unit> {
+        zoneList = null
+        val r = run(body())
+        assertEquals(0, r.locations); assertEquals(0, db.momentLocationDao().count()); assertEquals(1, r.frames)
     }
 
     @Test fun locationSettingOffSavesNoLocation() {
