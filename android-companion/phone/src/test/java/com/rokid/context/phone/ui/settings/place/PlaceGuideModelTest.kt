@@ -436,5 +436,16 @@ class PlaceGuideModelTest {
         assertNull(c.stored.single().momentId)
     }
 
+    @Test fun cascadeTextHasTheCountsNamesOtherPinsAndNoCoordinates() {
+        val t = PlaceGuideModel.cascadeText("Antera", 7, 23, 31, 2, listOf("Gate"))
+        assertEquals("Forgets 23 photos, 31 notes and 2 marks from 7 Moments, then the place. Also deleted: pinned place \"Gate\" (its Moment is one of these). Scenes keep their other Moments. This cannot be undone.", t)
+        assertTrue(PlaceGuideModel.cascadeText("A", 1, 1, 1, 1, emptyList()).startsWith("Forgets 1 photo, 1 note and 1 mark from 1 Moment, then the place. Scenes"))
+    }
+
+    @Test fun theSecondDeleteChoiceIsHiddenWithoutAPreview() {
+        val c = PinDeleteConfirm("user:x", "Antera", 3)
+        assertNull(c.cascade); assertFalse(c.cascadeChosen)
+    }
+
     private companion object { const val NOW = 1_800_000_000_000L }
 }

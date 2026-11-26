@@ -114,6 +114,9 @@ class AndroidPlaceGuideControl(
         val ref = pinning.pins().firstOrNull { it.id == pinId }?.momentId
         return (linked + listOfNotNull(ref)).distinct().size
     }
+    override suspend fun placeDeletePreview(pinId: String) = com.rokid.context.work.frames.place.PlaceDelete.preview(app, pinId)
+    override suspend fun placeDeleteRun(preview: com.rokid.context.work.frames.place.PlaceDelete.Preview, acknowledged: Boolean) =
+        com.rokid.context.work.frames.place.PlaceDelete.run(app, preview, acknowledged) { pinning.delete(it) }
     override suspend fun sweepMoments() { com.rokid.context.work.frames.place.PinMomentLinks.sweep(app) }
 
     /** B2: the place card history. */
