@@ -1,0 +1,5 @@
+IMPORTANT: review ONLY this one commit, pinned: 81d6fd1e (git show 81d6fd1e; HEAD is 81d6fd1e or later fixes/docs). Earlier rounds' findings are handled, do not re-report them.
+Read-only review of this checkout (branch feat/v101-ask-eval). Do not edit any file. No Gradle, adb, or device-touching scripts (git show, grep, python are fine).
+81d6fd1e: the orphan .part sweep (RokidFrameInbox) now leaves .imp-* temps alone, and the import sweep (ImportStores / ImportTempName) skips temps this process is currently writing (name parse accepts .part).
+Ask specifically: (1) can any sweep still delete an in-progress .imp-* temp (name parsing incl. .part suffix, registration/unregistration window, exceptions leaving a temp registered or unregistered, concurrent imports); (2) can a stale/orphaned .imp-* temp now be leaked forever; (3) other regressions in the touched files.
+Severity: P1 = data loss, unrequested deletion, privacy leak, crash loop; P2 = wrong but rare/safe; P3 = cosmetic. Output: line 1 `VERDICT: READY` or `VERDICT: NOT READY`, numbered findings `[P1|P2|P3] path:line - scenario - one-line fix`. Under 30 lines.
