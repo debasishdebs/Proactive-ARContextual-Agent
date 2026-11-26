@@ -17,7 +17,7 @@ import java.time.ZoneId
 /**
  * The Developer-only READ-ONLY dump API (design 2026-11-26): `GET /api/dump/manifest`, `/moments`, `/scenes`, `/marks`, `/pins` and `/frames/<id>/photo` (the vectors endpoint was REMOVED, owner ruling 26 Nov: he generates vectors himself). The router owns the pairing token (a request without a paired session never reaches
  * this class: 401), the Host policy (loopback, or the paired LAN host while "Use from a laptop" is on: this route does not widen it) and the Origin policy. This class owns the Developer gate: Developer mode off answers 403 `developer_mode_off`
- * on every call. Other methods are 405. At most [MAX_PER_SECOND] calls a second (429 `rate_limited`, `Retry-After: 1`). A Delete all that lands while a request reads answers 409 `dump_stopped` and no data; Developer mode going off mid-read
+ * on every call. Other methods are 405. At most [MAX_PER_SECOND] calls a second (429 `rate_limited`, `Retry-After: 1`). A Delete all that lands while a request reads answers 409 `dump_stopped` and no data; any other delete (Forget, Delete saved locations) cannot commit during a read (the read holds the export side of the data-operation gate) and one that runs or waits makes the request answer 409 too; Developer mode going off mid-read
  * answers 403. Pages hold at most [DumpSource.MAX_PAGE_ITEMS] items and [DumpSource.MAX_PAGE_BYTES] bytes; a photo is capped at [DumpSource.MAX_PHOTO_BYTES]. Logs: a literal and a count, never an id, text or position. This route carries the
  * saved Moment location, the pin coordinates and the place names (the owner's explicit exception to the v18 rule); no other route does.
  */
@@ -28,6 +28,8 @@ class DumpRoutes(
     private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val clock: () -> Long = System::currentTimeMillis,
     private val maxPerSecond: Int = MAX_PER_SECOND,
+    /** review2 #4: the dump read is an EXPORT of the data-operation gate: a Forget, Delete saved locations or any gated delete waits for it (never commits mid-read), and a delete that runs or waits refuses it (`dump_stopped`). */
+    private val gate: () -> com.rokid.context.orchestration.DataOpGate = { com.rokid.context.orchestration.DataOpGate.shared },
 ) {
     companion object {
         const val PREFIX = "/api/dump/"
@@ -63,7 +65,7 @@ class DumpRoutes(
         if (rateLimited()) return HttpResponse.error(429, "rate_limited", "Try again in a second.").let { HttpResponse(it.status, it.contentType, it.body, mapOf("Retry-After" to "1")) }
         val gen = generation()
         return try {
-            val r = when {
+            val r = gate().export { when {
                 seg == listOf("manifest") -> HttpResponse.json(200, source.manifest()).also { PcLog.i("PcDump", "dump manifest") }
                 seg == listOf("moments") -> page(req, "moments") { f, t, a, n -> source.moments(f, t, a, n) }
                 seg == listOf("scenes") -> page(req, "scenes") { f, t, a, n -> source.scenes(f, t, a, n) }
@@ -71,9 +73,11 @@ class DumpRoutes(
                 seg == listOf("pins") -> pins(req)
                 seg.size == 3 && seg[0] == "frames" && seg[2] == "photo" -> photo(seg[1])
                 else -> HttpResponse.error(404, "not_found", "Not found.")
-            }
+            } }
             // a Delete all that landed while the read ran, or Developer mode going off: nothing is answered
             if (generation() != gen) stopped() else if (!developerMode()) HttpResponse.error(403, "developer_mode_off", "Developer mode is off.") else r
+        } catch (e: com.rokid.context.orchestration.DataOpGate.DeleteRunning) {
+            stopped() // a delete runs or waits (a Forget, Delete saved locations, ...): nothing was read
         } catch (e: Bad) {
             HttpResponse.error(400, "bad_request", "Bad request.")
         } catch (e: kotlinx.coroutines.CancellationException) { throw e

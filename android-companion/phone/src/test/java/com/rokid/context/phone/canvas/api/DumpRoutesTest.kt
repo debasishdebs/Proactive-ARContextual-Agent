@@ -137,6 +137,21 @@ class DumpRoutesTest {
         src.wipeOnRead = null; assertEquals(200, get("/api/dump/moments")!!.status)
     }
 
+    /** review2 #4: a Forget / Delete saved locations (any gated delete) cannot COMMIT while a dump read runs: it waits for the read, so the response never discloses rows a committed deletion removed. */
+    @Test fun aDeleteCannotCommitDuringADumpReadAndARunningDeleteStopsTheDump() {
+        var deleted = false; var deletedDuringRead = false
+        val t = Thread { runBlocking { com.rokid.context.orchestration.DataOpGate.shared.delete { deleted = true } } }
+        src.wipeOnRead = { if (!t.isAlive && !deleted) { t.start(); Thread.sleep(300); deletedDuringRead = deleted } }
+        val r = get("/api/dump/moments")!!
+        assertFalse("the delete committed while the read was running", deletedDuringRead)
+        assertEquals(200, r.status)
+        t.join(5_000); assertTrue("the delete goes ahead once the read ended", deleted)
+        // a delete that is RUNNING when the request arrives: nothing is read, nothing answered
+        src.wipeOnRead = null; val before = src.calls
+        val during = runBlocking { com.rokid.context.orchestration.DataOpGate.shared.delete { routes().handle(HttpRequest("GET", "/api/dump/moments", emptyMap(), emptyMap(), ByteArray(0))) } }!!
+        assertEquals(409, during.status); assertEquals("dump_stopped", code(during)); assertEquals(before, src.calls)
+    }
+
     @Test fun developerModeGoingOffWhileReadingAnswersNothing() {
         src.wipeOnRead = { dev = false }
         assertEquals(403, get("/api/dump/manifest")!!.status)
