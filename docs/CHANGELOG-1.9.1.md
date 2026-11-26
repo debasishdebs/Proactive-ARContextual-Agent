@@ -76,11 +76,24 @@ The following need Developer mode to be switched on, and are meant for people wh
 - Canvas model nodes respect the chosen backend on fallbacks too.
 - Design notes added under `docs/superpowers/plans`.
 
+## Added late in 1.9.1 (bigger area seeding and place types)
+
+- **Much faster seeding of large areas.** A seed now asks Wikidata for whole blocks of land at a time instead of cell by cell, then fetches short descriptions only for the places it keeps. Big areas that took tens of minutes should take minutes. If a block fails it is split or falls back to the old cell-by-cell method. A switch in Settings, Diagnostics, Developer ("Bulk place seeding") turns it off. Areas of up to 30,000 cells are allowed (4,000 with the switch off), with a confirmation above 2,000.
+- **Seeding progress, results and retry.** Progress shows cells done, cells that failed and the finished count. A seed ends as done, partly done or failed, and "Retry failed cells" runs the same seed again for just the missing cells. Cells filled in bulk are marked "without extra map sources" until a normal glance fills them in.
+- **Politer network use.** Requests to the place sources pause and back off when a source says "slow down", wait between calls to the same host, and respect a shared pause. Cancelling a seed stops it between blocks and resuming skips finished blocks.
+- **A much wider and tunable list of place types (about 167 types).** More kinds of heritage and nature places are now recognised (for example stepwells, havelis, Jain temples, dams, reservoirs, ghats, zoos, gates, lakes, waterfalls, mountain passes, monasteries and national parks). People are never added. Settings, Place Guide, Extra place types has switches for the groups that can be noisy: bus stations, stadiums and cricket grounds, railway stations (these three are on), and battles and sieges, valleys, cities and towns, airports (these four are off). A switch only affects areas seeded afterwards; places already stored stay.
+- **Closer matching.** Places within about one kilometre of an existing place are treated as the same place, with a looser tolerance for large areas such as lakes and parks.
+- **Offline banner** on the map screens when there is no network, and old online tiles are not shown while offline.
+- **Developer tools.** The data import API can now restore saved places, pins, marks, place cards and scenes; the data dump API reads them out. Both are off by default and need Developer mode.
+- **Centre on me** button on the Activity map.
+- **Glasses screen wakes** when a card opens by itself.
+
 ## Known limits
 
 - Real-phone and real-glasses behaviour of the new maps, seeding, Centre on me, dump, import, Forget on several items and the offline guess is not yet verified.
 - The offline captioner is slow and may be wrong. "Maybe" cards are guesses and say so.
-- Seeding needs a network connection and can take a while for large areas.
+- Bulk seeding was tested only against a fake server in unit tests and from a computer; it has not run from a real phone. Seeding still needs a network connection and can take a while for large areas.
 - Some seeded or downloaded data depends on third-party sources; see `THIRD_PARTY_NOTICES.md`.
 - The street map needs your own key; the map key is held in the app's private storage.
+- Wikidata coverage is uneven: many local landmarks are missing or only classed as a generic building, and about three quarters of Indian Wikipedia places (villages, settlements, schools) are skipped on purpose. Railway stations are the biggest single group, which is why their switch exists.
 - Release signing is prepared but not yet used for public releases.
