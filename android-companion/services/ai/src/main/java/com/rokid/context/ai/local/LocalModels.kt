@@ -104,6 +104,36 @@ object LocalModels {
             ),
             bindable = false,
         ),
+        // Offline photo captioner (V1, 2026-11-26): SmolVLM2-500M Q8_0 + its vision projector, read by :services:vision-local through llama.cpp mtmd only behind the `offlineCaption` Developer flag (default OFF); never bound as
+        // Embeddings ([LocalModel.bindable] = false). Files are pinned to the ggml-org repo commit below; sizes and sha256 were checked against the repo (x-linked-size / x-linked-etag) and the spike's copies.
+        LocalModel(
+            id = "smolvlm2-500m-q8",
+            title = "SmolVLM2 500M (offline photo captions, experimental)",
+            file = "SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+            url = "https://huggingface.co/ggml-org/SmolVLM2-500M-Video-Instruct-GGUF/resolve/ccd7aae53bcb1997355c2f094959e72b3642ce17/SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+            sha256 = "6f67b8036b2469fcd71728702720c6b51aebd759b78137a8120733b4d66438bc",
+            bytes = 436_808_704L,
+            languages = "Images + text",
+            dims = 0,
+            ramEstimateMb = 900,
+            license = "Apache-2.0",
+            note = "Developer only",
+            files = listOf(
+                ModelFile(
+                    file = "SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+                    url = "https://huggingface.co/ggml-org/SmolVLM2-500M-Video-Instruct-GGUF/resolve/ccd7aae53bcb1997355c2f094959e72b3642ce17/SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+                    sha256 = "6f67b8036b2469fcd71728702720c6b51aebd759b78137a8120733b4d66438bc",
+                    bytes = 436_808_704L,
+                ),
+                ModelFile(
+                    file = "mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+                    url = "https://huggingface.co/ggml-org/SmolVLM2-500M-Video-Instruct-GGUF/resolve/ccd7aae53bcb1997355c2f094959e72b3642ce17/mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+                    sha256 = "921dc7e259f308e5b027111fa185efcbf33db13f6e35749ddf7f5cdb60ef520b",
+                    bytes = 108_785_184L,
+                ),
+            ),
+            bindable = false,
+        ),
     )
 
     fun byId(id: String): LocalModel? = all.firstOrNull { it.id == id }

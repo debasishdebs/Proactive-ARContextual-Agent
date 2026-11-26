@@ -348,6 +348,10 @@ fun DiagnosticsScreen(
     /** Canvas v2.1 Test run building blocks (Developer; default OFF). No screen uses it yet: the switch is read by the Test run policy only. */
     canvasTestRun: Boolean = false,
     onCanvasTestRun: (Boolean) -> Unit = {},
+    /** V1 offline photo captions (Developer; default OFF): the switch, and the "Caption a photo" test shown under it only while the switch is on (null = not available). */
+    offlineCaption: Boolean = false,
+    onOfflineCaption: (Boolean) -> Unit = {},
+    offlineCaptionTest: (@Composable () -> Unit)? = null,
     /** WP8: the Developer "test place and test photos" section (null = not available). Shown only with [developerMode]. */
     testPlace: (@Composable () -> Unit)? = null,
     /** Room v16 suspect descriptions: mark one, mark every one, undo the last marking. */
@@ -510,6 +514,14 @@ fun DiagnosticsScreen(
                         }
                         Switch(checked = retentionP2, onCheckedChange = onRetentionP2, modifier = Modifier.testTag("retention_p2_switch"))
                     }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Offline photo captions (experimental)", style = MaterialTheme.typography.titleSmall)
+                            Text("Off (default). On: the phone can describe a photo with a small model that runs on the phone itself (needs the SmolVLM2 download under Settings > AI > Local models, about 546 MB). Nothing is sent, saved or shown elsewhere yet; the test below only shows the text.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                        }
+                        Switch(checked = offlineCaption, onCheckedChange = onOfflineCaption, modifier = Modifier.testTag("offline_caption_switch"))
+                    }
+                    if (offlineCaption) offlineCaptionTest?.invoke()
                     NoticeText(CanvasSessionCopy.note(devSessionHours), tag = "dev_session_note")
                     testPlace?.invoke()
                 }

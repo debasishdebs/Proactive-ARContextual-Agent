@@ -53,6 +53,14 @@ object DeveloperFlags {
     fun setPackMoments(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PACK_MOMENTS, on).apply(); if (!on) com.rokid.context.work.frames.place.ShadowCaches.clearAll() }
 
     /**
+     * Offline photo captions (V1, owner decision 2026-11-26 round 5): lets the on-device SmolVLM2 captioner (`:services:vision-local`) run. In V1 the only caller is the Developer "Caption a photo" test (nothing stored, nothing sent,
+     * no network); V2 will rank captions as text. OFF by default (also OFF when the prefs cannot be read); the model files are a separate catalog download and nothing loads at app start. Turning it OFF releases the model.
+     */
+    const val OFFLINE_CAPTION = "offlineCaption"
+    fun offlineCaption(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(OFFLINE_CAPTION, false) }.getOrDefault(false)
+    fun setOfflineCaption(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(OFFLINE_CAPTION, on).apply() }
+
+    /**
      * v18 WP12a: the Scene centroid producer (`scene_centroid`, the mean of a Scene's member vectors per embedding space). Runs inside the existing Scene rebuild (the 15-minute cadence worker), derived data only, nothing
      * is shown, sent or prompted. OFF by default (also OFF when the prefs cannot be read); no UI. Turning it OFF stops new rows; existing rows go with their Scene and every Forget as always.
      */

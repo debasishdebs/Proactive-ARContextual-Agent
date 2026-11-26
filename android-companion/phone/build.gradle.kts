@@ -103,6 +103,7 @@ dependencies {
     implementation(project(":services:orchestration"))
     implementation(project(":services:connectors"))
     implementation(project(":services:voice"))
+    implementation(project(":services:vision-local")) // V1 offline photo captioner (SmolVLM2 via llama.cpp mtmd); OFF by default; phone only
     implementation(project(":core:ui"))
     implementation(project(":nexus-port")) // v2.0: the seam to the optional Nexus bridge APK (AIDL + the NexusHudSink choke point); no Nexus SDK here
     implementation(project(":core:hud")) // clampHudScale, Hud.MIN_SCALE/MAX_SCALE for the glasses settings (Task 16)

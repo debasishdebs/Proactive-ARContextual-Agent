@@ -79,8 +79,25 @@ class LocalModelsTest {
         assertEquals("61a7b147390c64585d6c3543dd6fc636906c9af3865a5548f27f31aee1d4c8e2", m.files[2].sha256)
         assertEquals("Apache-2.0", m.license)
         // Listed after the existing entries, which keep their order; the others stay bindable and Nomic stays the only "Recommended".
-        assertEquals(listOf("bge-small-en-v1.5-q8", "nomic-embed-v1.5", "siglip2-base-p16-224"), LocalModels.all.map { it.id })
+        assertEquals(listOf("bge-small-en-v1.5-q8", "nomic-embed-v1.5", "siglip2-base-p16-224", "smolvlm2-500m-q8"), LocalModels.all.map { it.id })
         assertEquals(listOf("nomic-embed-v1.5"), LocalModels.all.filter { it.note == "Recommended" }.map { it.id })
-        assertTrue(LocalModels.all.filter { it.id != m.id }.all { it.bindable })
+        assertTrue(LocalModels.all.filter { !it.id.startsWith("siglip2") && !it.id.startsWith("smolvlm2") }.all { it.bindable })
+    }
+
+    @Test fun smolvlm2IsATwoFileApache2BundleThatIsNeverBound() {
+        val m = LocalModels.byId("smolvlm2-500m-q8")!!
+        assertEquals(false, m.bindable)
+        assertEquals("Apache-2.0", m.license)
+        assertEquals(listOf("SmolVLM2-500M-Video-Instruct-Q8_0.gguf", "mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf"), m.files.map { it.file })
+        assertEquals(m.file, m.files.first().file)
+        assertEquals(listOf(436_808_704L, 108_785_184L), m.files.map { it.bytes })
+        assertEquals(545_593_888L, m.totalBytes)
+        assertEquals("6f67b8036b2469fcd71728702720c6b51aebd759b78137a8120733b4d66438bc", m.files[0].sha256)
+        assertEquals("921dc7e259f308e5b027111fa185efcbf33db13f6e35749ddf7f5cdb60ef520b", m.files[1].sha256)
+        for (f in m.files) {
+            assertTrue(f.url, f.url.startsWith("https://huggingface.co/ggml-org/SmolVLM2-500M-Video-Instruct-GGUF/resolve/ccd7aae53bcb1997355c2f094959e72b3642ce17/"))
+            assertTrue(f.url.endsWith("/" + f.file))
+        }
+        assertEquals(listOf("nomic-embed-v1.5"), LocalModels.all.filter { it.note == "Recommended" }.map { it.id })
     }
 }

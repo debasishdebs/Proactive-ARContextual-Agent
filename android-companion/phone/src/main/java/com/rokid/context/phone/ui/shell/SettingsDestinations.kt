@@ -333,6 +333,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         var mapZonesV2On by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app)) }
         var mapZonesP23On by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesP23(app)) }
         var packMomentsOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.packMoments(app)) }
+        var offlineCaptionOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.offlineCaption(app)) }
         var canvasModelNodesOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.canvasModelNodes(app)) }
         var canvasTestRunOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.canvasTestRun(app)) }
         val ctxDecision by s.contextSources.decision.collectAsStateWithLifecycle()
@@ -364,6 +365,9 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             mapZonesP23 = mapZonesP23On, onMapZonesP23 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setMapZonesP23(app, on); mapZonesP23On = on },
             packMoments = packMomentsOn, onPackMoments = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setPackMoments(app, on); packMomentsOn = on },
             packMomentsCount = if (packMomentsOn) com.rokid.context.work.frames.place.PackMomentStats.summary() else "",
+            offlineCaption = offlineCaptionOn,
+            onOfflineCaption = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setOfflineCaption(app, on); offlineCaptionOn = on; if (!on) com.rokid.context.phone.vision.OfflineCaptionerHolder.releaseIfCreated() },
+            offlineCaptionTest = { com.rokid.context.phone.vision.OfflineCaptionTestSection(app) },
             canvasModelNodes = canvasModelNodesOn, onCanvasModelNodes = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setCanvasModelNodes(app, on); canvasModelNodesOn = on },
             canvasTestRun = canvasTestRunOn, onCanvasTestRun = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setCanvasTestRun(app, on); canvasTestRunOn = on },
             sensorRecHz = s.hud.settings.collectAsStateWithLifecycle().value.sensorRecHz,
