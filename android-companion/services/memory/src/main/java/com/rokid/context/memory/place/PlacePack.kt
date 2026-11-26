@@ -32,6 +32,17 @@ fun interface CellSource {
     suspend fun fetchCell(cell: String): CellFetch
 }
 
+/**
+ * The bulk discovery of a seed (owner decision 27 Nov): ALL qualifying places inside one [GeoBox] in a few calls (production: Wikidata SPARQL box query, then batched Wikipedia intros), already class-ruled, coordinate-checked and with
+ * their intro text. The pack stores them through the same rows as the per-cell path. Throws [BulkTooBig] when the box should be split (timeout, 504, too many rows); any other exception sends the affected cells to the per-cell path.
+ */
+fun interface BulkSource {
+    suspend fun fetchBox(box: GeoBox): List<FetchedPlace>
+}
+
+/** A bulk box that timed out or returned more rows than one query may carry: the pack splits it in two and asks again. */
+class BulkTooBig(why: String) : java.io.IOException(why)
+
 /** The pack as the budget screen shows it. [pinned] counts user pins; [seeded] and [fetched] exclude pinned rows. */
 /** The seeded places in one area's box (S5). */
 data class AreaStats(val places: Int, val bytes: Long)
@@ -106,6 +117,8 @@ class PlacePack(
     private val pause: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
     /** The process-wide request limiter and counters (the HTTP layer shares the same instance in production); this pack only reads it for the seed's summary lines. */
     private val net: PlaceNetGuard = PlaceNetGuard(log = log),
+    /** The bulk discovery path (null = none): used only by a seed that asks for it ([seedArea]'s `bulk`). */
+    private val bulk: BulkSource? = null,
 ) {
     private val dao = db.dao()
 
@@ -233,16 +246,17 @@ class PlacePack(
      * Fetches the blue zone [bbox] cell by cell and marks everything found seeded. A cell that is already fresh is not fetched again but its places are marked. A cell that fails is
      * counted and the rest go on: the area ends [AREA_PARTIAL] and can be seeded again. [onProgress] gets (cells done, cells total).
      */
-    suspend fun seedArea(blueZoneId: String, bbox: GeoBox, admit: () -> String? = { null }, onCellMs: (Long) -> Unit = {}, onCounts: (SeedCounts) -> Unit = {}, onProgress: (Int, Int) -> Unit = { _, _ -> }): SeedResult {
+    suspend fun seedArea(blueZoneId: String, bbox: GeoBox, admit: () -> String? = { null }, onCellMs: (Long) -> Unit = {}, onCounts: (SeedCounts) -> Unit = {}, bulk: Boolean = false, onProgress: (Int, Int) -> Unit = { _, _ -> }): SeedResult {
         val cells = Geohash5.cellsCovering(bbox)
         val src = source
-        if (cells.isEmpty() || cells.size > MAX_SEED_CELLS || src == null) { log("seed refused cells=${cells.size}"); return SeedResult(cells.size, 0, 0, if (src == null) cells.size else 0, 0) }
+        val useBulk = bulk && this.bulk != null
+        if (cells.isEmpty() || cells.size > (if (useBulk) MAX_SEED_CELLS_BULK else MAX_SEED_CELLS) || src == null) { log("seed refused cells=${cells.size}"); return SeedResult(cells.size, 0, 0, if (src == null) cells.size else 0, 0) }
         val mine = Job(currentCoroutineContext()[Job])
         seeds.merge(blueZoneId, setOf(mine)) { a, b -> a + b }
         var stopped: String? = null
         val result: SeedResult? = try {
             withContext(mine + SeedAdmission(admit)) {
-                try { seedBody(blueZoneId, bbox, cells, src, onProgress, onCellMs, onCounts) } catch (e: SeedStopped) {
+                try { seedBody(blueZoneId, bbox, cells, src, onProgress, onCellMs, onCounts, if (useBulk) this@PlacePack.bulk else null) } catch (e: SeedStopped) {
                     stopped = e.reason
                     writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_PARTIAL))
                     null
@@ -275,7 +289,7 @@ class PlacePack(
     /** The area row, written under the fetch lock and only while this seed is still wanted: a removal cancels the seed first, so its last write cannot bring the area back. */
     private suspend fun writeArea(row: AreaEntity) = fetchLock.withLock { currentCoroutineContext().ensureActive(); dao.putArea(if (row.name == null) row.copy(name = dao.areaName(row.blueZoneId)) else row) } // a seed rewrite keeps the owner's name (v18 WP11b)
 
-    private suspend fun seedBody(blueZoneId: String, bbox: GeoBox, cells: List<String>, src: CellSource, onProgress: (Int, Int) -> Unit, onCellMs: (Long) -> Unit, onCounts: (SeedCounts) -> Unit): SeedResult {
+    private suspend fun seedBody(blueZoneId: String, bbox: GeoBox, cells: List<String>, src: CellSource, onProgress: (Int, Int) -> Unit, onCellMs: (Long) -> Unit, onCounts: (SeedCounts) -> Unit, bulkSrc: BulkSource? = null): SeedResult {
         writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_SEEDING))
         var fetched = 0; var skipped = 0; var partial = 0; var done = 0; var partialFresh = 0
         fun withoutOsm() = partial + partialFresh
@@ -299,7 +313,49 @@ class PlacePack(
             CellOutcome.PARTIAL -> { fetched++; partial++; true }
             else -> false
         }
-        for (cell in cells) {
+        // BULK discovery (owner decision 27 Nov): fresh cells are skipped as in the per-cell path, the rest go in tiles through [bulkSrc]; cells whose bulk answer failed are walked by the per-cell loop below.
+        var loopCells = cells
+        if (bulkSrc != null) {
+            val todo = ArrayList<String>()
+            for (cell in cells) {
+                seedAdmitCheck()
+                val c = dao.cell(cell)
+                val fresh = (c?.status == CELL_OK && isFresh(c)) || (c?.status == CELL_PARTIAL && (now() - c.fetchedAt) in 0 until FRESH_MS)
+                if (!fresh) { todo += cell; continue }
+                if (c?.status == CELL_PARTIAL) partialFresh++
+                skipped++; Geohash5.bounds(cell)!!.let { dao.markSeeded(it.south, it.north, it.west, it.east) }
+                done++
+            }
+            if (done > 0) { onProgress(done, cells.size); onCounts(SeedCounts(done, cells.size, 0, withoutOsm(), fetched)) }
+            val fallback = ArrayList<String>()
+            val tileRuns = ArrayList<List<String>>()
+            tilesOf(todo).forEach { tileRuns += it }
+            var boxes = 0; var split = 0; var bulkFailed = 0; var places = 0
+            val queue = ArrayDeque(tileRuns)
+            while (queue.isNotEmpty()) {
+                val tile = queue.removeFirst()
+                seedAdmitCheck()
+                val epoch = wipeEpoch.get()
+                val box = unionBox(tile)
+                val t0 = now()
+                val got: List<FetchedPlace>? = try { bulkSrc.fetchBox(box) } catch (e: CancellationException) { throw e } catch (e: PlaceOfflineOnly) { null
+                } catch (e: BulkTooBig) {
+                    if (tile.size > 1) { split++; val (a, b) = splitCells(tile); queue.addFirst(b); queue.addFirst(a); log("bulk box split cells=${tile.size} cls=BulkTooBig"); continue }
+                    log("bulk box failed cells=1 cls=BulkTooBig"); null
+                } catch (e: Exception) { log("bulk box failed cells=${tile.size} cls=${e.javaClass.simpleName}"); null }
+                if (got == null || wipeEpoch.get() != epoch) { bulkFailed++; fallback += tile; continue }
+                val stored = storeBulkBox(tile, got, epoch)
+                if (stored < 0) { bulkFailed++; fallback += tile; continue }
+                boxes++; places += stored; fetched += tile.size; partial += tile.size; done += tile.size
+                log("bulk box stored cells=${tile.size} places=$stored ms=${now() - t0}")
+                onProgress(done, cells.size)
+                onCounts(SeedCounts(done, cells.size, failedCells.size, withoutOsm(), fetched))
+                net.tick(done, failedCells.size, cells.size, withoutOsm(), gate = 0)
+            }
+            log("seed bulk boxes=$boxes split=$split failedBoxes=$bulkFailed places=$places fallbackCells=${fallback.size} skipped=$skipped")
+            loopCells = fallback
+        }
+        for (cell in loopCells) {
             val box = Geohash5.bounds(cell)!!
             val outcome = timed(cell)
             if (outcome == CellOutcome.FRESH) { skipped++; dao.markSeeded(box.south, box.north, box.west, box.east) }
@@ -335,6 +391,63 @@ class PlacePack(
         val n = dao.placeCount()
         log("seed done cells=${cells.size} ok=${fetched - partial} partial=$partial partialFresh=$partialFresh skipped=$skipped failed=$failed fetched=$fetched places=$n")
         return SeedResult(cells.size, fetched, skipped, failed, n, partial, retried, partialFresh)
+    }
+
+    /** The cells grouped in tiles of [BULK_TILE_CELLS] x [BULK_TILE_CELLS] cells (about 200 km): the first box size asked of the bulk source; a tile that is too big is split. Order: south-west to north-east. */
+    private fun tilesOf(cells: List<String>): List<List<String>> {
+        val groups = LinkedHashMap<Pair<Int, Int>, MutableList<String>>()
+        for (c in cells) {
+            val b = Geohash5.bounds(c) ?: continue
+            val key = Math.floor((b.south + 90.0) / (Geohash5.LAT_STEP * BULK_TILE_CELLS)).toInt() to Math.floor((b.west + 180.0) / (Geohash5.LON_STEP * BULK_TILE_CELLS)).toInt()
+            groups.getOrPut(key) { ArrayList() } += c
+        }
+        return groups.values.toList()
+    }
+
+    /** The smallest box holding every cell of [cells] whole (so a place in any of them is inside it). */
+    private fun unionBox(cells: List<String>): GeoBox {
+        var s = 90.0; var w = 180.0; var n = -90.0; var e = -180.0
+        for (c in cells) Geohash5.bounds(c)?.let { s = minOf(s, it.south); w = minOf(w, it.west); n = maxOf(n, it.north); e = maxOf(e, it.east) }
+        return GeoBox(s, w, n, e)
+    }
+
+    /** Halves [cells] along the longer side of their box. */
+    private fun splitCells(cells: List<String>): Pair<List<String>, List<String>> {
+        val b = unionBox(cells)
+        val byLat = (b.north - b.south) >= (b.east - b.west) * (Geohash5.LAT_STEP / Geohash5.LON_STEP)
+        val sorted = cells.sortedBy { c -> Geohash5.bounds(c)!!.let { if (byLat) it.south else it.west } }
+        val key = { c: String -> Geohash5.bounds(c)!!.let { if (byLat) it.south else it.west } }
+        val mid = key(sorted[sorted.size / 2])
+        val lo = sorted.filter { key(it) < mid }; val hi = sorted.filter { key(it) >= mid }
+        return if (lo.isEmpty() || hi.isEmpty()) sorted.take(sorted.size / 2) to sorted.drop(sorted.size / 2) else lo to hi
+    }
+
+    /**
+     * Stores one bulk box through the same rows as [fetchAndStore]: the places that lie in one of [cells] (seeded), and a cell row per cell with status [CELL_PARTIAL]: Wikipedia and Wikidata answered, OSM extras did not
+     * run, so the cell is DONE for seeding (30 days), counts under "without OSM extras", and a glance on free Wi-Fi may fill it in later. Returns the places stored, or -1 when Delete all ran meanwhile.
+     */
+    private suspend fun storeBulkBox(cells: List<String>, places: List<FetchedPlace>, epoch: Long): Int = fetchLock.withLock {
+        currentCoroutineContext().ensureActive()
+        if (wipeEpoch.get() != epoch) return@withLock -1
+        val t = now()
+        val inCells = cells.toHashSet()
+        val clean = places.filter { !UserPlace.isUserId(it.id) && it.kind in PlaceKinds.ALL && it.lat.isFinite() && it.lon.isFinite() && it.name.isNotBlank() && Geohash5.encode(it.lat, it.lon) in inCells }.distinctBy { it.id }
+        db.withTransaction {
+            if (wipeEpoch.get() != epoch) return@withTransaction
+            val old = chunked(clean.map { it.id }) { dao.byIds(it) }.associateBy { it.id }
+            dao.putPlaces(clean.map { f -> placeRow(f, old[f.id], t, seeded = true) })
+            for (c in cells) dao.putCell(CellEntity(c, t, CELL_PARTIAL))
+            evictToBudget(keepIds = clean.map { it.id }, keepCell = "")
+        }
+        if (wipeEpoch.get() != epoch) -1 else clean.size
+    }
+
+    private fun placeRow(f: FetchedPlace, o: PlaceEntity?, t: Long, seeded: Boolean): PlaceEntity {
+        val row = PlaceEntity(
+            f.id, f.parentId, f.name.take(NAME_MAX), f.kind, f.lat, f.lon, f.radiusM.coerceIn(10, PlaceKinds.MAX_RADIUS_M), clipSummary(f.summary), f.source, f.sourceRev, t,
+            seeded = seeded || o?.seeded == true, pinned = o?.pinned == true, lastUsedDay = max(o?.lastUsedDay ?: 0, day()), bytes = 0,
+        )
+        return row.copy(bytes = sizeOf(row))
     }
 
     /**
@@ -445,15 +558,7 @@ class PlacePack(
         db.withTransaction {
             if (wipeEpoch.get() != epoch) return@withTransaction
             val old = chunked(clean.map { it.id }) { dao.byIds(it) }.associateBy { it.id }
-            dao.putPlaces(clean.map { f ->
-                val o = old[f.id]
-                val summary = clipSummary(f.summary)
-                val row = PlaceEntity(
-                    f.id, f.parentId, f.name.take(NAME_MAX), f.kind, f.lat, f.lon, f.radiusM.coerceIn(10, PlaceKinds.MAX_RADIUS_M), summary, f.source, f.sourceRev, t,
-                    seeded = seeded || o?.seeded == true, pinned = o?.pinned == true, lastUsedDay = max(o?.lastUsedDay ?: 0, day()), bytes = 0,
-                )
-                row.copy(bytes = sizeOf(row))
-            })
+            dao.putPlaces(clean.map { f -> placeRow(f, old[f.id], t, seeded) })
             dao.putCell(CellEntity(cell, t, if (got.complete) CELL_OK else CELL_PARTIAL))
             if (got.complete) partialStreak.remove(cell) else partialStreak.merge(cell, 1) { a, b -> (a + b).coerceAtMost(MAX_STREAK) }
             evicted = evictToBudget(keepIds = clean.map { it.id }, keepCell = cell)
@@ -523,6 +628,10 @@ class PlacePack(
         const val SUMMARY_MAX = 400
         const val NAME_MAX = 160
         const val MAX_SEED_CELLS = 4_000
+        /** The per-seed cell cap of the BULK path only (owner decision 27 Nov); the per-cell path keeps [MAX_SEED_CELLS]. */
+        const val MAX_SEED_CELLS_BULK = 30_000
+        /** The first box of the bulk path covers this many cells per side (about 200 km); a box that times out or returns too many rows is halved. */
+        const val BULK_TILE_CELLS = 40
         /** The wait before the first retry of the failed cells; it doubles each round (5 s, 10 s, 20 s, 40 s) up to [RETRY_BACKOFF_MAX_MS]. */
         const val RETRY_BACKOFF_MS = 5_000L
         const val RETRY_BACKOFF_MAX_MS = 60_000L

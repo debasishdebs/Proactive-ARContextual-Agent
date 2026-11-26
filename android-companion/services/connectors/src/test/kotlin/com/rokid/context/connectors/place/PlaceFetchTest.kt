@@ -149,14 +149,14 @@ class PlaceFetchTest {
 
     @Test fun classRuleLoosened27Nov() {
         val none = emptySet<String>()
-        for (c in listOf("Q23397", "Q211302", "Q34038", "Q133056", "Q1559394", "Q46169", "Q1377575", "Q473972", "Q537127", "Q22698", "Q1139682")) assertNotNull(PlaceCellSource.kindOf(setOf(c), "Q1", false), c)
-        assertEquals(PlaceKinds.TEMPLE, PlaceCellSource.kindOf(setOf("Q1559394"), "Q1", false))
-        assertEquals(PlaceKinds.MUSEUM, PlaceCellSource.kindOf(setOf("Q1139682"), "Q1", false))
-        for (c in listOf("Q1827414", "Q486972", "Q3914", "Q5", "Q43501")) assertNull(PlaceCellSource.kindOf(setOf(c), "Q1", true), "$c stays out") // tea garden, settlement, school, human, zoo
-        // mountains: toggle only
-        for (c in PlaceCellSource.MOUNTAIN_CLASSES.keys) { assertNull(PlaceCellSource.kindOf(setOf(c), "Q1", false)); assertNotNull(PlaceCellSource.kindOf(setOf(c), "Q1", true)) }
-        assertEquals(setOf("Q8502", "Q207326", "Q1595289"), PlaceCellSource.MOUNTAIN_CLASSES.keys)
-        assertNull(PlaceCellSource.kindOf(none, "Q2", true))
+        val all = ExtraPlaceTypes.KEYS
+        for (c in listOf("Q23397", "Q211302", "Q34038", "Q133056", "Q1559394", "Q46169", "Q1377575", "Q473972", "Q537127", "Q22698", "Q1139682")) assertNotNull(PlaceCellSource.kindOf(setOf(c), "Q1"), c)
+        assertEquals(PlaceKinds.TEMPLE, PlaceCellSource.kindOf(setOf("Q1559394"), "Q1"))
+        assertEquals(PlaceKinds.MUSEUM, PlaceCellSource.kindOf(setOf("Q1139682"), "Q1"))
+        for (c in listOf("Q486972", "Q3914", "Q5", "Q43501")) assertNull(PlaceCellSource.kindOf(setOf(c), "Q1", all), "$c stays out with every switch on") // settlement, school, human, zoo: no switch
+        // the extra types are admitted only through their switch (see ExtraPlaceTypesTest for every class)
+        for (c in listOf("Q8502", "Q207326", "Q1595289", "Q740445", "Q46831")) { assertNull(PlaceCellSource.kindOf(setOf(c), "Q1"), c); assertNull(PlaceCellSource.kindOf(setOf(c), "Q1", setOf(ExtraPlaceTypes.RIVERS))); assertNotNull(PlaceCellSource.kindOf(setOf(c), "Q1", setOf(ExtraPlaceTypes.MOUNTAINS))) }
+        assertNull(PlaceCellSource.kindOf(none, "Q2", all))
         assertEquals(300, PlaceCellSource.radiusCapOf(setOf("Q473972", "Q23397")))
         assertNull(PlaceCellSource.radiusCapOf(setOf("Q23397")))
         // a person is never admitted by the class rule callers (PERSON_CLASSES stays)
@@ -285,7 +285,7 @@ class PlaceFetchTest {
         }
         val cell = Geohash5.encode(27.3, 88.6)
         assertEquals(setOf("wd:Q92"), PlaceCellSource(wiki, wd, osm).fetchCell(cell).places.map { it.id }.toSet())
-        val on = PlaceCellSource(wiki, wd, osm, includeMountains = { true }).fetchCell(cell).places.associateBy { it.id }
+        val on = PlaceCellSource(wiki, wd, osm, extraTypes = { setOf(ExtraPlaceTypes.MOUNTAINS) }).fetchCell(cell).places.associateBy { it.id }
         assertEquals(setOf("wd:Q91", "wd:Q92"), on.keys)
         assertEquals(300, on.getValue("wd:Q92").radiusM)
         assertTrue(on.getValue("wd:Q91").radiusM <= 300)

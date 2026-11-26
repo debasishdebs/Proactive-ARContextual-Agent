@@ -21,8 +21,8 @@ class PlaceCellSource(
     private val wikipedia: WikipediaSource,
     private val wikidata: WikidataSource,
     private val overpass: OverpassSource?,
-    /** Settings > Place Guide "Include mountains and peaks" (default OFF): admits [MOUNTAIN_CLASSES] too. Read at every cell, so a change applies to the next seed. */
-    private val includeMountains: () -> Boolean = { false },
+    /** Settings > Place Guide > Extra place types: the [ExtraPlaceTypes] keys that are ON. Read at every cell, so a change applies to the next seed. The default here is none (strict list only); production passes the user's switches (default ON). */
+    private val extraTypes: () -> Set<String> = { emptySet() },
     private val log: (String) -> Unit = {},
 ) : CellSource {
     override suspend fun fetchCell(cell: String): CellFetch {
@@ -37,7 +37,7 @@ class PlaceCellSource(
         val qids = (pages.mapNotNull { it.qid } + extras.keys).distinct()
         val entities = qids.chunked(WikidataHttpSource.BATCH).fold(emptyMap<String, WikidataEntity>()) { acc, ids -> zoneCheck(); acc + wikidata.entities(ids) }
 
-        val mountains = includeMountains()
+        val extra = extraTypes()
         val kept = LinkedHashMap<String, FetchedPlace>()
         val radiusCaps = HashMap<String, Int>() // places whose OSM extent must not widen the radius past a cap (see RADIUS_CAP_M)
         val hasPart = HashMap<String, List<String>>()
@@ -63,7 +63,7 @@ class PlaceCellSource(
             val ent = entities[q] ?: run { rejected++; null } ?: continue
             if (ent.p31Malformed) { rejected++; continue } // unreadable classification is not absence: person exclusion cannot be checked, so not even a curated QID is admitted
             if (ent.classes.any { it in PERSON_CLASSES }) continue // people are never candidates, not even for a curated QID
-            val kind = kindOf(ent.classes, q, mountains) ?: continue
+            val kind = kindOf(ent.classes, q, extra) ?: continue
             // Fail closed on a coordinate conflict: when Wikipedia (geosearch hit, else the page) and Wikidata P625 both have a point and they are more than COORD_DISAGREE_M apart, the place (QID) is dropped, curated or not; the rule is per QID, not per page.
             if (q in disagreeingQids) { if (countedDisagree.add(q)) coordsDisagree++; continue } // per QID, see above
             val lat = ent.lat ?: p.lat ?: hitById[p.pageId]?.lat ?: continue
@@ -77,7 +77,7 @@ class PlaceCellSource(
             val ent = entities[q] ?: run { rejected++; null } ?: continue
             if (ent.p31Malformed) { rejected++; continue }
             if (ent.classes.any { it in PERSON_CLASSES }) continue
-            val kind = kindOf(ent.classes, q, mountains) ?: continue
+            val kind = kindOf(ent.classes, q, extra) ?: continue
             // Coordinates come from the verified table only; the entity's own P625 is never used for these.
             kept.putIfAbsent("wd:$q", FetchedPlace("wd:$q", ent.partOf.firstOrNull()?.let { "wd:$it" }, c.name, kind, c.lat, c.lon, PlaceKinds.defaultRadiusM(kind), "", "wikidata", "wd:$q"))
             if (ent.hasPart.isNotEmpty()) hasPart[q] = ent.hasPart
@@ -120,7 +120,7 @@ class PlaceCellSource(
         const val WIDE_COORD_DISAGREE_M = 5000.0
 
         /** P31 classes that are areas rather than points: lake, glacial lake, park, national park, wildlife refuge, protected area, waterfall, mountain pass and the mountain classes (admitted or not, the limit only matters once admitted). TODO-verify classes (proglacial lake, sanctuary, bird sanctuary) join when their ids are verified. */
-        val AREA_LIKE_CLASSES: Set<String> = setOf("Q23397", "Q211302", "Q22698", "Q46169", "Q1377575", "Q473972", "Q34038", "Q133056", "Q8502", "Q207326", "Q1595289")
+        val AREA_LIKE_CLASSES: Set<String> = setOf("Q23397", "Q211302", "Q22698", "Q46169", "Q1377575", "Q473972", "Q34038", "Q133056") + ExtraPlaceTypes.AREA_LIKE_CLASSES
 
         /** Curated ids with no admitted area class that still get the wide limit: Do-drul Chorten Q5285886 (no P31 at all; owner follow-up 27 Nov). A point-like curated place is not listed. */
         val WIDE_COORD_QIDS: Set<String> = setOf("Q5285886")
@@ -191,23 +191,15 @@ class PlaceCellSource(
             "Q1139682" to PlaceKinds.MUSEUM, // Tibet museum
         )
 
-        /**
-         * Admitted only while Settings > Place Guide "Include mountains and peaks" is ON (default OFF; adds many places, good for a mountain trip): mountain Q8502, summit Q207326, sacred mountain Q1595289.
-         * Matched on P31 only, like [MONUMENT_CLASSES]; their radius is capped like the large areas.
-         */
-        val MOUNTAIN_CLASSES: Map<String, String> = mapOf(
-            "Q8502" to PlaceKinds.VIEWPOINT, // mountain
-            "Q207326" to PlaceKinds.VIEWPOINT, // summit
-            "Q1595289" to PlaceKinds.VIEWPOINT, // sacred mountain
-        )
+        // The optional place types (mountains, rivers, glaciers, hills, tea gardens, railway, power, stadiums...) are DATA in [ExtraPlaceTypes]; the Settings switches choose which are admitted.
 
         /** Large areas: the radius an OSM extent may widen a place to (metres). A national park or a mountain is hundreds of square kilometres: the card is for being near its sign, not inside its border. */
         const val AREA_RADIUS_CAP_M = 300
-        val RADIUS_CAP_M: Map<String, Int> = mapOf("Q473972" to AREA_RADIUS_CAP_M, "Q46169" to AREA_RADIUS_CAP_M, "Q1377575" to AREA_RADIUS_CAP_M, "Q8502" to AREA_RADIUS_CAP_M, "Q207326" to AREA_RADIUS_CAP_M, "Q1595289" to AREA_RADIUS_CAP_M)
+        val RADIUS_CAP_M: Map<String, Int> = mapOf("Q473972" to AREA_RADIUS_CAP_M, "Q46169" to AREA_RADIUS_CAP_M, "Q1377575" to AREA_RADIUS_CAP_M) + ExtraPlaceTypes.RADIUS_CAPS
 
-        /** The kind of an item with these P31 [classes] and this [qid], or null when it is not admitted (the one class rule of the per-cell and the bulk path; people are checked by the caller). */
-        fun kindOf(classes: Set<String>, qid: String, mountains: Boolean): String? =
-            classes.firstNotNullOfOrNull { MONUMENT_CLASSES[it] } ?: CURATED_LANDMARK_QIDS[qid] ?: if (mountains) classes.firstNotNullOfOrNull { MOUNTAIN_CLASSES[it] } else null
+        /** The kind of an item with these P31 [classes] and this [qid], or null when it is not admitted: the strict list, the curated ids, then the extra types in [extra] (the one class rule of the per-cell and the bulk path; people are checked by the caller). */
+        fun kindOf(classes: Set<String>, qid: String, extra: Set<String> = emptySet()): String? =
+            classes.firstNotNullOfOrNull { MONUMENT_CLASSES[it] } ?: CURATED_LANDMARK_QIDS[qid] ?: if (extra.isEmpty()) null else ExtraPlaceTypes.classesFor(extra).let { m -> classes.firstNotNullOfOrNull { m[it] } }
 
         /** The smallest radius cap of the item's classes, or null. */
         fun radiusCapOf(classes: Set<String>): Int? = classes.mapNotNull { RADIUS_CAP_M[it] }.minOrNull()
