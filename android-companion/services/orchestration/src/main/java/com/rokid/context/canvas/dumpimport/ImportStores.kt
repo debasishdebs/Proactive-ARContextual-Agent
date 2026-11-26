@@ -79,7 +79,7 @@ class ImportMemoryStore(private val app: Context) : ImportMemoryWriter {
     override suspend fun store(memory: DumpImportParser.Memory): Boolean {
         val ok = PipelineRecords.appendFact(
             app, memory.id, memory.frameId, memory.text, memory.type, memory.tags, memory.confidence, memory.tier, memory.review, memory.createdAt,
-            derived = memory.derived, attribution = ModelAttribution(ATTRIBUTION),
+            derived = memory.derived, attribution = ModelAttribution(ATTRIBUTION), imageDelivered = null, // an imported memory has no delivery record (unknown, like a legacy row)
         )
         if (ok) MemoryGraph.get(app).db.frameSourceDao().insertAll(listOf(FrameSourceEntity(memory.id, memory.frameId, null, "FACT")))
         return ok
