@@ -102,7 +102,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 zones = { com.rokid.context.phone.zone.ZoneGraph.get(app).zonesForCheck() },
                 nearby = { _, _ -> emptyList() },
                 load = { PlaceGraph.pins(app).pins() }, save = { PlaceGraph.savePins(app, it) },
-                elapsed = android.os.SystemClock::elapsedRealtime, log = { com.rokid.context.core.log.PcLog.i("PcPlace", it) },
+                elapsed = android.os.SystemClock::elapsedRealtime, // no log sink: the import answers with counts, and the logger scan wants literals only
                 momentAlive = { id -> db.momentDao().photoMomentsOf(listOf(id)).isNotEmpty() },
             )
             val importer = com.rokid.context.canvas.dumpimport.DumpImporter(
