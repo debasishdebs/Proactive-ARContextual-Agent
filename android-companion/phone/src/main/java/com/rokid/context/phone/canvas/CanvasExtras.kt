@@ -116,6 +116,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 // pins: the pin save path (PlacePinning.importPin over PlaceGraph.savePins), judged against the same pause zones as a new pin
                 importPin = { pin -> pinning.importPin(pin) },
                 pinIds = { PlaceGraph.pins(app).pins().map { it.id }.toSet() },
+                cards = com.rokid.context.canvas.dumpimport.ImportCardStore(PlaceGraph.history(app), { PlaceGraph.pins(app).pins().map { it.id }.toSet() }),
             )
             return com.rokid.context.phone.canvas.api.ImportRoutes(devMode::value, { com.rokid.context.orchestration.forget.DeveloperFlags.devImport(app) }, importer::run)
         }

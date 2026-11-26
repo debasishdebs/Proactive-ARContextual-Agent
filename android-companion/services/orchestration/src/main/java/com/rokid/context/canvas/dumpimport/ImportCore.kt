@@ -10,7 +10,10 @@ import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.MomentLocationEntity
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.memory.moment.MomentId
+import com.rokid.context.memory.place.CardDelivery
 import com.rokid.context.memory.place.PlaceKinds
+import com.rokid.context.work.frames.place.HistoryKind
+import com.rokid.context.work.frames.place.PlaceCardHistory
 import com.rokid.context.memory.place.UserPlace
 import com.rokid.context.work.frames.place.PlacePinning
 import kotlinx.serialization.json.Json
@@ -34,6 +37,10 @@ object DumpImportParser {
     const val MAX_FRAMES = 20
     const val MAX_MEMORIES = 50
     const val MAX_MARKS = 20
+    const val MAX_CARDS = 20
+    private val CARD_ID = Regex("^[A-Za-z0-9_-]{1,80}$")
+    private val PLACE_ID = Regex("^[A-Za-z0-9_.:-]{1,100}$")
+    private val DELIVERIES = setOf(CardDelivery.PENDING, CardDelivery.SENT, CardDelivery.NOT_SENT_LINK, CardDelivery.NOT_SENT_HOST, CardDelivery.NOT_SENT_BUSY, CardDelivery.NOT_SENT_ZONE, CardDelivery.NOT_SENT_POSSIBLE, CardDelivery.NOT_SENT_LATE)
     const val MAX_TEXT = 2000
     private val FRAME_ID = Regex("^[A-Za-z0-9_-]{1,100}$")
     private val MEMORY_ID = Regex("^[A-Za-z0-9_.:-]{1,100}$")
@@ -53,10 +60,12 @@ object DumpImportParser {
     /** A mark as the dump emits it ([source] is the real kind: tap, voice, phone_voice, retro, ask_tap or phone_chat; [photo] its photo state token). */
     class Mark(val id: String, val source: String, val atMs: Long, val photo: String?, val createdAt: Long)
     class Location(val lat: Double, val lon: Double, val accuracyM: Double, val atMs: Long, val fixAgeMs: Long, val speedClass: String?, val method: String?)
+    /** A place card row of the history as the dump emits it (`placeCards` of a Moment). */
+    class Card(val id: String, val cardId: String?, val placeId: String, val title: String, val kind: HistoryKind, val delivery: String, val at: Long, val frameId: String?)
     class MomentItem(
-        val id: String, val startMs: Long, val frames: List<Frame>, val memories: List<Memory>, val marks: List<Mark>, val location: Location?,
+        val id: String, val startMs: Long, val frames: List<Frame>, val memories: List<Memory>, val marks: List<Mark>, val location: Location?, val cards: List<Card>,
         /** Counts of what is deliberately not imported from this item (never content). */
-        val skippedPlaceCards: Int, val skippedFramesNoPhoto: Int, val skippedMemories: Int,
+        val skippedFramesNoPhoto: Int, val skippedMemories: Int,
     )
 
     /** One parsed item: a Moment to import, or an object that is skipped with a fixed reason token (`scene`, `pin`, `mark_item`). */
@@ -226,19 +235,30 @@ object DumpImportParser {
             val me = str(l, "method", i, 20)?.also { if (it !in METHODS) throw Bad(i, "method") }
             Location(lat, lon, acc, at, age, sc, me)
         }.also { if (o["location"] != null && o["location"] !is JsonNull && o["location"] !is JsonObject) throw Bad(i, "location") }
-        val cards = (o["placeCards"] as? JsonArray)?.size ?: 0
+        val cards = ArrayList<Card>()
+        for (c in arr(o, "placeCards", i, MAX_CARDS)) {
+            val cid = str(c, "id", i, 80)?.takeIf { CARD_ID.matches(it) } ?: throw Bad(i, "card_id")
+            if (cards.any { it.id == cid }) throw Bad(i, "card_id")
+            val kind = str(c, "kind", i, 20)?.let { k -> HistoryKind.values().firstOrNull { it.name == k } ?: throw Bad(i, "card_kind") } ?: throw Bad(i, "card_kind")
+            val delivery = str(c, "delivery", i, 30)?.also { if (it !in DELIVERIES) throw Bad(i, "card_delivery") } ?: CardDelivery.PENDING
+            val place = str(c, "placeId", i, 100)?.takeIf { PLACE_ID.matches(it) } ?: throw Bad(i, "card_placeId")
+            val at = long(c, "at", i)?.takeIf { it > 0 } ?: throw Bad(i, "card_at")
+            val fid = str(c, "frameId", i, 100)?.also { if (!FRAME_ID.matches(it)) throw Bad(i, "card_frameId") }
+            cards += Card(cid, str(c, "cardId", i, 100)?.takeIf { it.isNotBlank() }, place, (str(c, "title", i, 300) ?: "").take(PlaceCardHistory.TITLE_MAX), kind, delivery, at, fid)
+        }
         return MomentItem(id, start, frames, memories, marks, loc, cards, noPhoto, skippedMem)
     }
 }
 
 /** What the importer writes through. The production implementations ([ImportFrameStore], [ImportMemoryStore]) call the app's normal ingest; tests pass fakes over the same intake. */
 fun interface ImportFrameWriter { suspend fun store(frame: DumpImportParser.Frame): Boolean }
+fun interface ImportCardWriter { suspend fun store(card: DumpImportParser.Card): String }
 fun interface ImportMemoryWriter { suspend fun store(memory: DumpImportParser.Memory): Boolean }
 
 /** The counts of one request (never ids, text or coordinates). [status] per item in order: `created`, `would_create`, `skipped`, `conflict`, `failed`. */
 class ImportReport(
-    val items: List<Pair<String, String>>, val frames: Int, val memories: Int, val marks: Int, val locations: Int, val skippedPlaceCards: Int, val skippedNotImported: Int, val stopped: Boolean,
-    val pins: Int = 0, val pinLinksDropped: Int = 0,
+    val items: List<Pair<String, String>>, val frames: Int, val memories: Int, val marks: Int, val locations: Int, val cards: Int, val skippedNotImported: Int, val stopped: Boolean,
+    val pins: Int = 0, val pinLinksDropped: Int = 0, val cardsSkipped: Map<String, Int> = emptyMap(),
 ) {
     fun count(status: String) = items.count { it.first == status }
 }
@@ -264,10 +284,12 @@ class DumpImporter(
     private val importPin: suspend (UserPlace) -> PlacePinning.ImportOutcome = { PlacePinning.ImportOutcome.INVALID },
     /** The ids of the pins that exist now (for `dedup` / conflict and `dry_run`). */
     private val pinIds: () -> Set<String> = { emptySet() },
+    /** The card-history writer ([ImportCardStore] in production). */
+    private val cards: ImportCardWriter = ImportCardWriter { "history_off" },
 ) {
     private class Stopped : Exception(null, null, false, false)
 
-    private class Tally { var f = 0; var m = 0; var k = 0; var l = 0; var cards = 0; var notImported = 0; var pins = 0; var pinLinksDropped = 0 }
+    private class Tally { var f = 0; var m = 0; var k = 0; var l = 0; var cards = 0; var notImported = 0; var pins = 0; var pinLinksDropped = 0; var cardsDone = 0; val cardsSkipped = java.util.TreeMap<String, Int>(); val newMoments = ArrayList<DumpImportParser.MomentItem>() }
 
     suspend fun run(entries: List<DumpImportParser.Entry>, dedup: Boolean, dryRun: Boolean): ImportReport {
         val out = arrayOfNulls<Pair<String, String>>(entries.size)
@@ -283,7 +305,18 @@ class DumpImporter(
             } catch (c: kotlinx.coroutines.CancellationException) { throw c
             } catch (x: Exception) { "failed" to "error" }
         }
-        return ImportReport(out.map { it!! }, t.f, t.m, t.k, t.l, t.cards, t.notImported, stopped, pins = t.pins, pinLinksDropped = t.pinLinksDropped)
+        // place cards last: a card may name a pin of this request, and its photo must be on the phone
+        if (!stopped) for (m in t.newMoments) {
+            try { for (c in m.cards) { if (dryRun) t.cardsDone++ else { check(gen0); cardOne(c, t) } } } catch (s: Stopped) { stopped = true; break }
+            catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (x: Exception) { t.cardsSkipped.merge("error", 1, Int::plus) }
+        }
+        return ImportReport(out.map { it!! }, t.f, t.m, t.k, t.l, t.cardsDone, t.notImported, stopped, pins = t.pins, pinLinksDropped = t.pinLinksDropped, cardsSkipped = t.cardsSkipped.toMap())
+    }
+
+    private suspend fun cardOne(c: DumpImportParser.Card, t: Tally) {
+        val frameOk = c.frameId == null || db.frameDao().byIds(listOf(c.frameId)).isNotEmpty()
+        val token = if (!frameOk) "frame_missing" else cards.store(c)
+        if (token == "ok") t.cardsDone++ else t.cardsSkipped.merge(token, 1, Int::plus)
     }
 
     private suspend fun one(e: DumpImportParser.Entry, dedup: Boolean, dryRun: Boolean, gen0: Long, t: Tally): Pair<String, String> {
@@ -294,13 +327,13 @@ class DumpImporter(
             is DumpImportParser.Entry.Moment -> {}
         }
         val m = (e as DumpImportParser.Entry.Moment).item
-        t.cards += m.skippedPlaceCards
         val verdict = verdict(m)
         if (verdict != null) return if (verdict == "conflict") (if (dedup) "skipped" to "dedup" else "conflict" to "exists") else "skipped" to verdict
-        if (dryRun) { t.f += m.frames.size; t.m += m.memories.size; t.k += m.marks.size; if (m.location != null) t.l++; return "would_create" to "ok" }
+        if (dryRun) { t.newMoments += m; t.f += m.frames.size; t.m += m.memories.size; t.k += m.marks.size; if (m.location != null) t.l++; return "would_create" to "ok" }
         check(gen0)
         val c = write(m, gen0)
         t.f += c[0]; t.m += c[1]; t.k += c[2]; t.l += c[3]
+        if (c[4] == 1) t.newMoments += m
         return if (c[4] == 1) "created" to "ok" else "failed" to "partial"
     }
 

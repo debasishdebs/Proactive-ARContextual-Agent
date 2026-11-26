@@ -38,6 +38,9 @@ data class PlaceHistoryEvent(
     val confPct: Int? = null,
     val delivery: String? = null,
     val authority: HistoryAuthority,
+    /** Developer IMPORT only: the ORIGINAL row id and time of a restored card (null = a new card: a fresh id and now). The same fences apply; the 90-day retention still prunes it. */
+    val importedId: String? = null,
+    val importedAt: Long? = null,
 )
 
 /**
@@ -59,6 +62,8 @@ class PlaceCardHistory(
     private val generation: () -> Long = { 0L },
     private val fenceEpoch: () -> Long = { 0L },
 ) {
+    /** Whether the history writes at all (the Developer flag); the import reports `history_off` instead of a silent refusal. */
+    val isEnabled: Boolean get() = enabled()
     private val dao = db.placeCardLogDao()
     private val links = db.placeLinkDao()
     private val gate = ProvenanceGate(db)
@@ -101,7 +106,7 @@ class PlaceCardHistory(
                 readyLine()
                 val delivery = e.delivery ?: takeEarly(e.cardId) ?: if (e.kind == HistoryKind.POSSIBLE) CardDelivery.NOT_SENT_POSSIBLE else CardDelivery.PENDING
                 val row = PlaceCardLogEntity(
-                    id = newId(), at = clock(), placeId = e.placeId, title = e.title.take(TITLE_MAX), kind = e.kind.name,
+                    id = e.importedId ?: newId(), at = e.importedAt ?: clock(), placeId = e.placeId, title = e.title.take(TITLE_MAX), kind = e.kind.name,
                     members = e.members.takeIf { it.isNotEmpty() }?.joinToString(","), frameId = e.frameId, confPct = e.confPct?.coerceIn(0, 100),
                     cardId = e.cardId, delivery = delivery, photoGone = photoGone,
                 )

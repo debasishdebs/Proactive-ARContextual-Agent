@@ -28,6 +28,7 @@ import org.junit.Before
 import com.rokid.context.memory.place.UserPinStore
 import com.rokid.context.memory.place.UserPlace
 import com.rokid.context.work.frames.place.PinMomentLinks
+import com.rokid.context.work.frames.place.PlaceCardHistory
 import com.rokid.context.work.frames.place.PlacePinning
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -78,16 +79,20 @@ class DumpImporterTest {
     @Before fun clearPins() { rawPrefs.edit().clear().commit() }
     private fun importer() = DumpImporter(
         db, frameWriter, memoryWriter, { k, photo -> recorder.importMark(k.id, k.source, k.atMs, photo, k.createdAt) }, { ids -> MomentBuilder(db).build(ids) }, { locOn }, { gen }, { 777L },
-        importPin = { pinning.importPin(it) }, pinIds = { pinStore.pins().map { it.id }.toSet() },
+        importPin = { pinning.importPin(it) }, pinIds = { pinStore.pins().map { it.id }.toSet() }, cards = ImportCardStore(history, { pinStore.pins().map { it.id }.toSet() }) { start + 1000 },
     )
+    private val history = PlaceCardHistory(db, clock = { start + 2000 }, pinActive = { p -> pinStore.pins().any { it.id == p } }, generation = { gen })
+    private fun cardRows() = runBlocking { db.placeCardLogDao().cardLogCount() }
 
-    private fun body(frameId: String = "f1", memId: String = "mem1", withLoc: Boolean = true, markId: String? = "mk:ep1:3", momentId: String = id, st: Long = start) = """
+    private fun card(cid: String = "c1", place: String = "wd:Q1", kind: String = "PHOTO", at: Long, frameId: String? = "f1", delivery: String = "SENT") =
+        """{"id":"$cid","cardId":"cd-$cid","placeId":"$place","title":"Sigiriya","kind":"$kind","delivery":"$delivery","at":$at,"frameId":${frameId?.let { "\u0022$it\u0022" } ?: "null"}}"""
+    private fun body(frameId: String = "f1", memId: String = "mem1", withLoc: Boolean = true, markId: String? = "mk:ep1:3", momentId: String = id, st: Long = start, cardsJson: String? = null) = """
         {"items":[{"object_type":"moment","id":"$momentId","startMs":$st,
           "frames":[{"id":"$frameId","ts":${st + 10},"capturedAtMs":${st + 10},"source":"rokid_cxr","motion":"STILL","dwell":false,"blur":0.5,"width":360,"phash":"abcd","hasPhoto":true}],
           "memories":[{"id":"$memId","frameId":"$frameId","text":"a red door","type":"note","tags":"door red","tier":"SHORT","confidence":0.7,"reviewState":"OK","createdAt":${st + 500},"derived":false},
                      {"id":"gone","frameId":"$frameId","text":"stale","reviewState":"INVALIDATED"}],
           "marks":[${if (markId != null) """{"id":"$markId","atMs":${st + 20},"source":"tap"}""" else ""}],
-          "placeCards":[{"id":"c1"}],
+          "placeCards":[${cardsJson ?: card(frameId = frameId, at = st + 600)}],
           ${if (withLoc) """"location":{"lat":12.5,"lon":77.25,"accuracyM":30.0,"source":"ZONE_STREAM","speedClass":"WALKING","method":"NEAREST","atMs":${st + 15},"fixAgeMs":5000},""" else ""}
           "photos":{"$frameId":"$b64"}}]}
     """.trimIndent().toByteArray()
@@ -107,7 +112,7 @@ class DumpImporterTest {
         val l = db.momentLocationDao().of(listOf(id)).single()
         assertEquals(12.5, l.lat, 0.0); assertEquals(77.25, l.lon, 0.0); assertEquals(start + 15, l.atMs); assertEquals("IMPORTED", l.source)
         assertEquals("imported", db.modelAttributionDao().get(AttributionKind.MEMORY, "mem1")!!.model)
-        assertEquals(1, r.frames); assertEquals(1, r.memories); assertEquals(1, r.marks); assertEquals(1, r.locations); assertEquals(1, r.skippedPlaceCards)
+        assertEquals(1, r.frames); assertEquals(1, r.memories); assertEquals(1, r.marks); assertEquals(1, r.locations); assertEquals(1, r.cards)
         assertNull("the invalidated memory is not imported", db.dumpDao().memoriesByIds(listOf("gone")).firstOrNull())
     }
 
@@ -309,5 +314,56 @@ class DumpImporterTest {
         assertTrue("keeps the rokid source prefix retention and the pipeline key on", f.source.startsWith("rokid"))
         assertNotNull(db.frameMetaDao().byIds(listOf(f.id)).single().capturedAtMs)
         assertEquals("EXTRACTED: no description or summary model call can claim it", "EXTRACTED", db.frameStateDao().get(f.id)!!.state)
+    }
+
+    // ---- place cards ----
+    @Test fun cardKeepsOriginalIdTimeDeliveryAndNoLinkForAPackPlace() = runBlocking<Unit> {
+        run(body())
+        val c = db.placeCardLogDao().cardLog("c1")!!
+        assertEquals(start + 600, c.at); assertEquals("SENT", c.delivery); assertEquals("wd:Q1", c.placeId); assertEquals("f1", c.frameId); assertEquals("cd-c1", c.cardId)
+        assertEquals("a pack place gets no place_link", 0, db.placeLinkDao().momentIdsOf("wd:Q1").size)
+    }
+
+    @Test fun cardOfAUserPinMakesItsPlaceLinkThroughTheHistoryWriterOnly() = runBlocking<Unit> {
+        val moment = String(body(cardsJson = card(place = pinA, at = start + 600))).trimEnd().removeSuffix("]}")
+        val r = run((moment + "," + pinJson() + "]}").toByteArray())
+        assertEquals(1, r.cards); assertEquals(listOf(id), db.placeLinkDao().momentIdsOf(pinA))
+    }
+
+    @Test fun cardSkipTokensAndDuplicateIdAcrossMoments() = runBlocking<Unit> {
+        val cards = listOf(card("c1", at = start + 600), card("c2", place = pinB, at = start + 600), card("c3", at = 5), card("c4", frameId = "nope", at = start + 600), card("c5", kind = "PIN_CLUSTER", at = start + 600)).joinToString(",")
+        val r = run(body(cardsJson = cards))
+        assertEquals(1, r.cards)
+        assertEquals(mapOf("pin_missing" to 1, "expired" to 1, "frame_missing" to 1, "no_members" to 1), r.cardsSkipped)
+        // the same card id on another Moment is `exists`, never a second row
+        val second = MomentId.format(sec + 7)
+        val r2 = run(body(frameId = "f9", memId = "m9", markId = null, momentId = second, st = (sec + 7) * 1000, cardsJson = card("c1", at = (sec + 7) * 1000 + 600, frameId = "f9")))
+        assertEquals(listOf("created" to "ok"), r2.items); assertEquals(0, r2.cards); assertEquals(mapOf("exists" to 1), r2.cardsSkipped); assertEquals(1, cardRows())
+    }
+
+    @Test fun cardDryRunWritesNoRowAndAMomentConflictWritesNone() {
+        val r = run(body(), dry = true)
+        assertEquals(1, r.cards); assertEquals(0, cardRows())
+        run(body()); assertEquals(1, cardRows())
+        run(body(), dedup = true); run(body()); assertEquals(1, cardRows())
+    }
+
+    @Test fun badCardsAre400() {
+        fun bad(c: String) { try { DumpImportParser.parse(body(cardsJson = c)); fail(c) } catch (e: DumpImportParser.Bad) { assertEquals(0, e.index) } }
+        bad(card(kind = "WEIRD", at = start)); bad(card(at = -1)); bad(card(delivery = "NOPE", at = start)); bad(card(place = "bad id!", at = start)); bad(card(frameId = "../x", at = start))
+        bad(card("c1", at = start) + "," + card("c1", at = start)); bad(card("bad id", at = start))
+    }
+
+    @Test fun cardsLeaveZeroRowsAfterForgetAndAfterDeleteAll() = runBlocking<Unit> {
+        val moment = String(body(cardsJson = card(place = pinA, at = start + 600))).trimEnd().removeSuffix("]}")
+        run((moment + "," + pinJson() + "]}").toByteArray()); assertEquals(1, cardRows())
+        val svc = ForgetService(db, ProposalRepository(db.proposalDao(), db.actionDao(), db)) { 99L }
+        MomentForget(db, svc) { 99L }.forgetMoments(listOf(id))
+        assertEquals(0, cardRows()); assertEquals(0, db.placeLinkDao().momentIdsOf(pinA).size)
+        val s2 = MomentId.format(sec + 50)
+        run(body(frameId = "f2", memId = "mem2", markId = null, momentId = s2, st = (sec + 50) * 1000, cardsJson = card("c9", place = pinA, at = (sec + 50) * 1000 + 600, frameId = "f2")))
+        assertEquals(1, cardRows()); assertEquals(1, db.placeLinkDao().momentIdsOf(pinA).size)
+        db.wipeDao().wipeMemory(99L)
+        assertEquals(0, cardRows()); assertEquals(0, db.placeLinkDao().momentIdsOf(pinA).size)
     }
 }
