@@ -50,6 +50,29 @@ class SeedEstimateTest {
         assertEquals(GeoBox(1.0, 2.0, 3.0, 4.0), SeedEstimate.boxOf(doubleArrayOf(1.0, 2.0, 3.0, 4.0)))
     }
 
+    @Test fun estimateIsMarkedAsAnEstimateAndRoughUntil20SeededCells() {
+        val sikkim = GeoBox(27.0, 88.0, 28.2, 89.0)
+        val n = SeedEstimate.cells(sikkim)
+        val rough = SeedEstimate.estimate(sikkim)
+        assertTrue(rough, rough.startsWith("About $n cells (5 km), about ${n / 2} places, about "))
+        assertTrue(rough, rough.contains("estimate, not measured") && rough.contains("rough"))
+        val own = SeedRates.of(cells = 40, places = 80, bytes = 80 * 2048L)
+        assertFalse(own.rough)
+        val line = SeedEstimate.estimate(sikkim, own)
+        assertTrue(line, line.contains("about ${n * 2} places") && !line.contains("rough"))
+        assertTrue(SeedRates.of(19, 80, 1000).rough)
+        assertTrue(SeedEstimate.estimate(GeoBox(-80.0, -170.0, 80.0, 170.0)).startsWith("Too large"))
+        assertEquals("1 KB", SeedEstimate.sizeText(500)); assertEquals("0.3 MB", SeedEstimate.sizeText(300_000))
+    }
+
+    @Test fun areaRowShowsNamePlacesSizeStateAndDateWithoutCoordinates() {
+        val a = SeedAreaInfo("z1", 1.0, 2.0, 3.0, 4.0, AREA_PARTIAL, name = "Sikkim", places = 12, bytes = 300_000, seededAt = 1_700_000_000_000)
+        val r = SeedAreaList.row(0, a, java.time.ZoneOffset.UTC)
+        assertEquals("Sikkim · partial, seed again · 12 places, 0.3 MB · 2023-11-14", r)
+        assertEquals("Seeded area 2 · done", SeedAreaList.row(1, SeedAreaInfo("z2", 1.0, 2.0, 3.0, 4.0, AREA_DONE)))
+        assertTrue(SeedAreaList.ATTRIBUTION.contains("Wikipedia") && SeedAreaList.ATTRIBUTION.contains("Wikidata") && SeedAreaList.ATTRIBUTION.contains("OpenStreetMap"))
+    }
+
     @Test fun lineSaysCountTimeAndWifiOrWhyNot() {
         assertTrue(SeedEstimate.line(PlaceGuideModel.RAMOJI).contains("1 cell (5 km each)"))
         assertTrue(SeedEstimate.line(PlaceGuideModel.RAMOJI).contains("Wi-Fi only"))

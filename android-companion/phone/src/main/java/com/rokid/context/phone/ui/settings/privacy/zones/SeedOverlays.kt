@@ -27,7 +27,9 @@ data class SeedAreaInfo(val id: String, val south: Double, val west: Double, val
     /** v18 WP11b: the owner's name for the area, read only; null until a rename screen exists. Not shown yet. */
     val name: String? = null,
     /** S3: the background seed's derived state while it is active (queued, running NN%, waiting for a network); null = no live seed. */
-    val seed: com.rokid.context.phone.place.SeedAreaState? = null) {
+    val seed: com.rokid.context.phone.place.SeedAreaState? = null,
+    /** S5: seeded places in the box, their text bytes and the seed date (ms); read from places.db, so they show offline. null = not known. */
+    val places: Int? = null, val bytes: Long = 0, val seededAt: Long = 0) {
     val box: DoubleArray get() = doubleArrayOf(south, west, north, east)
 }
 
@@ -44,8 +46,21 @@ interface SeedMapControl {
     suspend fun remove(id: String, withPlaces: Boolean = false)
     /** Cancels the area's background seed (the area stays, partial). */
     suspend fun cancelSeed(id: String) {}
+    /** S4: what this phone's own pack says about places and bytes per seeded cell (read only, offline). The default knows nothing, so the estimate is marked rough. */
+    suspend fun rates(): SeedRates = SeedRates.ROUGH
     /** Map zones "Show cells" (read only): the stored status of each 5 km cell touching [box]; a missing cell is absent. The default is empty (nothing known). */
     suspend fun cellStatuses(box: GeoBox): Map<String, String> = emptyMap()
+}
+
+/** Places per cell and bytes per place for the estimate. Below [MIN_CELLS] seeded cells the defaults (0.5 place a cell, 1 KB a place) are used and marked rough. */
+data class SeedRates(val placesPerCell: Double, val bytesPerPlace: Long, val rough: Boolean) {
+    companion object {
+        const val MIN_CELLS = 20
+        val ROUGH = SeedRates(0.5, 1024, true)
+        /** From the pack: [cells] seeded cells, [places] seeded places in them, [bytes] their text. */
+        fun of(cells: Int, places: Int, bytes: Long): SeedRates =
+            if (cells < MIN_CELLS || places <= 0) ROUGH else SeedRates(places.toDouble() / cells, Math.max(1L, bytes / places), false)
+    }
 }
 
 enum class SeedLevel { EMPTY, OK, CONFIRM, TOO_LARGE }
@@ -82,6 +97,19 @@ object SeedEstimate {
         val s = seconds(cells)
         return if (s < 90) "about $s s" else if (s < 5_400) "about ${ceil(s / 60.0).toLong()} min" else "about ${ceil(s / 3_600.0).toLong()} h"
     }
+
+    /** S4: the full estimate before seeding: cells (exact), places and text size (from [rates]), time (an ESTIMATE: the 10 s a cell is not measured). */
+    fun estimate(box: GeoBox?, rates: SeedRates = SeedRates.ROUGH): String {
+        if (box == null) return line(null)
+        val n = cells(box)
+        if (level(n) == SeedLevel.EMPTY || level(n) == SeedLevel.TOO_LARGE) return line(box)
+        val places = Math.round(n * rates.placesPerCell)
+        val bytes = Math.round(places * rates.bytesPerPlace.toDouble())
+        val rough = if (rates.rough) " (rough: not enough seeded cells on this phone yet)" else ""
+        return "About $n cell${if (n == 1L) "" else "s"} (5 km), about $places place${if (places == 1L) "" else "s"}, about ${sizeText(bytes)} of text, ${duration(n)} on Wi-Fi. The time is an estimate, not measured.$rough"
+    }
+
+    fun sizeText(bytes: Long): String = if (bytes < 100_000) "${Math.max(1, (bytes + 512) / 1024)} KB" else String.format(java.util.Locale.US, "%.1f MB", bytes / 1_048_576.0)
 
     /** The line under the map: the count, the time and the Wi-Fi rule; or why the box cannot be seeded. */
     fun line(box: GeoBox?): String {
@@ -155,7 +183,27 @@ data class SeedMapUiState(
     val removeWithPlaces: Boolean = true,
     /** S3: the background seeds still to finish (area id and the line to show: "Seeding places 42%"). */
     val progress: List<SeedProgressRow> = emptyList(),
+    /** S4: the owner's own pack rates for the estimate (rough until 20 seeded cells exist). */
+    val rates: SeedRates = SeedRates.ROUGH,
+    /** S5: the seeded-areas list rows (read from places.db, readable offline). */
+    val rows: List<SeedAreaRow> = emptyList(),
 )
+
+/** One row of the seeded-areas list: the line to show and the area id. No name of a place, no coordinates. */
+data class SeedAreaRow(val id: String, val text: String)
+
+object SeedAreaList {
+    const val ATTRIBUTION = "Place text from Wikipedia (CC BY-SA), Wikidata (CC0) and (c) OpenStreetMap contributors (ODbL). Licence names are from the projects' standard terms."
+    fun statusText(a: SeedAreaInfo): String = a.seed?.text ?: when (SeedOverlays.look(a.status)) { AreaLook.DONE -> "done"; AreaLook.PARTIAL -> "partial, seed again"; AreaLook.SEEDING -> "not finished, seed again" }
+    fun row(index: Int, a: SeedAreaInfo, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
+        val name = a.name?.takeIf { it.isNotBlank() } ?: "Seeded area ${index + 1}"
+        val parts = mutableListOf(name, statusText(a))
+        a.places?.let { parts += "$it place${if (it == 1) "" else "s"}, ${SeedEstimate.sizeText(a.bytes)}" }
+        if (a.seededAt > 0) parts += java.time.Instant.ofEpochMilli(a.seededAt).atZone(zone).toLocalDate().toString()
+        return parts.joinToString(" · ")
+    }
+    fun rows(areas: List<SeedAreaInfo>): List<SeedAreaRow> = areas.mapIndexed { i, a -> SeedAreaRow(a.id, row(i, a)) }
+}
 
 data class SeedProgressRow(val id: String, val text: String)
 
@@ -173,8 +221,9 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
         viewModelScope.launch(work) {
             val a = runCatching { control.areas() }.getOrDefault(emptyList())
             val p = runCatching { control.pins() }.getOrDefault(emptyList())
+            val r = runCatching { control.rates() }.getOrDefault(SeedRates.ROUGH)
             infos = a
-            _state.update { it.copy(areas = SeedOverlays.of(a), pins = p, progress = a.mapNotNull { x -> x.seed?.let { SeedProgressRow(x.id, it.text) } }) }
+            _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), rates = r, pins = p, progress = a.mapNotNull { x -> x.seed?.let { SeedProgressRow(x.id, it.text) } }) }
             if (a.any { it.seed != null }) startPoll()
         }
     }
@@ -187,7 +236,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             com.rokid.context.phone.ui.settings.seedTicks(POLL_MS).takeWhile {
                 val a = runCatching { control.areas() }.getOrDefault(emptyList())
                 infos = a
-                _state.update { it.copy(areas = SeedOverlays.of(a), progress = a.mapNotNull { x -> x.seed?.let { SeedProgressRow(x.id, it.text) } }) }
+                _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), progress = a.mapNotNull { x -> x.seed?.let { SeedProgressRow(x.id, it.text) } }) }
                 a.any { it.seed != null }
             }.collect {}
         }

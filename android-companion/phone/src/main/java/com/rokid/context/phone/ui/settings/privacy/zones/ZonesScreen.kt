@@ -374,10 +374,11 @@ private fun SeedCard(state: ZonesUiState, p: SeedPanel) {
     val cells = box?.let { SeedEstimate.cells(it) } ?: 0L
     SettingsCard {
         Text("Seed places in the box", style = MaterialTheme.typography.titleMedium)
-        NoticeText(SeedEstimate.line(box), error = SeedEstimate.level(cells) == SeedLevel.TOO_LARGE, tag = "seed_estimate")
+        NoticeText(SeedEstimate.estimate(box, p.ui.rates), error = SeedEstimate.level(cells) == SeedLevel.TOO_LARGE, tag = "seed_estimate")
         PrimaryAction("Seed places in this box", { p.seedBox(box) }, tag = "seed_box", enabled = !p.ui.seeding && box != null && SeedEstimate.level(cells) != SeedLevel.TOO_LARGE)
         p.ui.message?.let { m -> NoticeText(m, error = p.ui.messageIsError, tag = "seed_message"); SecondaryAction("Dismiss", p.dismiss, tag = "seed_message_dismiss") }
         SeedProgressRows(p)
+        NoticeText(SeedAreaList.ATTRIBUTION, tag = "seed_attribution")
         NoticeText("Only the 5 km cell keys leave the phone, never your position. Seeding runs in the background and needs a network (free Wi-Fi only when your Data saver says Wi-Fi only); it is refused under Offline only.", tag = "seed_note")
     }
 }

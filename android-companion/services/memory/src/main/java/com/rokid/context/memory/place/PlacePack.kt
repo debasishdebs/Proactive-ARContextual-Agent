@@ -33,6 +33,9 @@ fun interface CellSource {
 }
 
 /** The pack as the budget screen shows it. [pinned] counts user pins; [seeded] and [fetched] exclude pinned rows. */
+/** The seeded places in one area's box (S5). */
+data class AreaStats(val places: Int, val bytes: Long)
+
 data class PackStats(val pinned: Int, val seeded: Int, val fetched: Int, val bytes: Long, val budgetBytes: Long)
 
 /**
@@ -116,6 +119,12 @@ class PlacePack(
     suspend fun size(): Pair<Int, Long> = dao.placeCount() to dao.totalBytes()
 
     suspend fun areas(): List<AreaEntity> = dao.areas()
+
+    /** S5: per area id, how many seeded places lie in its box and their text bytes (read only, from places.db, no network). User pins are not counted. */
+    suspend fun areaStats(): Map<String, AreaStats> = dao.areas().associate { a ->
+        val ps = dao.inBox(a.south, a.north, a.west, a.east).filter { it.seeded && !it.id.startsWith("user:") }
+        a.blueZoneId to AreaStats(ps.size, ps.sumOf { it.bytes.toLong() })
+    }
 
     /** v18 WP11b: names (or, with null or blank, un-names) a seed area; trimmed and bounded. False when no such area. The rename screen is a later WP. */
     suspend fun setAreaName(blueZoneId: String, name: String?): Boolean = fetchLock.withLock { dao.setAreaName(blueZoneId, name?.trim()?.take(MAX_AREA_NAME)?.takeIf { it.isNotEmpty() }) > 0 }

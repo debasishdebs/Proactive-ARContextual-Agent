@@ -325,7 +325,8 @@ private fun PauseSheet(ui: MapZonesUiState, unreadable: Boolean, on: MapZonesCal
 private fun SeedSheet(ui: MapZonesUiState, seed: SeedPanel?, level: SeedLevel, on: MapZonesCallbacks, overlapNote: String? = null) {
     val box = SeedEstimate.boxOf(ui.box)
     Text("Seed places", style = MaterialTheme.typography.titleMedium)
-    NoticeText(SeedEstimate.line(box), error = level == SeedLevel.TOO_LARGE, tag = "seed_estimate")
+    NoticeText(SeedEstimate.estimate(box, seed?.ui?.rates ?: com.rokid.context.phone.ui.settings.privacy.zones.SeedRates.ROUGH), error = level == SeedLevel.TOO_LARGE, tag = "seed_estimate")
+    NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaList.ATTRIBUTION, tag = "seed_attribution")
     NoticeText("Only the 5 km cell keys leave the phone, never your position. Seeding runs in the background and needs a network (free Wi-Fi only when your Data saver says Wi-Fi only); it is refused under Offline only. The seed area has no name yet.", tag = "seed_note")
     overlapNote?.let { NoticeText(it, tag = "mapzones_seed_overlap_note") }
     if (seed == null) NoticeText("Place Guide is not available in this build.", error = true, tag = "mapzones_seed_unavailable")
@@ -359,10 +360,11 @@ private fun BrowseSheet(
         zones.rows.forEach { r -> ZoneRow(r, zoneOn) }
         seed?.let { p -> p.ui.areas.forEach { a ->
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(a.label, Modifier.weight(1f).testTag("seed_area_${a.id}"), style = MaterialTheme.typography.bodyMedium)
+                Text(p.ui.rows.firstOrNull { it.id == a.id }?.text ?: a.label, Modifier.weight(1f).testTag("seed_area_${a.id}"), style = MaterialTheme.typography.bodyMedium)
                 SecondaryAction("Remove", { p.askRemove(a.id) }, tag = "seed_remove_${a.id}")
             }
         } }
+        if (seed != null && seed.ui.areas.isNotEmpty()) NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaList.ATTRIBUTION, tag = "seed_list_attribution")
         online?.let { OnlineMapCard(it) }
         offline?.let { OfflineMapCard(it) }
     }

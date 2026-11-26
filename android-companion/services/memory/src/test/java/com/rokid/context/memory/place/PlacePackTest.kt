@@ -46,6 +46,17 @@ class PlacePackTest {
     private fun pack(src: CellSource?, budget: Long = PlacePack.DEFAULT_BUDGET_BYTES) = PlacePack(db, src, budget, { t }, { logs += it }, { pauses += it })
     private fun <T> run(b: suspend () -> T): T = runBlocking { b() }
 
+    @Test fun areaStatsCountsOnlySeededPlacesInTheAreaBoxAndReadsOffline() = run {
+        val src = FakeSource { CellFetch(listOf(fp("wd:Q1"), fp("wd:Q2", lat = CHARMINAR_LAT + 0.0001))) }
+        val p = pack(src)
+        p.seedArea("hyd", Geohash5.bounds(cell)!!)
+        val offline = pack(null) // no source: pure read of places.db
+        val st = offline.areaStats().getValue("hyd")
+        assertEquals(2, st.places)
+        assertTrue(st.bytes > 0)
+        assertEquals(emptyMap<String, AreaStats>(), pack(null).also { it.removeArea("hyd", true) }.areaStats())
+    }
+
     @Test fun cellStatusesReadsStoredCellsOnlyAndFetchesNothing() = run {
         val src = FakeSource { CellFetch(listOf(fp("wd:Q1"))) }
         val p = pack(src)

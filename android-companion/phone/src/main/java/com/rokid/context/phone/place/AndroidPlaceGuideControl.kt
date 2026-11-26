@@ -160,7 +160,14 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
         val pack = PlaceGraph.readyPack(app)
         runCatching { seedWork.reconcile(pack) } // an area marked seeding with no live work becomes partial
         val states = runCatching { seedWork.states(pack, seedAdmission(app)() != null) }.getOrDefault(emptyMap())
-        return pack.areas().map { com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, it.status, it.name, states[it.blueZoneId]?.takeIf { s -> s.active }) }
+        val stats = runCatching { pack.areaStats() }.getOrDefault(emptyMap())
+        return pack.areas().map { com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, it.status, it.name, states[it.blueZoneId]?.takeIf { s -> s.active }, stats[it.blueZoneId]?.places, stats[it.blueZoneId]?.bytes ?: 0, it.seededAt) }
+    }
+    override suspend fun rates(): com.rokid.context.phone.ui.settings.privacy.zones.SeedRates {
+        val pack = PlaceGraph.readyPack(app)
+        val cells = pack.areas().flatMap { com.rokid.context.memory.place.Geohash5.cellsCovering(it.box) }.toSet().size
+        val st = pack.areaStats().values
+        return com.rokid.context.phone.ui.settings.privacy.zones.SeedRates.of(cells, st.sumOf { it.places }, st.sumOf { it.bytes })
     }
     override suspend fun cancelSeed(id: String) { seedWork.cancel(id) }
     override suspend fun pins() = guide.pinning?.pins().orEmpty().map { com.rokid.context.phone.ui.settings.privacy.zones.PinInfo(it.lat, it.lon, it.radiusM) }
