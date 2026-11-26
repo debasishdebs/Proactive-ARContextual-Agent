@@ -14,6 +14,8 @@
 # Procedure source: docs/superpowers/plans/handoffs/v17-upgrade-recovery.md. See tools/INSTALL-TRIP-BUILD.md.
 set -Eeuo pipefail
 umask 077
+# Byte semantics for every tr/sed/grep/awk: logcat output can hold non-UTF8 bytes and macOS tr then fails with 'Illegal byte sequence' (27 Nov, exit 3 on the glasses step).
+export LC_ALL=C LANG=C
 
 PHONE_PKG=com.rokid.context
 GLASSES_PKG=com.rokid.context.glasses
@@ -833,6 +835,7 @@ run_fixtures() {
   FX_OUT="$(printf '0123456789abcdef%.0s' 1 2 3 4)  x\n"; FX_RC=1; fx "sha256: tool failure with a valid-looking digest" refuse sha_fx
   FX_RC=0; FX_PID0='4242\n'; FX_PID1='4242\n'; FX_SNAPR=0; FX_SNAP="$(mk)"
   fx "logs: clean text passes" ok sl
+  FX_SNAP="$(mk)\n1794000011.000  4242  4242 I Tag: bad bytes \\xff\\xfe\\x80 caf\\xc3 end\n"; fx "logs: non-UTF8 bytes in logcat output do not break normalisation (LC_ALL=C)" ok sl; unset FX_SNAP; FX_SNAP="$(mk)"
   # REAL captured layout (emulator, 2026-11-18): 9 leading spaces, epoch.mmm, pid, tid, level, "Tag: msg" (also empty/multi-word tags), "--------- beginning of" separators without a timestamp
   FX_SNAP="--------- beginning of main\n         1793999990.100   536   565 I am_uid_idle: 10181\n         1794000010.200  4242  4242 W ziparchive: Unable to open 'base.dm'\n         1794000010.300  4242  4260 D nativeloader: Configuring clns-6\n         1794000010.400  4242  4260 I WM-WorkerWrapper: Worker result SUCCESS\n         1794000010.500  4242  4260 I         : empty tag line\n         1794000010.600  4242  4260 E AndroidRuntime: \\tat a.b.C.d(C.java:1)\n         1794000010.700   536   559 W WindowManager: Failed to deliver inset control state change\n"; fx "logs: real-captured logcat layout, clean app pid passes" ok sl; unset FX_SNAP
   FX_SNAPR=7; fx "logs: snapshot logcat fails (rc 7)" refuse sl; FX_SNAPR=0
