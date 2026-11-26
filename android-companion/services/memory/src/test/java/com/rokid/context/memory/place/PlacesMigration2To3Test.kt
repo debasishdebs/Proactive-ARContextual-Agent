@@ -43,7 +43,9 @@ class PlacesMigration2To3Test {
         db.query("SELECT status, name FROM area").use { assertTrue(it.moveToFirst()); assertEquals("DONE", it.getString(0)); assertTrue("an existing area has no name", it.isNull(1)) }
         db.execSQL("UPDATE area SET name = 'Old town' WHERE blueZoneId = 'z1'") // the column takes a value
         db.query("SELECT name FROM area WHERE blueZoneId = 'z1'").use { assertTrue(it.moveToFirst()); assertEquals("Old town", it.getString(0)) }
-        assertEquals(setOf("place", "cell", "area"), tables(db)); assertEquals(0, indexes(db))
+        assertEquals(setOf("place", "cell", "area", "place_ref"), tables(db)); assertEquals(0, count(db, "place_ref"))
+        db.execSQL("INSERT INTO place_ref (placeId,caption,imageUrl,author,licence,capturedAt,bytes) VALUES ('wd:Q1','a stone gate',NULL,NULL,NULL,1,12)") // the table takes a row, nullable credit columns
+        assertEquals(1, count(db, "place_ref")); assertEquals(0, indexes(db))
     }
 
     @Test fun v2FileDropsTheCardHistoryTableAndKeepsThePack() {

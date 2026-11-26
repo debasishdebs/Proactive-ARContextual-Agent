@@ -21,7 +21,7 @@ class ModelAttributionSourceRulesTest {
     private val writers = setOf("ExtractSave.kt", "ClusterSave.kt", "PipelineRecords.kt", "QueueDrainWorker.kt", "ResummarizeWorker.kt", "AnswerService.kt", "DerivePorts.kt", "ObjectAudit.kt")
     private val deletes = setOf(
         "ModelAttribution.kt", "ContextDatabase.kt", "DerivedStaleDao.kt", "ObjectDao.kt", "ForgetDao.kt", "MemoryDaos.kt", "WipeDao.kt",
-        "ForgetService.kt", "ForgetExecutor.kt", "MomentForget.kt", "Families.kt", "ForgetPolicy.kt", "DeletionGraph.kt", "DesignDivergence.kt",
+        "ForgetService.kt", "ForgetExecutor.kt", "MomentForget.kt", "PlaceRefSweep.kt", "Families.kt", "ForgetPolicy.kt", "DeletionGraph.kt", "DesignDivergence.kt",
     )
     private val allowed = writers + deletes + setOf("DumpReader.kt")
 

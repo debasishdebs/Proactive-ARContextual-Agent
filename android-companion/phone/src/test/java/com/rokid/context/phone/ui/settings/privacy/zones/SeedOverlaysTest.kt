@@ -112,7 +112,8 @@ class SeedMapViewModelTest {
         override suspend fun areas() = areas
         override suspend fun pins() = pins
         override suspend fun seed(box: GeoBox): Result<SeedOutcome> { seeded += box; return result }
-        override suspend fun remove(id: String) { removed += id; areas = areas.filterNot { it.id == id } }
+        val removedWithPlaces = mutableListOf<Boolean>()
+        override suspend fun remove(id: String, withPlaces: Boolean) { removed += id; removedWithPlaces += withPlaces; areas = areas.filterNot { it.id == id } }
     }
 
     private val fake = Fake()
@@ -170,5 +171,13 @@ class SeedMapViewModelTest {
         v.cancelRemove(); assertNull(v.state.value.pendingRemoveId); assertTrue(fake.removed.isEmpty())
         v.askRemove("seed:1"); v.confirmRemove()
         assertEquals(listOf("seed:1"), fake.removed); assertTrue(v.state.value.areas.isEmpty()); assertNotNull(v.state.value.message)
+    }
+
+    @Test fun removeDefaultsToTheAreaAndItsPlacesAndTheOtherChoiceKeepsThePlaces() = runTest {
+        val v = vm(); v.refresh()
+        v.askRemove("seed:1"); assertTrue(v.state.value.removeWithPlaces) // preselected
+        v.confirmRemove(); assertEquals(listOf(true), fake.removedWithPlaces)
+        v.refresh(); v.askRemove("seed:1"); v.setRemoveWithPlaces(false); v.confirmRemove(); assertEquals(listOf(true, false), fake.removedWithPlaces)
+        v.askRemove("seed:1"); assertTrue("preselected again on every open", v.state.value.removeWithPlaces)
     }
 }

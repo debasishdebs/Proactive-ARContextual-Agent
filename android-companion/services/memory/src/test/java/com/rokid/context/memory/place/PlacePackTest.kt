@@ -535,6 +535,68 @@ class PlacePackTest {
         assertEquals((bIds + aIds.first()).toSet(), db.dao().inBox(-90.0, 90.0, -180.0, 180.0).map { it.id }.toSet())
     }
 
+    private fun ref(id: String, caption: String = "a stone gate") = PlaceRefEntity(id, caption, "https://commons.wikimedia.org/wiki/File:X.jpg", "Someone", "CC BY-SA 4.0", 5L, caption.length)
+
+    @Test fun referenceCaptionsAreStoredOnlyForKnownPlacesAndGoWithTheirPlace() = run {
+        val p = pack(FakeSource { c -> CellFetch(listOf(cornerPlace(c))) })
+        val box = GeoBox(17.30, 78.40, 17.31, 78.41)
+        p.seedArea("a", box)
+        val ids = Geohash5.cellsCovering(box).map { "$it:p" }
+        assertEquals(ids.size, p.putRefs(ids.map { ref(it) } + ref("wd:unknown"))) // an unknown place is dropped
+        assertEquals(ids.toSet(), p.refPlaceIds().toSet())
+        assertEquals("a stone gate", p.refsOf(ids).first().caption)
+        // seeded places and their captions survive Delete all and Clear fetched
+        p.deleteAll(); assertEquals(ids.size, p.refPlaceIds().size)
+        // an area removed WITHOUT its places keeps them and their captions
+        p.removeArea("a"); assertEquals(ids.size, p.refPlaceIds().size)
+    }
+
+    @Test fun clearingFetchedPlacesRemovesTheirCaptionsButNotThoseOfSeededOrPinnedPlaces() = run {
+        val src = FakeSource { c -> CellFetch(listOf(cornerPlace(c))) }
+        val p = pack(src)
+        val box = GeoBox(17.30, 78.40, 17.31, 78.41)
+        p.seedArea("a", box)
+        val seeded = Geohash5.cellsCovering(box).map { "$it:p" }
+        p.removeArea("a") // now ordinary fetched places
+        p.putRefs(seeded.map { ref(it) })
+        assertTrue(p.pin(seeded.first(), true))
+        p.clearFetched()
+        assertEquals(listOf(seeded.first()), p.refPlaceIds())
+    }
+
+    @Test fun removingAnAreaWithItsPlacesDeletesTheSeededPlacesTheirCaptionsAndSparesPinsAndOtherAreas() = run {
+        val p = pack(FakeSource { c -> CellFetch(listOf(cornerPlace(c))) })
+        val boxA = GeoBox(17.30, 78.40, 17.31, 78.41); val boxB = GeoBox(10.00, 78.40, 10.01, 78.41)
+        p.seedArea("a", boxA); p.seedArea("b", boxB)
+        val aIds = Geohash5.cellsCovering(boxA).map { "$it:p" }; val bIds = Geohash5.cellsCovering(boxB).map { "$it:p" }
+        p.putRefs((aIds + bIds).map { ref(it) })
+        assertTrue(p.pin(aIds.first(), true))
+        p.removeArea("a", withPlaces = true)
+        val left = db.dao().inBox(-90.0, 90.0, -180.0, 180.0).map { it.id }.toSet()
+        assertEquals((bIds + aIds.first()).toSet(), left) // the pinned place and the other area's places stay
+        assertEquals((bIds + aIds.first()).toSet(), p.refPlaceIds().toSet()) // captions follow their place
+        assertEquals(listOf("b"), db.dao().areas().map { it.blueZoneId })
+        assertTrue(db.dao().cells().none { Geohash5.bounds(it.geohash5)!!.intersects(boxA) }) // the removed area's cells are forgotten: fetched again on demand
+    }
+
+    @Test fun anAreaWithItsPlacesKeepsPlacesAnotherAreaStillCovers() = run {
+        val p = pack(FakeSource { c -> CellFetch(listOf(cornerPlace(c))) })
+        p.seedArea("a", GeoBox(17.30, 78.40, 17.31, 78.41)); p.seedArea("a2", GeoBox(17.305, 78.405, 17.315, 78.415))
+        val before = db.dao().placeCount()
+        p.removeArea("a", withPlaces = true)
+        assertEquals(before, db.dao().placeCount())
+        assertTrue(db.dao().inBox(-90.0, 90.0, -180.0, 180.0).all { it.seeded })
+    }
+
+    @Test fun evictionDeletesTheCaptionsOfTheEvictedPlaces() = run {
+        val p = pack(FakeSource { c -> CellFetch(listOf(cornerPlace(c))) }, budget = PlacePack.MIN_BUDGET_BYTES)
+        p.ensureCell(cell, networkUp = true)
+        val id = db.dao().inBox(-90.0, 90.0, -180.0, 180.0).first().id
+        p.putRefs(listOf(ref(id)))
+        p.setBudget(0) // evicts every fetched place
+        assertEquals(0, db.dao().placeCount()); assertTrue(p.refPlaceIds().isEmpty())
+    }
+
     @Test fun aPlaceStillCoveredByAnotherSeededAreaStaysSeeded() = run {
         val p = pack(FakeSource { c -> CellFetch(listOf(cornerPlace(c))) })
         p.seedArea("a", GeoBox(17.30, 78.40, 17.31, 78.41))

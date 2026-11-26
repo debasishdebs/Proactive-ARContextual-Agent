@@ -149,6 +149,7 @@ class PlacePack(
             val old = dao.userPlaces().associateBy { it.id }
             dao.putPlaces(good.map { it.toEntity(old[it.id]?.lastUsedDay ?: 0) })
             eachChunk(old.keys.filter { k -> good.none { it.id == k } }) { dao.deletePlaces(it) }
+            dao.deleteOrphanRefs()
         }
         log("user places synced count=${good.size}")
     }
@@ -300,19 +301,48 @@ class PlacePack(
      * goes and every place that no remaining seeded area covers stops being seeded: those are ordinary fetched places from now on (evictable, removed by Clear fetched). Pins are a separate
      * flag and stay.
      */
-    suspend fun removeArea(blueZoneId: String) {
+    suspend fun removeArea(blueZoneId: String, withPlaces: Boolean = false) {
         while (true) { val running = seeds[blueZoneId]?.toList().orEmpty(); if (running.isEmpty()) break; running.forEach { it.cancel() }; running.forEach { it.join() } }
         fetchLock.withLock {
+            var gone = 0
             val left = db.withTransaction {
+                if (withPlaces) {
+                    // "area and its places": the seeded places of this area that no OTHER area covers and no pin owns, their reference captions and the cells only this area covered (those are fetched again on demand)
+                    val mine = dao.areas().firstOrNull { it.blueZoneId == blueZoneId }
+                    if (mine != null) {
+                        val others = dao.areas().filter { it.blueZoneId != blueZoneId }.map { it.box }
+                        val ids = dao.inBox(mine.south, mine.north, mine.west, mine.east).filter { it.seeded && !it.pinned && !UserPlace.isUserId(it.id) && others.none { b -> b.contains(it.lat, it.lon) } }.map { it.id }
+                        eachChunk(ids) { dao.deletePlaces(it) }
+                        gone = ids.size
+                        val cells = dao.cells().map { it.geohash5 }.filter { c -> val b = Geohash5.bounds(c); b != null && mine.box.intersects(b) && others.none { o -> o.intersects(b) } }
+                        eachChunk(cells) { dao.deleteCells(it) }
+                        cells.forEach { partialStreak.remove(it) }
+                    }
+                }
                 dao.deleteArea(blueZoneId)
                 dao.clearSeeded()
                 val rest = dao.areas()
                 for (a in rest) for (c in Geohash5.cellsCovering(a.box)) Geohash5.bounds(c)?.let { dao.markSeeded(it.south, it.north, it.west, it.east) }
+                dao.deleteOrphanRefs()
                 rest.size
             }
-            log("area removed remaining=$left")
+            log("area removed remaining=$left places=$gone")
         }
     }
+
+    /** C1: stores reference captions for places that exist (a caption for an unknown place is dropped). The caller has the user's explicit confirmation from seed time; nothing here runs on its own. Returns how many were stored. */
+    suspend fun putRefs(rows: List<PlaceRefEntity>): Int = fetchLock.withLock {
+        db.withTransaction {
+            val known = chunked(rows.map { it.placeId }.distinct()) { dao.byIds(it) }.map { it.id }.toSet()
+            val keep = rows.filter { it.placeId in known }
+            dao.putRefs(keep)
+            keep.size
+        }
+    }
+
+    suspend fun refsOf(ids: List<String>): List<PlaceRefEntity> = chunked(ids) { dao.refsOf(it) }
+    /** The ids that have a reference caption: the start-up sweep of `model_attribution` kind PLACE_REF keeps exactly these. */
+    suspend fun refPlaceIds(): List<String> = dao.refPlaceIds()
 
     suspend fun pin(id: String, pinned: Boolean): Boolean = dao.setPinned(id, pinned) > 0
 
@@ -330,6 +360,7 @@ class PlacePack(
     private suspend fun clearFetchedLocked(resetRecency: Boolean): Int {
         partialStreak.clear()
         val removed = dao.deleteFetched()
+        dao.deleteOrphanRefs()
         if (resetRecency) dao.resetRecency()
         val areas = dao.areas().map { it.box }
         val stale = dao.cells().map { it.geohash5 }.filter { c -> val b = Geohash5.bounds(c); b == null || areas.none { it.intersects(b) } }
@@ -410,6 +441,7 @@ class PlacePack(
             val drop = ArrayList<PlaceEntity>()
             for (p in batch) { if (total <= budgetBytes) break; drop += p; total -= p.bytes }
             eachChunk(drop.map { it.id }) { dao.deletePlaces(it) }
+            dao.deleteOrphanRefs()
             val cellsDropped = drop.map { Geohash5.encode(it.lat, it.lon) }.filter { it != keepCell }.distinct()
             eachChunk(cellsDropped) { dao.deleteCells(it) }
             cellsDropped.forEach { partialStreak.remove(it) } // an evicted cell is forgotten, with its backoff

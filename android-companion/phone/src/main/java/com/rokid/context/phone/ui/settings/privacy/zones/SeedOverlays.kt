@@ -40,8 +40,8 @@ interface SeedMapControl {
     suspend fun pins(): List<PinInfo>
     /** The existing Place Guide seed (same Offline only, Wi-Fi and data saver refusals). */
     suspend fun seed(box: GeoBox): Result<SeedOutcome>
-    /** Removes the seeded-area record; its places stay as ordinary fetched places. */
-    suspend fun remove(id: String)
+    /** Removes the seeded-area record. [withPlaces] false: its places stay as ordinary fetched places; true: its seeded places (not pins, not places another area covers) and their reference captions go too. */
+    suspend fun remove(id: String, withPlaces: Boolean = false)
     /** Cancels the area's background seed (the area stays, partial). */
     suspend fun cancelSeed(id: String) {}
     /** Map zones "Show cells" (read only): the stored status of each 5 km cell touching [box]; a missing cell is absent. The default is empty (nothing known). */
@@ -151,6 +151,8 @@ data class SeedMapUiState(
     /** A seed waiting for the user's yes (above [SeedEstimate.CONFIRM_CELLS]): the cell count to show. */
     val confirmCells: Long? = null,
     val pendingRemoveId: String? = null,
+    /** The choice in the remove dialog: "the area and its places" is PRESELECTED (owner round 6g Q4), every time it opens. */
+    val removeWithPlaces: Boolean = true,
     /** S3: the background seeds still to finish (area id and the line to show: "Seeding places 42%"). */
     val progress: List<SeedProgressRow> = emptyList(),
 )
@@ -227,15 +229,17 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
         }
     }
 
-    fun askRemove(id: String) = _state.update { it.copy(pendingRemoveId = id) }
+    fun askRemove(id: String) = _state.update { it.copy(pendingRemoveId = id, removeWithPlaces = true) }
+    fun setRemoveWithPlaces(on: Boolean) = _state.update { it.copy(removeWithPlaces = on) }
     fun cancelRemove() = _state.update { it.copy(pendingRemoveId = null) }
 
     fun confirmRemove() {
         val id = _state.value.pendingRemoveId ?: return
+        val withPlaces = _state.value.removeWithPlaces
         _state.update { it.copy(pendingRemoveId = null) }
         viewModelScope.launch(work) {
-            val ok = runCatching { control.remove(id) }.isSuccess
-            _state.update { it.copy(message = if (ok) "Seeded area removed. Its places stay as ordinary fetched places." else "Could not remove the seeded area.", messageIsError = !ok) }
+            val ok = runCatching { control.remove(id, withPlaces) }.isSuccess
+            _state.update { it.copy(message = if (ok) (if (withPlaces) "Seeded area and its places removed." else "Seeded area removed. Its places stay as ordinary fetched places.") else "Could not remove the seeded area.", messageIsError = !ok) }
             refresh()
         }
     }

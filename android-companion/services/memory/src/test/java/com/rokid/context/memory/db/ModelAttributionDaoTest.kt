@@ -31,6 +31,16 @@ class ModelAttributionDaoTest {
         dao.record(AttributionKind.ANSWER, "a1", null, 30); assertEquals(0, dao.count())
     }
 
+    @Test fun theStartupSweepKeepsOnlyPlaceRefAttributionWhosePlaceStillHasACaption() = runBlocking {
+        dao.record(AttributionKind.PLACE_REF, "wd:Q1", ModelAttribution("cap-a"), 1); dao.record(AttributionKind.PLACE_REF, "wd:Q2", ModelAttribution("cap-b"), 1)
+        dao.record(AttributionKind.MEMORY, "wd:Q2", ModelAttribution("mem"), 1) // another kind with the same id is not touched
+        assertEquals(1, dao.sweepPlaceRefs(listOf("wd:Q1")))
+        assertNotNull(dao.get(AttributionKind.PLACE_REF, "wd:Q1")); assertNull(dao.get(AttributionKind.PLACE_REF, "wd:Q2")); assertNotNull(dao.get(AttributionKind.MEMORY, "wd:Q2"))
+        dao.deleteGone() // the cross-database kind is not a net target of the in-database sweep
+        assertNotNull(dao.get(AttributionKind.PLACE_REF, "wd:Q1"))
+        assertEquals(1, dao.sweepPlaceRefs(emptyList())); assertEquals(0, dao.countOf(AttributionKind.PLACE_REF))
+    }
+
     @Test fun kindsAreSeparateKeysAndTheOfLookupsFilterByKind() = runBlocking {
         dao.record(AttributionKind.MEMORY, "x", ModelAttribution("m"), 1); dao.record(AttributionKind.ANSWER, "x", ModelAttribution("n"), 1)
         dao.record(AttributionKind.DERIVED, AttributionKind.derivedRef("MOMENT", "68f", "SUMMARY"), ModelAttribution("o"), 1)

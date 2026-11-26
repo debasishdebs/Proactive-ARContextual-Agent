@@ -11,6 +11,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -148,7 +149,7 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
         val seedState by seedVm.state.collectAsStateWithLifecycle()
         LaunchedEffect(seedVm) { seedVm.refresh() }
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
-        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed)
+        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces)
     }
     if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back), null, online, seedPanel, networkOnline); return }
     val mapVm = viewModel(key = "offline_map") { OfflineMapViewModel(offline.files, offline.store) }
@@ -241,7 +242,30 @@ class SeedPanel(
     val cancelRemove: () -> Unit,
     val dismiss: () -> Unit,
     val cancelSeed: (String) -> Unit = {},
+    val setRemoveWithPlaces: (Boolean) -> Unit = {},
 )
+
+/** The remove-area dialog (both map screens): "the area and its places" is preselected; the other choice keeps the places as ordinary fetched places. */
+@Composable
+internal fun SeedRemoveDialog(seed: SeedPanel) {
+    val both = seed.ui.removeWithPlaces
+    AlertDialog(
+        onDismissRequest = seed.cancelRemove, modifier = Modifier.testTag("seed_remove_dialog"),
+        title = { Text("Remove seeded area?") },
+        text = {
+            androidx.compose.foundation.layout.Column {
+                Row(Modifier.fillMaxWidth().clickable { seed.setRemoveWithPlaces(true) }.testTag("seed_remove_with_places"), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    androidx.compose.material3.RadioButton(both, { seed.setRemoveWithPlaces(true) }); Text("The area and its places (and their reference captions). Pinned places stay.")
+                }
+                Row(Modifier.fillMaxWidth().clickable { seed.setRemoveWithPlaces(false) }.testTag("seed_remove_area_only"), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    androidx.compose.material3.RadioButton(!both, { seed.setRemoveWithPlaces(false) }); Text("Only the area. Its places stay as ordinary fetched places and can be evicted by the pack budget.")
+                }
+            }
+        },
+        confirmButton = { TextButton(seed.confirmRemove, Modifier.testTag("seed_remove_confirm")) { Text("Remove") } },
+        dismissButton = { TextButton(seed.cancelRemove, Modifier.testTag("seed_remove_cancel")) { Text("Keep") } },
+    )
+}
 
 /** S3: one line per background seed still to finish ("Seeding places 42%") with its Cancel button. Never a name or a position. */
 @Composable
@@ -323,15 +347,7 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
             dismissButton = { TextButton(seed.confirmSeed, Modifier.testTag("seed_confirm_yes")) { Text("Seed it") } },
         )
     }
-    seed?.ui?.pendingRemoveId?.let {
-        AlertDialog(
-            onDismissRequest = seed.cancelRemove, modifier = Modifier.testTag("seed_remove_dialog"),
-            title = { Text("Remove seeded area?") },
-            text = { Text("The area is forgotten. Its places stay as ordinary fetched places and can be evicted by the pack budget.") },
-            confirmButton = { TextButton(seed.confirmRemove, Modifier.testTag("seed_remove_confirm")) { Text("Remove") } },
-            dismissButton = { TextButton(seed.cancelRemove, Modifier.testTag("seed_remove_cancel")) { Text("Keep") } },
-        )
-    }
+    seed?.ui?.pendingRemoveId?.let { SeedRemoveDialog(seed) }
     state.pendingDeleteId?.let { id ->
         val name = state.rows.firstOrNull { it.zone.id == id }?.zone?.name ?: "this zone"
         AlertDialog(

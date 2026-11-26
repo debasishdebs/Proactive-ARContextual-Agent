@@ -126,7 +126,7 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
         LaunchedEffect(seedState?.seeding) { if (seedState?.seeding == true) mapVm.cancelDraw() } // the sheet closes once the seed has really started
     }
-    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed) else null
+    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces) else null
     val view = remember { MapViewState() }
     val zoneCb = ZonesCallbacks.of(zonesVm, back)
     val offlinePanel = offline?.let { o ->
@@ -240,14 +240,7 @@ fun MapZonesScreen(
             dismissButton = { TextButton(seed.confirmSeed, Modifier.testTag("seed_confirm_yes")) { Text("Seed it") } },
         )
     }
-    seed?.ui?.pendingRemoveId?.let {
-        AlertDialog(
-            onDismissRequest = seed.cancelRemove, modifier = Modifier.testTag("seed_remove_dialog"),
-            title = { Text("Remove seeded area?") }, text = { Text("The area is forgotten. Its places stay as ordinary fetched places and can be evicted by the pack budget.") },
-            confirmButton = { TextButton(seed.confirmRemove, Modifier.testTag("seed_remove_confirm")) { Text("Remove") } },
-            dismissButton = { TextButton(seed.cancelRemove, Modifier.testTag("seed_remove_cancel")) { Text("Keep") } },
-        )
-    }
+    seed?.ui?.pendingRemoveId?.let { com.rokid.context.phone.ui.settings.privacy.zones.SeedRemoveDialog(seed) }
     zones.pendingDeleteId?.let { id ->
         val name = zones.rows.firstOrNull { it.zone.id == id }?.zone?.name ?: "this zone"
         AlertDialog(

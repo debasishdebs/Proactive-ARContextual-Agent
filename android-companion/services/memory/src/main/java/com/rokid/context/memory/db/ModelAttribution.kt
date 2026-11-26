@@ -12,7 +12,8 @@ import androidx.room.Transaction
  * experiments and the Developer dump). A side table like `moment_location` and `scene_centroid`: no foreign key, no trigger. One row per `(kind, refId)`:
  *  - [AttributionKind.MEMORY]: refId is the `memory.id` (a photo caption, a description, an extract fact, a cluster or Scene summary memory, a text summary);
  *  - [AttributionKind.DERIVED]: refId is `<objectKind>:<objectId>:<field>` of an `object_derived` row (a Moment or Scene SUMMARY or CAPTION);
- *  - [AttributionKind.ANSWER]: refId is the `ask.id` of an Ask answer.
+ *  - [AttributionKind.ANSWER]: refId is the `ask.id` of an Ask answer;
+ *  - [AttributionKind.PLACE_REF]: refId is the place id of a reference caption in `places.db` (C1; swept at start-up, see [ModelAttributionDao.sweepPlaceRefs]).
  * It is written in the SAME transaction as the item it describes, deleted with the item (every delete path, user Forget of the item and Delete all) and follows its expiry. [model] is the name the router
  * answered with ([com.rokid.context.ai.RoutedReply.model]); [modelVersion] only where the provider reports one (null today: none does); [promptRev] the prompt version of a role call (null for a fixed prompt).
  * It never holds text, a photo, a prompt, a coordinate or a place name: only names and a number.
@@ -31,6 +32,8 @@ object AttributionKind {
     const val MEMORY = "MEMORY"
     const val DERIVED = "DERIVED"
     const val ANSWER = "ANSWER"
+    /** C1: refId is the place id of a `place_ref` reference caption in `places.db` (another database: [ModelAttributionDao.sweepPlaceRefs] is the only cleanup, run at start-up and after a pack delete). */
+    const val PLACE_REF = "PLACE_REF"
     /** The refId of a derived field: `<objectKind>:<objectId>:<field>`. */
     fun derivedRef(objectKind: String, objectId: String, field: String) = "$objectKind:$objectId:$field"
 }
@@ -73,6 +76,15 @@ abstract class ModelAttributionDao {
             "OR (kind = 'ANSWER' AND refId NOT IN (SELECT id FROM ask WHERE redacted = 0))",
     )
     abstract suspend fun deleteGone(): Int
+
+    @Query("SELECT refId FROM model_attribution WHERE kind = 'PLACE_REF'") abstract suspend fun placeRefIds(): List<String>
+
+    /** C1 start-up sweep: removes the `PLACE_REF` rows whose place has no `place_ref` row in `places.db` ([liveRefIds]). Returns how many. */
+    @Transaction open suspend fun sweepPlaceRefs(liveRefIds: Collection<String>): Int {
+        val live = liveRefIds.toHashSet()
+        val dead = placeRefIds().filter { it !in live }
+        return deleteFor(AttributionKind.PLACE_REF, dead)
+    }
 
     private companion object { const val CHUNK = 500 }
 }

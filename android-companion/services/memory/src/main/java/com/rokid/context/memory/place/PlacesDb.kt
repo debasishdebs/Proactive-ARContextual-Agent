@@ -56,6 +56,22 @@ data class AreaEntity(
     val box: GeoBox get() = GeoBox(south, west, north, east)
 }
 
+/**
+ * C1 (design 2026-11-26-offline-maps): the reference caption of a pack place, written ONLY after the user confirmed reference captioning at seed time (nothing here is automatic). Text and credit only: the image is
+ * never stored ([imageUrl] is the public Wikimedia page of the picture, kept for the credit line). No coordinate (the place row has it), no name. [bytes] counts the stored text. The model that wrote [caption] is in
+ * `context.db` `model_attribution` kind `PLACE_REF`, refId = [placeId]. Deleted with the place on every path that deletes a place ([PlacesDao.deleteOrphanRefs]).
+ */
+@Entity(tableName = "place_ref")
+data class PlaceRefEntity(
+    @PrimaryKey val placeId: String,
+    val caption: String,
+    val imageUrl: String?,
+    val author: String?,
+    val licence: String?,
+    val capturedAt: Long,
+    val bytes: Int,
+)
+
 /** The delivery states of a history row (stored as text). Later states (SHOWN, SKIPPED_*) are reserved for a glasses report. */
 object CardDelivery {
     const val PENDING = "PENDING"
@@ -97,6 +113,15 @@ interface PlacesDao {
     @Query("DELETE FROM place WHERE seeded = 0 AND pinned = 0") suspend fun deleteFetched(): Int
     @Query("UPDATE place SET lastUsedDay = 0") suspend fun resetRecency(): Int
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putRefs(rows: List<PlaceRefEntity>)
+    @Query("SELECT * FROM place_ref WHERE placeId IN (:ids)") suspend fun refsOf(ids: List<String>): List<PlaceRefEntity>
+    @Query("SELECT placeId FROM place_ref") suspend fun refPlaceIds(): List<String>
+    @Query("SELECT COUNT(*) FROM place_ref") suspend fun refCount(): Int
+    @Query("SELECT COALESCE(SUM(bytes), 0) FROM place_ref") suspend fun refBytes(): Long
+    /** Removes the reference captions whose place is gone. Run in the same transaction as every place delete (evict, clear fetched, area removal, pin removal). */
+    @Query("DELETE FROM place_ref WHERE placeId NOT IN (SELECT id FROM place)") suspend fun deleteOrphanRefs(): Int
+    @Query("DELETE FROM place_ref WHERE placeId IN (:ids)") suspend fun deleteRefs(ids: List<String>): Int
+
     @Query("SELECT * FROM cell WHERE geohash5 = :cell") suspend fun cell(cell: String): CellEntity?
     @Query("SELECT * FROM cell") suspend fun cells(): List<CellEntity>
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putCell(row: CellEntity)
@@ -114,7 +139,7 @@ interface PlacesDao {
  * The place pack's own database (spec 2026-11-16 §B3): `places.db`, Room v3 (v1 -> v2 added `place_card_log`, [MIGRATION_PLACES_1_2]; v2 -> v3 drops it again, [MIGRATION_PLACES_2_3]: the card history lives in `context.db` v18), separate from the main `context.db`. Encrypted with SQLCipher under the SAME key as the
  * main database ([DbKeyStore]). It holds public place text only, never a position or a visit; it is excluded from backup and transfer (BackupRulesTest) and is never part of a settings export.
  */
-@Database(entities = [PlaceEntity::class, CellEntity::class, AreaEntity::class], version = 3, exportSchema = true)
+@Database(entities = [PlaceEntity::class, CellEntity::class, AreaEntity::class, PlaceRefEntity::class], version = 3, exportSchema = true)
 abstract class PlacesDatabase : RoomDatabase() {
     abstract fun dao(): PlacesDao
 
@@ -131,13 +156,14 @@ abstract class PlacesDatabase : RoomDatabase() {
         }
 
         /**
-         * v2 -> v3 (v18 WP3, WP11b): the card history moved to context.db, so the table (and its two indexes) go; and `area` gains the nullable `name` (the owner's name for a seed area, no default, every existing area gets NULL).
+         * v2 -> v3 (v18 WP3, WP11b): the card history moved to context.db, so the table (and its two indexes) go; and `area` gains the nullable `name` (the owner's name for a seed area, no default, every existing area gets NULL); and the table `place_ref` is created (C1: reference captions, empty on every phone). v3 is unshipped, so both go into this one migration.
          * The pack rows, cells and areas are otherwise not touched; no destructive fallback exists. A v1 file chains 1 -> 2 -> 3. The SQL equals the exported 3.json. places.db is SQLCipher: this runs encrypted only on a device or emulator.
          */
         val MIGRATION_PLACES_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("DROP TABLE IF EXISTS `place_card_log`")
                 db.execSQL("ALTER TABLE `area` ADD COLUMN `name` TEXT")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `place_ref` (`placeId` TEXT NOT NULL, `caption` TEXT NOT NULL, `imageUrl` TEXT, `author` TEXT, `licence` TEXT, `capturedAt` INTEGER NOT NULL, `bytes` INTEGER NOT NULL, PRIMARY KEY(`placeId`))")
             }
         }
 

@@ -101,6 +101,8 @@ object PlaceGraph {
                 val store = pins(context)
                 if (!store.corrupt) p.replaceUserPlaces(store.pins()) // an unreadable list never empties the pack's copies
                 pinsSynced = true
+                // C1: the model attribution of reference captions lives in context.db, the captions in places.db: once per process, drop the attribution rows whose caption is gone (best effort)
+                runCatching { com.rokid.context.memory.place.PlaceRefSweep.run(com.rokid.context.memory.MemoryGraph.get(context).db, p) }
             }
         }
         return p

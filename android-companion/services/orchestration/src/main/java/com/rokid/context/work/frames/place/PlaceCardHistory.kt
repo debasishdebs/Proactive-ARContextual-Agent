@@ -130,6 +130,9 @@ class PlaceCardHistory(
         links.insertIfAbsent(PlaceLinkEntity(e.placeId, moment, Math.floorDiv(at, 1000L) * 1000L, frame, "CARD", clock()))
     }
 
+    /** Place object S2: the Moment ids a pin is linked to by cards (for the delete confirmation's count). */
+    suspend fun linkedMomentIds(pinId: String): List<String> = links.momentIdsOf(pinId)
+
     /**
      * The rows of removed pins and the cluster rows that list them: ONE transaction, run by [PlaceGraph.savePins] BEFORE the pin store is written. Throws when it fails (the caller then refuses the pin removal).
      */

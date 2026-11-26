@@ -110,7 +110,7 @@ class AndroidPlaceGuideControl(
     override suspend fun setMoment(pinId: String, momentId: String?): Boolean = pinning.setMoment(pinId, momentId)
     /** A link whose Moment was forgotten is cleared whenever the screen reads the pins (the Forget listener does it at the time; this also covers a crash in between). */
     override suspend fun placeMomentCount(pinId: String): Int {
-        val linked = com.rokid.context.memory.MemoryGraph.get(app).db.placeLinkDao().momentIdsOf(pinId)
+        val linked = PlaceGraph.history(app).linkedMomentIds(pinId)
         val ref = pinning.pins().firstOrNull { it.id == pinId }?.momentId
         return (linked + listOfNotNull(ref)).distinct().size
     }
@@ -165,7 +165,7 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
     override suspend fun cancelSeed(id: String) { seedWork.cancel(id) }
     override suspend fun pins() = guide.pinning?.pins().orEmpty().map { com.rokid.context.phone.ui.settings.privacy.zones.PinInfo(it.lat, it.lon, it.radiusM) }
     override suspend fun seed(box: GeoBox) = guide.seed(box)
-    override suspend fun remove(id: String) { seedWork.cancel(id); PlaceGraph.readyPack(app).removeArea(id) }
+    override suspend fun remove(id: String, withPlaces: Boolean) { seedWork.cancel(id); PlaceGraph.readyPack(app).removeArea(id, withPlaces) }
     override suspend fun cellStatuses(box: GeoBox) = PlaceGraph.readyPack(app).cellStatuses(box)
 }
 
