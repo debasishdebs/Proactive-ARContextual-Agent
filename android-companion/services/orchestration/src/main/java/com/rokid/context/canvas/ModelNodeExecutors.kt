@@ -51,9 +51,10 @@ class ModelClassifyExecutor(override val type: String) : NodeExecutor {
         val threshold = ClassifySpec.threshold(node.params)
         val maxMs = ((node.params["maxLatencyMs"] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull ?: 30_000).coerceIn(1_000, 120_000).toLong()
         val skip = str(node, "onUnavailable") == "skip"
+        val pref = NodeBackendPref.parse(str(node, "backend"))
 
         // layer two of the privacy intersection (layer one is the estimate); evaluated per run, before any request is built
-        val refusal = try { ModelNodeBackend.check(NodeBackendPref.parse(str(node, "backend")), ctx.modelPrivacy(), ctx.boundBackend(role)) } catch (c: CancellationException) { throw c } catch (e: Exception) { ModelNodeBackend.NOT_BOUND }
+        val refusal = try { ModelNodeBackend.check(pref, ctx.modelPrivacy(), ctx.boundBackend(role)) } catch (c: CancellationException) { throw c } catch (e: Exception) { ModelNodeBackend.NOT_BOUND }
         if (refusal != null) return items.map { if (skip) skipped(it, refusal) else NodeResult(it.frameId, null, error = refusal) }
 
         val schema = ClassifySpec.schema(labels)
@@ -75,6 +76,8 @@ class ModelClassifyExecutor(override val type: String) : NodeExecutor {
             try {
                 val reply = withTimeoutOrNull(maxMs) {
                     ctx.model.complete(role, ctx.callClass) { e ->
+                        // review2 #1: the node's backend restriction (with Offline only) holds for EVERY provider attempt, fallbacks included; a refused attempt builds no request and sends nothing
+                        endpointRefusal(pref, ctx, e)?.let { throw NodeBackendRefusedException(it) }
                         val plan = StructuredOutput.plan(e, schema, "classify")
                         ModelRequest(prompt + plan.promptSuffix, if (images) listOf(item.photo.image.copy(ref = item.photo.frameId)) else emptyList(), format = plan.format,
                             requireImages = images, sources = sourcesOf(item), liveness = ctx.liveness, seed = ctx.seed, temperature = ctx.requestTemperature)
@@ -95,10 +98,18 @@ class ModelClassifyExecutor(override val type: String) : NodeExecutor {
         }
     }
 
+    private fun endpointRefusal(pref: NodeBackendPref, ctx: RunContext, e: com.rokid.context.ai.Endpoint): String? = try {
+        val backend = if (e.kind == com.rokid.context.ai.EndpointKind.LLAMACPP_LOCAL) com.rokid.context.core.net.Backend.OFFLINE else com.rokid.context.core.net.Backend.ONLINE
+        ModelNodeBackend.check(pref, ctx.modelPrivacy(), backend)
+    } catch (c: CancellationException) { throw c } catch (x: Exception) { ModelNodeBackend.NOT_BOUND }
+
     /** `onUnavailable = skip`: the item goes to the `none` branch with a fixed reason; no call was made. */
     private fun skipped(item: CanvasItem, reason: String) =
         NodeResult(item.frameId, CanvasValue.Json(buildJsonObject { put("label", ClassifySpec.NONE); put("confidence", 0.0); put("skipped", reason) }), branch = ClassifySpec.NONE)
 }
+
+/** An attempt (primary or fallback) the node's own backend choice or the privacy mode refuses; the message is one of the fixed [ModelNodeBackend] tokens. */
+internal class NodeBackendRefusedException(token: String) : Exception(token)
 
 /** `rule.table`: deterministic, no model, no network. The item passes through unchanged; the branch is the first matching row's, else `other`. */
 object RuleTableExecutor : NodeExecutor {

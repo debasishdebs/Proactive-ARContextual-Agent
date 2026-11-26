@@ -110,6 +110,25 @@ class ModelNodeExecutorsTest {
         assertEquals("offline_only_no_local_model", r2.single().error); assertTrue(requests.isEmpty())
     }
 
+    /** Review2 #1: a node pinned to `offline` must never reach a remote provider through the binding's FALLBACK either. */
+    @Test fun offlineNodeNeverReachesARemoteFallback() = runBlocking<Unit> {
+        val remoteCalls = mutableListOf<String>()
+        val ai = AiGraph(MemoryGraph.get(app), com.rokid.context.ai.InMemoryKeyVault(), com.rokid.context.ai.InMemorySeedState(), com.rokid.context.ai.ProviderBuilder { e, _, _ ->
+            object : com.rokid.context.model.ModelProvider {
+                override suspend fun generate(prompt: String): String =
+                    if (e.kind == com.rokid.context.ai.EndpointKind.LLAMACPP_LOCAL) error("local model failed") else { remoteCalls += prompt; """{"label":"indoor","confidence":0.9}""" }
+            }
+        }).also { AiGraph.resetForTests(it) }
+        ai.endpoints.save(Endpoint("loc", "loc", com.rokid.context.ai.EndpointKind.LLAMACPP_LOCAL, "/m.gguf", null, listOf("local"), setOf(com.rokid.context.ai.Capability.CHAT), 1), apiKey = null).getOrThrow()
+        ai.endpoints.save(Endpoint("az", "Azure", com.rokid.context.ai.EndpointKind.AZURE_OPENAI, "https://az.example", "2024-10-21", listOf("gpt"), setOf(com.rokid.context.ai.Capability.CHAT), 1), apiKey = "k").getOrThrow()
+        ai.bindings.set(com.rokid.context.ai.RoleBinding(Role.SUMMARIZE, "loc", "local", fallbackEndpointId = "az", fallbackModel = "gpt")).getOrThrow()
+        val c = RunContext("run1", ai.runner, ai.router, ai.prompts, ai.persona, { r -> ai.bindings.get(r) }, callClass = CallClass.EXPERIMENT, liveness = com.rokid.context.orchestration.AllLive,
+            modelPrivacy = { ModelPrivacy.AUTO }, boundBackend = { Backend.OFFLINE })
+        val r = exec(ModelNodeTypes.CLASSIFY).run(cls({ mapOf("backend" to JsonPrimitive("offline")) }), listOf(item("f1")), c).single()
+        assertTrue("no remote provider call may be made: $remoteCalls", remoteCalls.isEmpty())
+        assertTrue(r.error != null)
+    }
+
     @Test fun skipSendsItemToNoneWithoutACall() = runBlocking<Unit> {
         privacy = ModelPrivacy.OFFLINE_ONLY
         val r = exec(ModelNodeTypes.CLASSIFY).run(cls({ mapOf("onUnavailable" to JsonPrimitive("skip")) }), listOf(item("f1")), ctx { error("no") }).single()
