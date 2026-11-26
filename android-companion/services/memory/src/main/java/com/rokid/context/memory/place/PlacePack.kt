@@ -311,7 +311,11 @@ class PlacePack(
                     val mine = dao.areas().firstOrNull { it.blueZoneId == blueZoneId }
                     if (mine != null) {
                         val others = dao.areas().filter { it.blueZoneId != blueZoneId }.map { it.box }
-                        val ids = dao.inBox(mine.south, mine.north, mine.west, mine.east).filter { it.seeded && !it.pinned && !UserPlace.isUserId(it.id) && others.none { b -> b.contains(it.lat, it.lon) } }.map { it.id }
+                        // Seeding owns WHOLE cells (markSeeded over each covering cell), so ownership is tested on cell bounds, not on the drawn rectangle: a place in a boundary cell outside the rectangle goes with the area, and a place in a cell another area's seeding covers stays.
+                        val mineCells = Geohash5.cellsCovering(mine.box).mapNotNull { Geohash5.bounds(it) }
+                        val otherCells = others.flatMap { o -> Geohash5.cellsCovering(o).mapNotNull { Geohash5.bounds(it) } }
+                        val ids = if (mineCells.isEmpty()) emptyList() else dao.inBox(mineCells.minOf { it.south }, mineCells.maxOf { it.north }, mineCells.minOf { it.west }, mineCells.maxOf { it.east })
+                            .filter { it.seeded && !it.pinned && !UserPlace.isUserId(it.id) && mineCells.any { b -> b.contains(it.lat, it.lon) } && otherCells.none { b -> b.contains(it.lat, it.lon) } }.map { it.id }
                         eachChunk(ids) { dao.deletePlaces(it) }
                         gone = ids.size
                         val cells = dao.cells().map { it.geohash5 }.filter { c -> val b = Geohash5.bounds(c); b != null && mine.box.intersects(b) && others.none { o -> o.intersects(b) } }

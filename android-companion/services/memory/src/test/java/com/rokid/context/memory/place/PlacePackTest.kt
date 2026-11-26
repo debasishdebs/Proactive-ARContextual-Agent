@@ -579,6 +579,17 @@ class PlacePackTest {
         assertTrue(db.dao().cells().none { Geohash5.bounds(it.geohash5)!!.intersects(boxA) }) // the removed area's cells are forgotten: fetched again on demand
     }
 
+    @Test fun removingAnAreaWithItsPlacesAlsoDeletesSeededPlacesOfItsBoundaryCellsOutsideTheDrawnRectangle() = run {
+        val box = GeoBox(17.300, 78.400, 17.301, 78.401) // tiny: its cell is much larger
+        val cell = Geohash5.cellsCovering(box).single(); val b = Geohash5.bounds(cell)!!
+        val p = pack(FakeSource { c -> CellFetch(listOf(fp("$c:far", lat = b.north - 0.001, lon = b.east - 0.001))) })
+        p.seedArea("a", box)
+        val far = db.dao().inBox(-90.0, 90.0, -180.0, 180.0).single()
+        assertTrue(!box.contains(far.lat, far.lon) && far.seeded)
+        p.removeArea("a", withPlaces = true)
+        assertEquals(0, db.dao().placeCount())
+    }
+
     @Test fun anAreaWithItsPlacesKeepsPlacesAnotherAreaStillCovers() = run {
         val p = pack(FakeSource { c -> CellFetch(listOf(cornerPlace(c))) })
         p.seedArea("a", GeoBox(17.30, 78.40, 17.31, 78.41)); p.seedArea("a2", GeoBox(17.305, 78.405, 17.315, 78.415))
