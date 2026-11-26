@@ -49,6 +49,8 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
         admit()?.let { return stopped(it) }
         try { setForeground(info(store.get(key).percent)) } catch (e: Exception) { PcLog.i(TAG, "seed work: no foreground (${e.javaClass.simpleName})") } // a refused foreground start must not fail the seed
         store.setWaiting(key, false)
+        com.rokid.context.memory.place.PlaceNetGuard.workerState = "RUNNING" // read by the seed summary lines
+        PcLog.i(TAG, "seed work run state=RUNNING attempt=${runAttemptCount + 1}")
         return try {
             // One area at a time (Wikipedia's rate limit): a seed that starts while another runs waits here, first come first served, and reads "queued" meanwhile.
             store.setQueued(key, true)
@@ -66,7 +68,7 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
             runCatching { pack.stallSeeding(area.blueZoneId, graceMs = 0L) }
             store.setQueued(key, false); store.setWaiting(key, false)
             Result.failure()
-        } finally { store.setQueued(key, false) }
+        } finally { store.setQueued(key, false); com.rokid.context.memory.place.PlaceNetGuard.workerState = "NONE" }
     }
 
     private suspend fun runSeed(pack: PlacePack, id: String, box: com.rokid.context.memory.place.GeoBox, admit: () -> String?): Result {
@@ -89,11 +91,12 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
         SeedGate.OFFLINE_ONLY -> { PcLog.i(TAG, "seed work refused: offline only"); Result.failure() }
         REMOVED -> { store.clear(key); Result.success() }
         else -> if (runAttemptCount >= MAX_WORKER_ATTEMPTS) {
+            com.rokid.context.memory.place.PlaceNetGuard.workerState = "NONE"
             // give up after the cap: the area ends partial (never "seeding" forever) and "Retry failed cells" / Seed again restarts it
             PcLog.i(TAG, "seed work gave up after the retry cap")
             store.setWaiting(key, false)
             Result.failure()
-        } else { store.setWaiting(key, true); PcLog.i(TAG, "seed work waits"); Result.retry() }
+        } else { store.setWaiting(key, true); com.rokid.context.memory.place.PlaceNetGuard.workerState = "WAITING_NETWORK"; PcLog.i(TAG, "seed work waits state=WAITING_NETWORK"); Result.retry() }
     }
 
     private fun info(pct: Int): ForegroundInfo {

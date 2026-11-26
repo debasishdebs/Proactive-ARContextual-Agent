@@ -131,10 +131,21 @@ object PlaceGraph {
     fun pack(context: Context): PlacePack = pack ?: synchronized(this) { pack ?: build(context.applicationContext).also { pack = it } }
 
     private fun build(app: Context): PlacePack {
-        val http = UrlConnectionPlaceHttp(gate = com.rokid.context.ai.datasaver.DataSaverGraph.get(app), privacy = { com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() }) // cell fetches count in the mobile-data ledger (class SMALL)
+        val guard = com.rokid.context.memory.place.PlaceNetGuard(log = { PcLog.i(TAG, it) }, env = { netEnv(app) }) // one limiter + counters for the HTTP client and the pack
+        val http = UrlConnectionPlaceHttp(guard = guard, gate = com.rokid.context.ai.datasaver.DataSaverGraph.get(app), privacy = { com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() }) // cell fetches count in the mobile-data ledger (class SMALL)
         val source = PlaceCellSource(WikipediaHttpSource(http), WikidataHttpSource(http), OverpassMirrorSource.default(http) { PcLog.i(TAG, it) }, log = { PcLog.i(TAG, it) }) // counts and class names only
-        return PlacePack(PlacesDatabase.build(app), source, budgetBytes = PlaceGuideSettings.of(app).budgetMb * 1024L * 1024L, log = { PcLog.i(TAG, it) })
+        return PlacePack(PlacesDatabase.build(app), source, budgetBytes = PlaceGuideSettings.of(app).budgetMb * 1024L * 1024L, log = { PcLog.i(TAG, it) }, net = guard)
     }
+
+    /** The seed summary's tail: network type token (no SSID), battery saver, data saver, the worker's state token. Numbers and fixed tokens only. */
+    private fun netEnv(app: Context): String = try {
+        val cm = app.getSystemService(android.net.ConnectivityManager::class.java)
+        val caps = cm?.getNetworkCapabilities(cm.activeNetwork)
+        val net = when { caps == null -> "none"; caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "wifi"; caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "mobile"; else -> "other" }
+        val saver = if (app.getSystemService(android.os.PowerManager::class.java)?.isPowerSaveMode == true) 1 else 0
+        val dsaver = if (cm?.restrictBackgroundStatus == android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED) 1 else 0
+        " net=$net saver=$saver dsaver=$dsaver state=${com.rokid.context.memory.place.PlaceNetGuard.workerState}"
+    } catch (e: Exception) { " env=unreadable" }
 
     /**
      * Delete all: clears the fetched places and the recency; seeded areas, what they seeded, pinned places and the pause zones stay. Nothing to do (and nothing created) when the pack was

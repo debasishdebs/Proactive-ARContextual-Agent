@@ -697,4 +697,42 @@ class PlacePackTest {
         assertTrue(a.await().exceptionOrNull() is SeedStopped); assertTrue(b.await().exceptionOrNull() is SeedStopped)
         assertTrue(db.dao().areas().isEmpty()) // neither seed's last write brought the area back
     }
+
+    // Seed diagnostics + a GLOBAL pause: every request after a 429 waits (any cell), a cell ends FAILED after MAX_ATTEMPTS tries, and seeding again retries exactly the failed cells.
+    @Test fun a429PausesEveryCellAndTheCellsEndFailedAfterTheCapThenRetryWorks() = run {
+        val sleeps = mutableListOf<Long>()
+        val guard = PlaceNetGuard(clock = { t }, sleep = { t += it; sleeps += it }, log = { logs += it })
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        val cells = Geohash5.cellsCovering(box).take(2); require(cells.size == 2)
+        var limited = true
+        val asked = mutableListOf<String>()
+        val src = CellSource { c ->
+            guard.await() // what the HTTP layer does before every request
+            asked += c
+            if (limited) { guard.failed("wikidata", 429, "http", 3, 10, 1); throw IOException("HTTP 429") }
+            CellFetch(listOf(fp("$c:p", lat = Geohash5.bounds(c)!!.south + 0.01, lon = Geohash5.bounds(c)!!.west + 0.01)))
+        }
+        val pk = PlacePack(db, src, PlacePack.DEFAULT_BUDGET_BYTES, { t }, { logs += it }, { pauses += it }, guard)
+        val bigBox = GeoBox(Geohash5.bounds(cells[0])!!.south, Geohash5.bounds(cells[0])!!.west, Geohash5.bounds(cells[1])!!.north, Geohash5.bounds(cells[1])!!.east)
+        val r = pk.seedArea("g", bigBox)
+        val total = asked.size
+        assertEquals(r.cells * PlacePack.MAX_ATTEMPTS, total) // 5 tries per cell, the cap holds
+        assertEquals(r.cells, r.failed)
+        assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
+        assertEquals((total - 1) * 3_000L, sleeps.sum()) // 3 s Retry-After between EVERY pair of requests, across cells, not per cell
+        assertTrue(logs.any { it == "seed final cells=${r.cells} failed=${r.cells} retries=${PlacePack.MAX_ATTEMPTS - 1} durationMs=${sleeps.sum()} reqs=$total s2xx=0 s4xx=0 s429=$total s5xx=0 snet=0 pauses=$total" })
+        assertTrue(logs.any { it.startsWith("cell fetch failed cls=IOException seeded=true attempt=5") })
+        // "Retry failed cells" = seeding the area again: the failed cells are fetched and the area ends done
+        limited = false; asked.clear()
+        val r2 = pk.seedArea("g", bigBox)
+        assertEquals(0, r2.failed); assertEquals(AREA_DONE, db.dao().areas().single().status)
+    }
+
+    @Test fun theSummaryLineComesEvery25CellsWithCountsAndTheEnvTail() {
+        val g = PlaceNetGuard(clock = { t }, log = { logs += it }, env = { " net=wifi saver=0 dsaver=0 state=RUNNING" })
+        g.ok("wikidata", 100); g.failed("overpass", 503, "http", null, 300, 2)
+        g.tick(24, 1, 30); assertTrue(logs.none { it.startsWith("seed progress") })
+        g.tick(25, 1, 30)
+        assertTrue(logs.any { it.startsWith("seed progress cells=25 failed=1 total=30 s2xx=1 s4xx=0 s429=0 s5xx=1 snet=0 rpm=") && it.endsWith(" net=wifi saver=0 dsaver=0 state=RUNNING") })
+    }
 }

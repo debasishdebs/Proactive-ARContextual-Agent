@@ -98,6 +98,8 @@ class PlacePack(
     private val log: (String) -> Unit = {},
     /** The wait before the seed's retry pass (the public servers answer 429 when asked too fast); tests pass a no-op. */
     private val pause: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
+    /** The process-wide request limiter and counters (the HTTP layer shares the same instance in production); this pack only reads it for the seed's summary lines. */
+    private val net: PlaceNetGuard = PlaceNetGuard(log = log),
 ) {
     private val dao = db.dao()
 
@@ -271,6 +273,7 @@ class PlacePack(
         writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_SEEDING))
         var fetched = 0; var skipped = 0; var partial = 0; var done = 0
         val failedCells = ArrayList<String>()
+        net.reset()
         suspend fun seedOne(cell: String): CellOutcome {
             seedAdmitCheck() // before the cell's lock; each request asks again in the HTTP layer
             return fetchLock.withLock {
@@ -280,7 +283,8 @@ class PlacePack(
             }
         }
         // how long a fetched cell took (fetch only, no retry wait): a duration alone, never which cell; the caller keeps sums and counts
-        suspend fun timed(cell: String): CellOutcome { val t0 = now(); val o = seedOne(cell); if (o == CellOutcome.FETCHED || o == CellOutcome.PARTIAL) onCellMs((now() - t0).coerceAtLeast(0)); return o }
+        var attemptNo = 1
+        suspend fun timed(cell: String): CellOutcome { val t0 = now(); val o = withContext(SeedAttempt(attemptNo)) { seedOne(cell) }; if (o == CellOutcome.FETCHED || o == CellOutcome.PARTIAL) onCellMs((now() - t0).coerceAtLeast(0)); return o }
         fun count(outcome: CellOutcome): Boolean = when (outcome) {
             CellOutcome.FETCHED -> { fetched++; true }
             CellOutcome.PARTIAL -> { fetched++; partial++; true }
@@ -292,6 +296,7 @@ class PlacePack(
             if (outcome == CellOutcome.FRESH) { skipped++; dao.markSeeded(box.south, box.north, box.west, box.east) }
             else if (!count(outcome)) failedCells += cell
             onProgress(++done, cells.size)
+            net.tick(done, failedCells.size, cells.size)
         }
         // Failed cells (network blip, rate limit 429, server 5xx) are tried again after the others, with a growing wait, up to MAX_ATTEMPTS tries per cell in all; then they are given up on (the area
         // ends PARTIAL and the owner can "Retry failed cells"). A lost network is not a cell failure: the admission stops the seed and the worker waits for a network.
@@ -300,13 +305,16 @@ class PlacePack(
         var round = 0
         while (remaining.isNotEmpty() && round < MAX_ATTEMPTS - 1) {
             round++
+            attemptNo = round + 1
             pause(retryBackoffMs(round))
             val still = ArrayList<String>()
-            for (cell in remaining) if (!count(timed(cell))) still += cell
+            var n = 0
+            for (cell in remaining) { if (!count(timed(cell))) still += cell; n++; net.tick(n, still.size, remaining.size) }
             log("seed retry round=$round cells=${remaining.size} recovered=${remaining.size - still.size}")
             remaining = still
         }
         val failed = remaining.size
+        net.finish(cells.size, failed, round)
         writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), if (failed == 0 && partial == 0) AREA_DONE else AREA_PARTIAL))
         val n = dao.placeCount()
         log("seed done cells=${cells.size} ok=${fetched - partial} partial=$partial skipped=$skipped failed=$failed fetched=$fetched places=$n")
@@ -410,7 +418,7 @@ class PlacePack(
             log("cell fetch refused offline_only seeded=$seeded") // not a failure: nothing was sent, nothing is backed off
             return CellOutcome.OFFLINE
         } catch (e: Exception) {
-            log("cell fetch failed cls=${e.javaClass.simpleName} seeded=$seeded ms=${now() - fetchStart}")
+            log("cell fetch failed cls=${e.javaClass.simpleName} seeded=$seeded attempt=${currentCoroutineContext()[SeedAttempt]?.n ?: 1} ms=${now() - fetchStart}")
             backOffStoredPartial(cell, epoch)
             return CellOutcome.FAILED
         }

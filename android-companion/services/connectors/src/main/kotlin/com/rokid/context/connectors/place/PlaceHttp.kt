@@ -9,14 +9,16 @@ import kotlinx.coroutines.withContext
 import com.rokid.context.core.net.DataGate
 import com.rokid.context.core.net.DataKind
 import com.rokid.context.core.net.ModelPrivacy
+import com.rokid.context.memory.place.PlaceNetGuard
 import com.rokid.context.memory.place.PlaceOfflineOnly
+import com.rokid.context.memory.place.SeedAttempt
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 
 /** A non-2xx answer. The body is never kept (it may echo the request); only the code. */
-class PlaceHttpException(val code: Int) : IOException("HTTP $code")
+class PlaceHttpException(val code: Int, /** The numeric Retry-After in seconds, when the server sent one (an HTTP-date is ignored). */ val retryAfterS: Int? = null) : IOException("HTTP $code")
 
 /** The one network seam of the place fetchers: tests swap it for recorded fixtures. Public data only, GET or a form POST; never a key, never a cookie. */
 interface PlaceHttp {
@@ -60,6 +62,8 @@ class UrlConnectionPlaceHttp(
     private val privacy: () -> ModelPrivacy = { ModelPrivacy.AUTO },
     /** Where the blocking connection work runs (tests pass a dispatcher they control to flip the mode while the request is queued). */
     private val io: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
+    /** The shared request limiter and diagnostics: after a 429/503 every request waits (see [PlaceNetGuard]). Production passes the process-wide one; the default is private to this client. */
+    private val guard: PlaceNetGuard = PlaceNetGuard(),
 ) : PlaceHttp {
     private val lock = Mutex()
     private val lastByHost = HashMap<String, Long>()
@@ -73,10 +77,44 @@ class UrlConnectionPlaceHttp(
         if (m != ModelPrivacy.AUTO) throw PlaceOfflineOnly()
     }
 
-    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class) // invokeOnCompletion(onCancelling = true): the only hook that runs when cancellation STARTS, while the blocking read is still stuck
+    /** The service token of a request, from the host and the action only (never logged with the URL). */
+    private fun serviceOf(u: URL): String = when {
+        u.host.contains("overpass") -> "overpass"
+        u.host.contains("wikidata") -> "wikidata"
+        u.query?.contains("list=geosearch") == true -> "wiki_geosearch"
+        else -> "wiki_extract"
+    }
+
+    private fun failClass(e: Exception): String = when (e) {
+        is java.net.SocketTimeoutException -> "timeout"
+        is java.net.UnknownHostException -> "dns"
+        is javax.net.ssl.SSLException -> "tls"
+        else -> "io"
+    }
+
+    /** Waits for the global pause, sends, and records the outcome (tokens and numbers only) in the shared guard. */
     private suspend fun send(url: String, body: String?): String {
         val u = URL(url)
         require(u.protocol == "https") { "place fetch is https only" }
+        val svc = serviceOf(u)
+        guard.await() // a 429/503 anywhere pauses EVERY request, whichever cell or service asks
+        val t0 = clock()
+        try {
+            val r = sendNow(u, url, body)
+            guard.ok(svc, clock() - t0)
+            return r
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (e: PlaceOfflineOnly) { throw e
+        } catch (e: com.rokid.context.memory.place.ZoneFenced) { throw e
+        } catch (e: PlaceHttpException) {
+            guard.failed(svc, e.code, "http", e.retryAfterS, clock() - t0, kotlin.coroutines.coroutineContext[SeedAttempt]?.n ?: 1); throw e
+        } catch (e: IOException) {
+            guard.failed(svc, null, failClass(e), null, clock() - t0, kotlin.coroutines.coroutineContext[SeedAttempt]?.n ?: 1); throw e
+        }
+    }
+
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class) // invokeOnCompletion(onCancelling = true): the only hook that runs when cancellation STARTS, while the blocking read is still stuck
+    private suspend fun sendNow(u: URL, url: String, body: String?): String {
         privacyGate()
         val ticket = currentZoneTicket()
         ticket?.check()
@@ -114,7 +152,7 @@ class UrlConnectionPlaceHttp(
                     c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
                 }
                 val code = c.responseCode
-                if (code !in 200..299) throw PlaceHttpException(code)
+                if (code !in 200..299) throw PlaceHttpException(code, c.getHeaderField("Retry-After")?.trim()?.toIntOrNull()?.takeIf { it >= 0 })
                 val wire = CountingInputStream(c.inputStream, received)
                 val raw = if (c.contentEncoding.equals("gzip", true)) java.util.zip.GZIPInputStream(wire) else wire
                 raw.use { ins ->
