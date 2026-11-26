@@ -247,6 +247,14 @@ class DumpRoutesTest {
         assertEquals(setOf("id", "atMs", "object_type"), one.keys)
     }
 
+    @Test fun itemsPagingWalksMarksSharingOneTimestampWithBatchSizeOne() {
+        src.markList = (1..3).map { n -> DumpItem("5000:t$n", buildJsonObject { put("id", "t$n"); put("atMs", 5000L) }) }
+        val seen = ArrayList<String>(); var after: String? = null
+        for (n in 0 until 10) { val q = mutableMapOf("batch_size" to "1", "object_type" to "mark"); after?.let { q["after"] = it }
+            val j = json(get("/api/dump/items", q)); seen += j["items"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }; after = (j["next"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it !is JsonNull }?.content; if (after == null) break }
+        assertEquals(listOf("t1", "t2", "t3"), seen)
+    }
+
     @Test fun itemsBadObjectTypeCursorOrRangeIs400() {
         listOf(mapOf("object_type" to "frame"), mapOf("object_type" to ""), mapOf("object_type" to "mark,mark"), mapOf("object_type" to "mark,"), mapOf("object_type" to "mark", "object_type[]" to "pin"),
             mapOf("after" to "nonsense"), mapOf("after" to "x:moment:m1"), mapOf("after" to "5:vector:m1"), mapOf("from" to "2000", "to" to "1000"), mapOf("limit" to "0"))

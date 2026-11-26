@@ -144,10 +144,16 @@ class DumpRoutes(
         val f = if (asc && cur != null) maxOf(from, cur.ms) else from
         val t = if (!asc && cur != null) minOf(to, cur.ms) else to
         if (f > t) return pageJson(emptyList(), limit)
-        val all = ArrayList<Pair<Triple<Long, Int, String>, DumpItem>>()
+        var readLimit = limit
+        var all = ArrayList<Pair<Triple<Long, Int, String>, DumpItem>>()
         var full = false
+        var sorted = emptyList<Pair<Triple<Long, Int, String>, DumpItem>>()
+        // A type read stops at readLimit rows: when rows tied on the cursor millisecond were all dropped as already served, read again with a larger limit (bounded) instead of ending the stream early.
+        while (true) {
+        all = ArrayList<Pair<Triple<Long, Int, String>, DumpItem>>()
+        full = false
         fun add(type: String, list: List<DumpItem>, key: (JsonObject) -> Long) {
-            if (list.size >= limit) full = true
+            if (list.size >= readLimit) full = true
             list.forEach { x ->
                 val id = (x.json["id"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: return@forEach
                 val k = Triple(key(x.json), TYPES.indexOf(type), id)
@@ -155,9 +161,9 @@ class DumpRoutes(
                 all += k to DumpItem("${k.first}:$type:$id", if (fields == null) body else project(body, fields + "object_type"))
             }
         }
-        if ("moment" in types) add("moment", source.moments(f, t, null, limit, asc)) { num(it, "startMs") }
-        if ("scene" in types) add("scene", source.scenes(f, t, null, limit, asc)) { num(it, "startMs") }
-        if ("mark" in types) add("mark", source.marks(f, t, null, limit, asc)) { num(it, "atMs") }
+        if ("moment" in types) add("moment", source.moments(f, t, null, readLimit, asc)) { num(it, "startMs") }
+        if ("scene" in types) add("scene", source.scenes(f, t, null, readLimit, asc)) { num(it, "startMs") }
+        if ("mark" in types) add("mark", source.marks(f, t, null, readLimit, asc)) { num(it, "atMs") }
         if ("pin" in types) {
             val pins = source.pins().filter { num(it, "pinnedAt") in f..t }
             // a pin carries no cursor of its own: its composite cursor is built the same way
@@ -167,8 +173,11 @@ class DumpRoutes(
         val cmp = Comparator<Pair<Triple<Long, Int, String>, DumpItem>> { a, b ->
             compareValuesBy(a, b, { it.first.first }, { it.first.second }, { it.first.third })
         }
-        var sorted = all.sortedWith(if (asc) cmp else cmp.reversed())
+        sorted = all.sortedWith(if (asc) cmp else cmp.reversed())
         if (cur != null) sorted = sorted.filter { val c = compareValuesBy(it.first, Triple(cur.ms, TYPES.indexOf(cur.type), cur.id), { x -> x.first }, { x -> x.second }, { x -> x.third }); if (asc) c > 0 else c < 0 }
+        if (!full || sorted.size > limit || readLimit >= ITEMS_READ_CAP) break
+        readLimit = minOf(readLimit * 4, ITEMS_READ_CAP)
+        }
         val more = full || sorted.size > limit
         val page = sorted.take(limit).map { it.second }
         PcLog.i("PcDump", "dump items n=${page.size}")
@@ -176,6 +185,8 @@ class DumpRoutes(
         val r = pageJson(page, if (more && page.size < limit) page.size.coerceAtLeast(1) else limit)
         return r
     }
+
+    private val ITEMS_READ_CAP = 5_000
 
     private class Composite(val ms: Long, val type: String, val id: String)
 
