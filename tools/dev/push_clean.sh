@@ -7,7 +7,7 @@
 #   --check       same, but nothing leaves the temp dir: prints the verification result only (dry run)
 # Env: R=<repo> (default: the repo this script lives in), BASE=<ref> (with --local/--check: print how many commits sit on top of
 #      the cleaned copy of BASE, e.g. BASE=rel-1.9).
-# Lists (next to this script): push_clean.deny (paths to strip), push_clean.replace (text rewrites), push_clean.scan (must-not-match regexes).
+# Lists (next to this script): push_clean.deny (paths to strip; # comments ok), push_clean.replace (text rewrites; NO comments allowed, every line is a rule), push_clean.scan (must-not-match regexes).
 # Local history is untouched (the cleaned hashes differ). Self test: tools/dev/test-push-clean.sh.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
