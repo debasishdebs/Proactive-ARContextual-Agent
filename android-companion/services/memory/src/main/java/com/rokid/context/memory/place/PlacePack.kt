@@ -68,6 +68,9 @@ data class PlaceCandidates(
     val nearbyPins: List<PlaceEntity> = emptyList(),
 )
 
+/** Live tally of one seed (counts only): [done] cells processed (ok + [failed]), of [total]; [partial] = ok cells stored without OSM extras (see [SeedTally]); [fetched] = cells fetched (not fresh) so far in this run. */
+data class SeedCounts(val done: Int, val total: Int, val failed: Int, val partial: Int, val fetched: Int)
+
 /**
  * What a seed did. [fetched] = [ok] + [partial] (cells stored); [partial] cells were stored without OSM extras (Overpass did not answer) and are fetched again by the next seed or
  * at a glance after their backoff (5 min up to 1 h); [failed] cells stored nothing even after the retries ([PlacePack.MAX_ATTEMPTS] tries with a growing wait); [skipped] were already fresh. [retried] counts the cells the retry pass took (whatever its outcome).
@@ -227,7 +230,7 @@ class PlacePack(
      * Fetches the blue zone [bbox] cell by cell and marks everything found seeded. A cell that is already fresh is not fetched again but its places are marked. A cell that fails is
      * counted and the rest go on: the area ends [AREA_PARTIAL] and can be seeded again. [onProgress] gets (cells done, cells total).
      */
-    suspend fun seedArea(blueZoneId: String, bbox: GeoBox, admit: () -> String? = { null }, onCellMs: (Long) -> Unit = {}, onProgress: (Int, Int) -> Unit = { _, _ -> }): SeedResult {
+    suspend fun seedArea(blueZoneId: String, bbox: GeoBox, admit: () -> String? = { null }, onCellMs: (Long) -> Unit = {}, onCounts: (SeedCounts) -> Unit = {}, onProgress: (Int, Int) -> Unit = { _, _ -> }): SeedResult {
         val cells = Geohash5.cellsCovering(bbox)
         val src = source
         if (cells.isEmpty() || cells.size > MAX_SEED_CELLS || src == null) { log("seed refused cells=${cells.size}"); return SeedResult(cells.size, 0, 0, if (src == null) cells.size else 0, 0) }
@@ -236,7 +239,7 @@ class PlacePack(
         var stopped: String? = null
         val result: SeedResult? = try {
             withContext(mine + SeedAdmission(admit)) {
-                try { seedBody(blueZoneId, bbox, cells, src, onProgress, onCellMs) } catch (e: SeedStopped) {
+                try { seedBody(blueZoneId, bbox, cells, src, onProgress, onCellMs, onCounts) } catch (e: SeedStopped) {
                     stopped = e.reason
                     writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_PARTIAL))
                     null
@@ -269,7 +272,7 @@ class PlacePack(
     /** The area row, written under the fetch lock and only while this seed is still wanted: a removal cancels the seed first, so its last write cannot bring the area back. */
     private suspend fun writeArea(row: AreaEntity) = fetchLock.withLock { currentCoroutineContext().ensureActive(); dao.putArea(if (row.name == null) row.copy(name = dao.areaName(row.blueZoneId)) else row) } // a seed rewrite keeps the owner's name (v18 WP11b)
 
-    private suspend fun seedBody(blueZoneId: String, bbox: GeoBox, cells: List<String>, src: CellSource, onProgress: (Int, Int) -> Unit, onCellMs: (Long) -> Unit): SeedResult {
+    private suspend fun seedBody(blueZoneId: String, bbox: GeoBox, cells: List<String>, src: CellSource, onProgress: (Int, Int) -> Unit, onCellMs: (Long) -> Unit, onCounts: (SeedCounts) -> Unit): SeedResult {
         writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_SEEDING))
         var fetched = 0; var skipped = 0; var partial = 0; var done = 0
         val failedCells = ArrayList<String>()
@@ -296,7 +299,8 @@ class PlacePack(
             if (outcome == CellOutcome.FRESH) { skipped++; dao.markSeeded(box.south, box.north, box.west, box.east) }
             else if (!count(outcome)) failedCells += cell
             onProgress(++done, cells.size)
-            net.tick(done, failedCells.size, cells.size)
+            onCounts(SeedCounts(done, cells.size, failedCells.size, partial, fetched))
+            net.tick(done, failedCells.size, cells.size, partial)
         }
         // Failed cells (network blip, rate limit 429, server 5xx) are tried again after the others, with a growing wait, up to MAX_ATTEMPTS tries per cell in all; then they are given up on (the area
         // ends PARTIAL and the owner can "Retry failed cells"). A lost network is not a cell failure: the admission stops the seed and the worker waits for a network.
@@ -309,12 +313,18 @@ class PlacePack(
             pause(retryBackoffMs(round))
             val still = ArrayList<String>()
             var n = 0
-            for (cell in remaining) { if (!count(timed(cell))) still += cell; n++; net.tick(n, still.size, remaining.size) }
+            for (cell in remaining) {
+                if (!count(timed(cell))) still += cell
+                n++
+                val failedNow = still.size + (remaining.size - n) // cells not yet retried this round still count as failed; a recovered one moves failed -> ok
+                onCounts(SeedCounts(cells.size, cells.size, failedNow, partial, fetched))
+                net.tick(cells.size, failedNow, cells.size, partial, gate = n)
+            }
             log("seed retry round=$round cells=${remaining.size} recovered=${remaining.size - still.size}")
             remaining = still
         }
         val failed = remaining.size
-        net.finish(cells.size, failed, round)
+        net.finish(cells.size, failed, round, partial)
         writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), if (failed == 0 && partial == 0) AREA_DONE else AREA_PARTIAL))
         val n = dao.placeCount()
         log("seed done cells=${cells.size} ok=${fetched - partial} partial=$partial skipped=$skipped failed=$failed fetched=$fetched places=$n")

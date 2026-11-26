@@ -22,11 +22,11 @@ import org.robolectric.annotation.Config
 class SeedJobTest {
     private fun d(w: WorkInfo.State?, p: SeedProgress = SeedProgress(40, 100), status: String? = AREA_SEEDING, blocked: Boolean = false) = SeedStates.derive(w, p, status, blocked)
 
-    @Test fun runningShowsThePercentOfCellsDone() = assertEquals(SeedAreaState(SeedPhase.RUNNING, 40), d(WorkInfo.State.RUNNING))
+    @Test fun runningShowsThePercentOfCellsDone() = assertEquals(SeedAreaState(SeedPhase.RUNNING, 40, counts = SeedProgress(40, 100)), d(WorkInfo.State.RUNNING))
     @Test fun enqueuedIsQueuedUnlessTheNetworkIsRefused() {
         assertEquals(SeedPhase.QUEUED, d(WorkInfo.State.ENQUEUED).phase)
         assertEquals(SeedPhase.QUEUED, d(WorkInfo.State.BLOCKED).phase)
-        assertEquals(SeedAreaState(SeedPhase.WAITING_NETWORK, 40), d(WorkInfo.State.ENQUEUED, blocked = true))
+        assertEquals(SeedAreaState(SeedPhase.WAITING_NETWORK, 40, counts = SeedProgress(40, 100)), d(WorkInfo.State.ENQUEUED, blocked = true))
         assertEquals(SeedPhase.WAITING_NETWORK, d(WorkInfo.State.ENQUEUED, SeedProgress(40, 100, waiting = true)).phase)
     }
     @Test fun finishedStates() {
@@ -67,7 +67,7 @@ class SeedJobTest {
         SeedProgressStore(ctx).clearAll()
         SeedProgressStore(ctx).progress(k, 30, 100)
         val reopened = SeedProgressStore(ctx) // a new instance = a new process reading the same prefs
-        assertEquals(SeedProgress(30, 100), reopened.get(k))
+        assertEquals(SeedProgress(30, 100, okCells = 30), reopened.get(k))
         reopened.begin(k); reopened.progress(k, 2, 100) // the resume re-counts the finished cells from 0
         assertEquals(30, reopened.get(k).done)
         reopened.progress(k, 55, 100); assertEquals(55, reopened.get(k).percent)
@@ -75,6 +75,27 @@ class SeedJobTest {
         reopened.progress(k, 56, 100); assertFalse("running again clears the waiting flag", reopened.get(k).waiting)
         reopened.markCancelled(k); assertTrue(reopened.get(k).cancelled)
         reopened.clear(k); assertEquals(SeedProgress(), reopened.get(k))
+    }
+
+    @Test fun theTextShowsOverallOkAndFailedWithCountsAndPartialSeparately() {
+        val p = SeedProgress(525, 2100, okCells = 200, failCells = 325)
+        assertEquals("Seeding places 25% done (525 of 2100) \u00b7 38% ok (200) \u00b7 62% failed (325)", SeedStates.derive(WorkInfo.State.RUNNING, p, AREA_SEEDING, false).text)
+        assertTrue(SeedStates.derive(WorkInfo.State.ENQUEUED, p.copy(partial = 12), AREA_SEEDING, true).text.let { it.startsWith("Seeding paused at 25% done (525 of 2100)") && it.contains("\u00b7 12 partial") })
+        val failed = SeedStates.derive(WorkInfo.State.FAILED, SeedProgress(10, 10, failed = 3, okCells = 7, failCells = 3), AREA_PARTIAL, false)
+        assertEquals("FAILED: 3 cells did not seed (100% done (10 of 10) \u00b7 70% ok (7) \u00b7 30% failed (3))", failed.text)
+    }
+
+    @Test fun retryConvertsFailedToOkWhileProcessedNeverGoesBack() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val k = SeedKeys.of("seed:1.0,1.0,1.1,1.1"); val st = SeedProgressStore(ctx); st.clearAll()
+        st.progress(k, 10, 10, failed = 4, partial = 1, fetched = 6)
+        assertEquals(SeedProgress(10, 10, okCells = 6, failCells = 4, partial = 1), st.get(k))
+        st.begin(k)                                   // Retry failed cells
+        st.progress(k, 3, 10, failed = 1, fetched = 1) // re-walking: 1 of the 4 recovered so far
+        var g = st.get(k); assertEquals(10, g.done); assertEquals(3, g.failCells); assertEquals(7, g.okCells)
+        st.progress(k, 10, 10, failed = 2, partial = 0, fetched = 2) // end of the pass: exact
+        g = st.get(k); assertEquals(10, g.done); assertEquals(2, g.failCells); assertEquals(8, g.okCells); assertEquals(0, g.partial)
+        assertTrue(g.done == g.okCells + g.failCells)
     }
 
     @Test fun keysAndTextsCarryNoPositionOrName() {

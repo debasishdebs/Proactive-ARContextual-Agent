@@ -74,27 +74,28 @@ class PlaceNetGuard(
     fun reset() = synchronized(lock) { startMs = clock(); lastSummaryMs = startMs; reqs = 0; c2xx = 0; c4xx = 0; c429 = 0; c5xx = 0; cNet = 0; pauses = 0; durations.clear() }
 
     /** The periodic summary: every [SUMMARY_CELLS] cells or [SUMMARY_MS] ms, whichever comes first. */
-    fun tick(done: Int, failedCells: Int, total: Int) {
+    fun tick(done: Int, failedCells: Int, total: Int, partial: Int = 0, gate: Int = done) {
         val now = clock()
-        if (done % SUMMARY_CELLS != 0 && now - lastSummaryMs < SUMMARY_MS) return
+        if (gate % SUMMARY_CELLS != 0 && now - lastSummaryMs < SUMMARY_MS) return
         lastSummaryMs = now
-        line("seed progress", done, failedCells, total)
+        line("seed progress", done, failedCells, total, partial)
     }
 
     /** The final line of one seed. */
-    fun finish(cells: Int, failedCells: Int, retries: Int) {
+    fun finish(cells: Int, failedCells: Int, retries: Int, partial: Int = 0) {
         val ms = (clock() - startMs).coerceAtLeast(0)
         val s = snapshot()
-        log("seed final cells=$cells failed=$failedCells retries=$retries durationMs=$ms reqs=${s.reqs} s2xx=${s.c2xx} s4xx=${s.c4xx} s429=${s.c429} s5xx=${s.c5xx} snet=${s.cNet} pauses=${s.pauses}")
+        log("seed final cells=$cells ok=${cells - failedCells} failed=$failedCells partial=$partial okPct=${SeedTally.okPct(cells - failedCells, failedCells)} failedPct=${SeedTally.failedPct(cells - failedCells, failedCells)} retries=$retries durationMs=$ms reqs=${s.reqs} s2xx=${s.c2xx} s4xx=${s.c4xx} s429=${s.c429} s5xx=${s.c5xx} snet=${s.cNet} pauses=${s.pauses}")
     }
 
-    private fun line(what: String, done: Int, failedCells: Int, total: Int) {
+    private fun line(what: String, done: Int, failedCells: Int, total: Int, partial: Int) {
+        val ok = (done - failedCells).coerceAtLeast(0)
         val s = snapshot()
         val rpm = (s.reqs * 60_000L / s.elapsed.coerceAtLeast(1_000L)).toInt()
         val backoff = (pausedUntil - clock()).coerceAtLeast(0)
         val med = s.median
         val tail = try { env() } catch (e: Exception) { "" }
-        log("$what cells=$done failed=$failedCells total=$total s2xx=${s.c2xx} s4xx=${s.c4xx} s429=${s.c429} s5xx=${s.c5xx} snet=${s.cNet} rpm=$rpm backoffMs=$backoff medianMs=$med$tail")
+        log("$what cells=$done failed=$failedCells total=$total ok=$ok partial=$partial waiting=${(total - done).coerceAtLeast(0)} donePct=${SeedTally.donePct(done, total)} okPct=${SeedTally.okPct(ok, failedCells)} failedPct=${SeedTally.failedPct(ok, failedCells)} s2xx=${s.c2xx} s4xx=${s.c4xx} s429=${s.c429} s5xx=${s.c5xx} snet=${s.cNet} rpm=$rpm backoffMs=$backoff medianMs=$med$tail")
     }
 
     private class Snap(val reqs: Int, val c2xx: Int, val c4xx: Int, val c429: Int, val c5xx: Int, val cNet: Int, val pauses: Int, val median: Long, val elapsed: Long)

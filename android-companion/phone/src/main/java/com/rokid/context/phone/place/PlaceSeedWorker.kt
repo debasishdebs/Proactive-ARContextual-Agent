@@ -40,14 +40,14 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
     private val timing by lazy { SeedTimingStore(applicationContext) }
     private val key: String get() = inputData.getString(KEY).orEmpty()
 
-    override suspend fun getForegroundInfo(): ForegroundInfo = info(store.get(key).percent)
+    override suspend fun getForegroundInfo(): ForegroundInfo = info(store.get(key))
 
     override suspend fun doWork(): Result {
         val pack = packOf(applicationContext)
         val area = pack.areas().firstOrNull { SeedKeys.of(it.blueZoneId) == key } ?: return Result.success().also { store.clear(key); PcLog.i(TAG, "seed work: area gone") }
         val admit = admission(applicationContext)
         admit()?.let { return stopped(it) }
-        try { setForeground(info(store.get(key).percent)) } catch (e: Exception) { PcLog.i(TAG, "seed work: no foreground (${e.javaClass.simpleName})") } // a refused foreground start must not fail the seed
+        try { setForeground(info(store.get(key))) } catch (e: Exception) { PcLog.i(TAG, "seed work: no foreground (${e.javaClass.simpleName})") } // a refused foreground start must not fail the seed
         store.setWaiting(key, false)
         com.rokid.context.memory.place.PlaceNetGuard.workerState = "RUNNING" // read by the seed summary lines
         PcLog.i(TAG, "seed work run state=RUNNING attempt=${runAttemptCount + 1}")
@@ -72,12 +72,12 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
     }
 
     private suspend fun runSeed(pack: PlacePack, id: String, box: com.rokid.context.memory.place.GeoBox, admit: () -> String?): Result {
-        val updates = kotlinx.coroutines.channels.Channel<Int>(kotlinx.coroutines.channels.Channel.CONFLATED)
+        val updates = kotlinx.coroutines.channels.Channel<SeedProgress>(kotlinx.coroutines.channels.Channel.CONFLATED)
         val r = kotlinx.coroutines.coroutineScope {
             // the notification and the work progress follow the cell progress; a conflated channel keeps the cell loop from ever waiting on them
-            val reporter = launch { for (pct in updates) { try { setProgress(workDataOf(PROGRESS to pct)); setForeground(info(pct)) } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e } } }
+            val reporter = launch { for (pr in updates) { try { setProgress(workDataOf(PROGRESS to pr.percent)); setForeground(info(pr)) } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e } } }
             try {
-                withContext(Dispatchers.IO) { pack.seedArea(id, box, admit = admit, onProgress = { done, total -> store.progress(key, done, total); updates.trySend(store.get(key).percent) }, onCellMs = { ms -> timing.add(ms) }) }
+                withContext(Dispatchers.IO) { pack.seedArea(id, box, admit = admit, onCounts = { c -> store.progress(key, c.done, c.total, c.failed, c.partial, c.fetched); updates.trySend(store.get(key)) }, onCellMs = { ms -> timing.add(ms) }) }
             } finally { updates.close(); reporter.join() }
         }
         if (r.failed + r.partial > 0) PcLog.i(TAG, "seed work done with failed cells") else PcLog.i(TAG, "seed work done")
@@ -99,10 +99,10 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
         } else { store.setWaiting(key, true); com.rokid.context.memory.place.PlaceNetGuard.workerState = "WAITING_NETWORK"; PcLog.i(TAG, "seed work waits state=WAITING_NETWORK"); Result.retry() }
     }
 
-    private fun info(pct: Int): ForegroundInfo {
+    private fun info(pr: SeedProgress): ForegroundInfo {
         val nm = applicationContext.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Place seeding", NotificationManager.IMPORTANCE_LOW))
-        return ForegroundInfo(NOTIFICATION_ID, notification(applicationContext, pct, id), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        return ForegroundInfo(NOTIFICATION_ID, notification(applicationContext, pr, id), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
     }
 
     companion object {
@@ -116,11 +116,19 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
         private const val CHANNEL = "place_seed"
         private const val NOTIFICATION_ID = 7311
 
-        /** The notification: only "Seeding places NN%" and a Cancel action. No place name, no position. */
-        fun notification(ctx: Context, pct: Int, workId: java.util.UUID): Notification =
+        /** The notification: "Seeding places NN% done (x of y)" with the ok/failed/partial counts as text, and a Cancel action. No place name, no position. */
+        fun notification(ctx: Context, pr: SeedProgress, workId: java.util.UUID): Notification {
+            val pct = pr.percent
+            val full = if (pr.total > 0) pr.detail() else "$pct%"
+            val head = full.substringBefore(" \u00b7 ")
+            return build(ctx, "Seeding places $head", full.substringAfter(" \u00b7 ", "").takeIf { it.isNotEmpty() }, pct, workId)
+        }
+
+        private fun build(ctx: Context, title: String, text: String?, pct: Int, workId: java.util.UUID): Notification =
             NotificationCompat.Builder(ctx, CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
-                .setContentTitle("Seeding places $pct%")
+                .setContentTitle(title)
+                .setContentText(text)
                 .setProgress(100, pct.coerceIn(0, 100), false)
                 .setOngoing(true).setOnlyAlertOnce(true)
                 .addAction(android.R.drawable.ic_delete, "Cancel", WorkManager.getInstance(ctx).createCancelPendingIntent(workId))

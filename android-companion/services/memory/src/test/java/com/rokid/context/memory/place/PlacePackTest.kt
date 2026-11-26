@@ -720,7 +720,7 @@ class PlacePackTest {
         assertEquals(r.cells, r.failed)
         assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
         assertEquals((total - 1) * 3_000L, sleeps.sum()) // 3 s Retry-After between EVERY pair of requests, across cells, not per cell
-        assertTrue(logs.any { it == "seed final cells=${r.cells} failed=${r.cells} retries=${PlacePack.MAX_ATTEMPTS - 1} durationMs=${sleeps.sum()} reqs=$total s2xx=0 s4xx=0 s429=$total s5xx=0 snet=0 pauses=$total" })
+        assertTrue(logs.any { it == "seed final cells=${r.cells} ok=0 failed=${r.cells} partial=0 okPct=0 failedPct=100 retries=${PlacePack.MAX_ATTEMPTS - 1} durationMs=${sleeps.sum()} reqs=$total s2xx=0 s4xx=0 s429=$total s5xx=0 snet=0 pauses=$total" })
         assertTrue(logs.any { it.startsWith("cell fetch failed cls=IOException seeded=true attempt=5") })
         // "Retry failed cells" = seeding the area again: the failed cells are fetched and the area ends done
         limited = false; asked.clear()
@@ -733,6 +733,13 @@ class PlacePackTest {
         g.ok("wikidata", 100); g.failed("overpass", 503, "http", null, 300, 2)
         g.tick(24, 1, 30); assertTrue(logs.none { it.startsWith("seed progress") })
         g.tick(25, 1, 30)
-        assertTrue(logs.any { it.startsWith("seed progress cells=25 failed=1 total=30 s2xx=1 s4xx=0 s429=0 s5xx=1 snet=0 rpm=") && it.endsWith(" net=wifi saver=0 dsaver=0 state=RUNNING") })
+        assertTrue(logs.any { it.startsWith("seed progress cells=25 failed=1 total=30 ok=24 partial=0 waiting=5 donePct=83 okPct=96 failedPct=4 s2xx=1 s4xx=0 s429=0 s5xx=1 snet=0 rpm=") && it.endsWith(" net=wifi saver=0 dsaver=0 state=RUNNING") })
+    }
+
+    @Test fun theTallyDefinitionOkAndFailedAreSharesOfProcessedAndPartialIsASubsetOfOk() {
+        assertEquals("25% done (525 of 2100) \u00b7 38% ok (200) \u00b7 62% failed (325)", SeedTally.describe(525, 2100, 325, 0))
+        assertEquals("0% done (0 of 40)", SeedTally.describe(0, 40, 0, 0))
+        assertEquals("50% done (20 of 40) \u00b7 100% ok (20) \u00b7 0% failed (0) \u00b7 12 partial", SeedTally.describe(20, 40, 0, 12))
+        for (f in 0..9) assertEquals(100, SeedTally.okPct(9 - f + 1, f) + SeedTally.failedPct(9 - f + 1, f)) // always adds up to 100
     }
 }

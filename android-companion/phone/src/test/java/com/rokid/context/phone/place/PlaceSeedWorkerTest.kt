@@ -106,8 +106,9 @@ class PlaceSeedWorkerTest {
         assertEquals(ListenableWorker.Result.success(), run())
         assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
         val saved = SeedProgressStore(ctx).get(key); assertEquals(1, saved.failed)
+        assertEquals(cells.size, saved.done); assertEquals(1, saved.failCells); assertEquals(cells.size - 1, saved.okCells) // overall, ok and failed counts persisted
         val st = SeedStates.derive(WorkInfo.State.SUCCEEDED, saved, AREA_PARTIAL, false)
-        assertEquals(SeedPhase.FAILED, st.phase); assertEquals(1, st.failedCells); assertFalse(st.active); assertTrue(st.text, st.text.startsWith("FAILED: 1 cell did not seed"))
+        assertEquals(SeedPhase.FAILED, st.phase); assertEquals(1, st.failedCells); assertFalse(st.active); assertTrue(st.text, st.text.startsWith("FAILED: 1 cell did not seed") && st.text.contains("100% done (${cells.size} of ${cells.size})") && st.text.contains("failed (1)"))
         down = false; asked.clear()
         SeedProgressStore(ctx).begin(key); pack.beginArea(id, box) // what "Retry failed cells" does
         assertEquals(ListenableWorker.Result.success(), run())

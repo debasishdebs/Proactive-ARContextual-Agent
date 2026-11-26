@@ -167,6 +167,12 @@ class SeedMapViewModelTest {
         assertTrue(v.state.value.rows[0].text.startsWith("Seeded area 1"))
     }
 
+    @Test fun theProgressRowShowsOverallOkAndFailedCountsAndPartial() {
+        val st = com.rokid.context.phone.place.SeedStates.derive(androidx.work.WorkInfo.State.RUNNING, com.rokid.context.phone.place.SeedProgress(525, 2100, okCells = 200, failCells = 325, partial = 12), com.rokid.context.memory.place.AREA_SEEDING, false)
+        val rows = SeedAreaList.progress(listOf(SeedAreaInfo("seed:1", 1.0, 1.0, 1.1, 1.1, com.rokid.context.memory.place.AREA_SEEDING, seed = st)))
+        assertEquals("Seeding places 25% done (525 of 2100) \u00b7 38% ok (200) \u00b7 62% failed (325) \u00b7 12 partial", rows.single().text)
+    }
+
     @Test fun smallBoxSeedsAtOnceAndShowsTheSeedMessage() = runTest {
         val v = vm(); v.requestSeed(small)
         assertEquals(listOf(small), fake.seeded)
