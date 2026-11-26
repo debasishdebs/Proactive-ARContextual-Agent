@@ -44,22 +44,28 @@ class ImportFrameStore(
     override suspend fun store(frame: DumpImportParser.Frame, gen0: Long): Boolean = withContext(Dispatchers.IO) {
         val ext = when (DumpReader.sniff(frame.photo)) { "image/png" -> "png"; "image/webp" -> "webp"; else -> "jpg" }
         val file = File(RokidFrameInbox.archiveDir(app).apply { mkdirs() }, "${frame.id}.$ext")
-        val gen = gen0
-        // a file with this frame id is already in the archive (a live capture committed it after the preflight): never overwrite it, never delete it
+        // never replace an archive file this import did not create (a live capture may have committed or be committing the same id): publish by hard link (fails when the name exists), never by rename-over
         if (listOf("jpg", "png", "webp").any { File(file.parentFile, "${frame.id}.$it").exists() }) return@withContext false
-        if (MemoryWipe.generation.get() != gen) return@withContext false
-        writeStamped(file, FrameImages.forDisk(frame.photo), frame.capturedAtMs)
+        if (MemoryWipe.generation.get() != gen0) return@withContext false
+        val tmp = File(file.parentFile, ".imp-${frame.id}-${System.nanoTime()}.$ext")
+        try {
+            writeStamped(tmp, FrameImages.forDisk(frame.photo), frame.capturedAtMs)
+            try { java.nio.file.Files.createLink(file.toPath(), tmp.toPath()) }
+            catch (e: java.nio.file.FileAlreadyExistsException) { return@withContext false }
+            catch (e: Exception) { try { java.nio.file.Files.move(tmp.toPath(), file.toPath()) } catch (x: Exception) { return@withContext false } } // no hard links here: a move that refuses an existing target
+        } finally { tmp.delete() }
+        // from here the file is OURS (we created the name): it is removed only on a refusal of this attempt
         val receipt = ReceiptMeta(
             wireFrameId = frame.id, capturedAtMs = frame.capturedAtMs, motion = frame.motion, dwell = frame.dwell, blur = frame.blur, dhash = frame.dhash, phash = frame.phash,
             width = frame.width, markRef = frame.markRef,
         )
         val t = now()
         val appender: com.rokid.context.data.frames.FrameAppender = { c, f, rows ->
-            PipelineRecords.appendFrame(c, f, rows?.let { it.copy(meta = it.meta.copy(routedAt = t), state = it.state.copy(state = "EXTRACTED", lastError = null)) })
+            PipelineRecords.appendFrame(c, f, rows?.let { it.copy(meta = it.meta.copy(routedAt = t), state = it.state.copy(state = "EXTRACTED", lastError = null)) }, wiped = { MemoryWipe.generation.get() != gen0 })
         }
         val r = RokidFrameInbox.ingestFile(app, file, frame.source, frame.placeLabel, appender, receipt, now, sceneActive = { false }, parkedForDataSaver = { false })
         if (r != InboxResult.STORED) { file.delete(); return@withContext false }
-        if (MemoryWipe.generation.get() != gen) { file.delete(); return@withContext false } // Delete all ran during the write: the frame sweep of that wipe owns the rest
+        // a Delete all after the commit: that wipe's frame sweep owns the row and the file
         true
     }
 }

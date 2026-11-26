@@ -41,14 +41,14 @@ object PipelineRecords {
     // --- frames -------------------------------------------------------------------------------------------------
 
     /** Only `rokid*` sources with a JPEG that exists; payload kept to one line (≤ 220 chars). False = rejected or duplicate id. */
-    suspend fun appendFrame(context: Context, frame: FrameEntity, rows: com.rokid.context.memory.FrameRows? = null): Boolean {
+    suspend fun appendFrame(context: Context, frame: FrameEntity, rows: com.rokid.context.memory.FrameRows? = null, wiped: (() -> Boolean)? = null): Boolean {
         if (!frame.source.startsWith("rokid", ignoreCase = true)) { PcLog.w(TAG, "append rejected non-rokid source"); return false }
         val file = frame.path.takeIf { it.isNotBlank() }?.let(::File)
         if (file == null || !withContext(Dispatchers.IO) { file.exists() }) { PcLog.w(TAG, "append rejected preview missing"); return false }
         val stored = frame.copy(path = file.absolutePath, payload = oneLine(frame.payload).take(220))
         // With [rows] the frame, its frame_meta and its PENDING frame_state land in one transaction (keyframe capture P1).
         val ok = if (rows == null) graph(context).frames.add(stored)
-        else graph(context).intake.commit(stored, rows) == com.rokid.context.memory.FrameIntake.Outcome.ADDED
+        else graph(context).intake.commit(stored, rows, wiped) == com.rokid.context.memory.FrameIntake.Outcome.ADDED
         // The stored Moment of that second is built off this thread, coalesced; a frame with no capture evidence schedules nothing (unknown capture time is never a Moment).
         if (ok && rows != null) com.rokid.context.canvas.moment.MomentTriggers.get(context).onFrameCommitted(stored.ts, rows.meta.capturedAtMs)
         PcLog.i(TAG, "append ok=$ok")

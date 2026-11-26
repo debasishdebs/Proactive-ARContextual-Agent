@@ -20,9 +20,11 @@ data class FrameRows(val meta: FrameMetaEntity, val state: FrameStateEntity)
  */
 class FrameIntake(private val db: ContextDatabase, private val clock: () -> Long = System::currentTimeMillis) {
     /** [FENCED]: the photo's time lies in a Moment Forget fence (a forgotten second or range), so nothing was stored and its JPEG is queued for deletion in the durable outbox. */
-    enum class Outcome { ADDED, DUPLICATE, WIRE_DUPLICATE, FENCED }
+    enum class Outcome { ADDED, DUPLICATE, WIRE_DUPLICATE, FENCED, WIPED }
 
-    suspend fun commit(frame: FrameEntity, rows: FrameRows): Outcome = db.withTransaction {
+    /** [wiped] (the import's Delete all generation check): evaluated INSIDE the committing transaction; true = a Delete all ran since the request began, nothing is stored ([Outcome.WIPED], the caller removes its own file). */
+    suspend fun commit(frame: FrameEntity, rows: FrameRows, wiped: (() -> Boolean)? = null): Outcome = db.withTransaction {
+        if (wiped != null && wiped()) return@withTransaction Outcome.WIPED
         // Late admission is fenced INSIDE the committing transaction (moment-model spec 8.2): a Forget that committed first is seen here, one that commits after deletes the row.
         if (fencedByMomentForget(frame, rows)) {
             val sidecar = frame.path.removeSuffix(".jpg") + ".meta.json"
