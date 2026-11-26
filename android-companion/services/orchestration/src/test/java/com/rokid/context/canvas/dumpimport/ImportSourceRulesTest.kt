@@ -26,7 +26,7 @@ class ImportSourceRulesTest {
 
     @Test fun onlyTheReviewedDaoWritesAppear() {
         val writes = Regex("""\.(insert\w*|upsert\w*|put\w*|delete\w*|update\w*|record|wipe\w*|write\w*)\(""")
-        val found = files.flatMap { f -> writes.findAll(code(f).replace("file.delete()", "")).map { it.groupValues[1] } }.toSet()
+        val found = files.flatMap { f -> writes.findAll(code(f).replace("file.delete()", "").replace("tmp.delete()", "")).map { it.groupValues[1] } }.toSet()
         // reviewed (round 7b adds `writeDerivedGuarded`: the Scene text goes through the guarded derive write, attribution `imported`): the location row (insertIfAbsent, as the recorder and the GPS backfill write it) and the frame_source edge (insertAll, as the extraction writes it); everything else goes through
         // ImportFrameWriter (frame ingest), ImportMemoryWriter (appendFact), recordMark (MarkRecorder) and build (MomentBuilder)
         assertEquals(setOf("insertIfAbsent", "insertAll", "writeDerivedGuarded"), found)

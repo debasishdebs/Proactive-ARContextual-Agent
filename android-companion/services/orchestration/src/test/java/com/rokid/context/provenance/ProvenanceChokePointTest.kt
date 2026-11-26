@@ -33,6 +33,8 @@ class ProvenanceChokePointTest {
         "services/orchestration/src/main/java/com/rokid/context/canvas/CanvasRunner.kt" to 1, // CanvasDao.tombstonedAmong + labelsMissing in one pre-call fence
         "services/orchestration/src/main/java/com/rokid/context/canvas/LiveExtract.kt" to 1, // CanvasDao.tombstonedAmong (a seam the LiveExtract fakes replace)
         "services/orchestration/src/main/java/com/rokid/context/canvas/moment/DaoMomentSource.kt" to 1, // MOMENT tombstones, not photo tombstones
+        "services/orchestration/src/main/java/com/rokid/context/canvas/dumpimport/ImportCore.kt" to 4, // developer import: MOMENT tombstones (not photo tombstones), asked before it recreates or restores cards for a Moment
+        "services/orchestration/src/main/java/com/rokid/context/canvas/dumpimport/ImportStores.kt" to 2, // developer import: the request's Delete all generation compare (no photo is derived from; the fence of its file write and its frame commit)
         "services/orchestration/src/main/java/com/rokid/context/canvas/moment/MomentBuilder.kt" to 1, // MOMENT tombstones, not photo tombstones
     )
 
