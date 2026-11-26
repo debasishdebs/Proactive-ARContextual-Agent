@@ -426,7 +426,8 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
                 val r = runCatching { control.placeDeleteRun(preview, c.acknowledged) }.getOrNull()
                 val msg = when {
                     r == null -> "Nothing was deleted: it could not be done." to true
-                    r.outcome.committed && r.pinDeleted -> "Place and its Moments deleted." to false
+                    r.outcome.committed && r.pinDeleted && r.outcome == com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE -> "Place and its Moments deleted." to false
+                    r.outcome.committed && r.pinDeleted -> PlaceDeleteMessages.COMMITTED_CLEANUP_OWED to true
                     r.outcome.committed -> "Moments deleted. The place itself could not be removed: delete it again." to true
                     r.outcome == com.rokid.context.orchestration.forget.ForgetActions.Outcome.CONTENT_CHANGED -> "Your Moments changed. Nothing was deleted: open Delete again." to true
                     r.outcome == com.rokid.context.orchestration.forget.ForgetActions.Outcome.TOO_LARGE -> "Too many items to forget at once. Nothing was deleted." to true
@@ -899,3 +900,8 @@ private fun PinDialog(d: PinDialogState, on: PlaceGuideActions) {
     )
 }
 
+
+/** Texts of the mode (b) delete that are worth a test (a committed delete whose cleanup is still owed must not read as plain success). */
+object PlaceDeleteMessages {
+    const val COMMITTED_CLEANUP_OWED = "Place and its Moments deleted, but some cleanup (cached copies or pin removal) did not finish. It is retried at the next start."
+}
