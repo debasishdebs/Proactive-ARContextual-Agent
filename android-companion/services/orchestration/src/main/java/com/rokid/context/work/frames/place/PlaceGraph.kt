@@ -133,7 +133,7 @@ object PlaceGraph {
     private fun build(app: Context): PlacePack {
         val guard = com.rokid.context.memory.place.PlaceNetGuard(log = { PcLog.i(TAG, it) }, env = { netEnv(app) }) // one limiter + counters for the HTTP client and the pack
         val http = UrlConnectionPlaceHttp(guard = guard, gate = com.rokid.context.ai.datasaver.DataSaverGraph.get(app), privacy = { com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() }) // cell fetches count in the mobile-data ledger (class SMALL)
-        val source = PlaceCellSource(WikipediaHttpSource(http), WikidataHttpSource(http), OverpassMirrorSource.default(http) { PcLog.i(TAG, it) }, log = { PcLog.i(TAG, it) }) // counts and class names only
+        val source = PlaceCellSource(WikipediaHttpSource(http), WikidataHttpSource(http), OverpassMirrorSource.default(http) { PcLog.i(TAG, it) }, includeMountains = { PlaceGuideSettings.of(app).includeMountains }, log = { PcLog.i(TAG, it) }) // counts and class names only
         return PlacePack(PlacesDatabase.build(app), source, budgetBytes = PlaceGuideSettings.of(app).budgetMb * 1024L * 1024L, log = { PcLog.i(TAG, it) }, net = guard)
     }
 
@@ -190,6 +190,11 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
         get() = runCatching { prefs.getInt(RADIUS_KEY, OfflineTier.DEFAULT_RADIUS_M) }.getOrDefault(OfflineTier.DEFAULT_RADIUS_M).takeIf { it in OfflineTier.MIN_RADIUS_M..OfflineTier.WIDE_RADIUS_M } ?: OfflineTier.DEFAULT_RADIUS_M
         set(v) { prefs.edit().putInt(RADIUS_KEY, v.coerceIn(OfflineTier.MIN_RADIUS_M, OfflineTier.WIDE_RADIUS_M)).apply() }
 
+    /** "Include mountains and peaks" (Settings > Place Guide), default OFF: new seeds (and cell fetches) admit mountain, summit and sacred mountain. Stored places are never purged by switching it. */
+    var includeMountains: Boolean
+        get() = runCatching { prefs.getBoolean(MOUNTAINS_KEY, false) }.getOrDefault(false)
+        set(v) { prefs.edit().putBoolean(MOUNTAINS_KEY, v).apply() }
+
     var enabled: Boolean
         get() = prefs.getBoolean(KEY, false)
         set(v) { prefs.edit().putBoolean(KEY, v).apply(); if (!v) PlaceGraph.fence.trip() }
@@ -197,6 +202,7 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
     companion object {
         const val PREFS = "place_guide"
         private const val KEY = "enabled"
+        private const val MOUNTAINS_KEY = "includeMountains"
         private const val BUDGET_KEY = "budgetMb"
         private const val SIDE_KEY = "cardSide"
         private const val OFFLINE_GUESS_KEY = "offlineGuess"

@@ -35,6 +35,10 @@ class AndroidPlaceGuideControl(
         get() = settings.budgetMb
         set(v) { settings.budgetMb = v }
 
+    override var includeMountains: Boolean
+        get() = settings.includeMountains
+        set(v) { settings.includeMountains = v }
+
     override var offlineGuess: Boolean
         get() = settings.offlineGuess
         set(v) { settings.offlineGuess = v; if (!v) com.rokid.context.phone.vision.OfflineCaptionerHolder.releaseIfCreated() }

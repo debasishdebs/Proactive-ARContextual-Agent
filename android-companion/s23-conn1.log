@@ -1,0 +1,27 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.13/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+
+> Configure project :glasses
+:glasses: release signing: no usable keystore.properties, release APK will be UNSIGNED
+
+> Configure project :phone
+:phone: release signing: no usable keystore.properties, release APK will be UNSIGNED
+
+> Configure project :watch
+:watch: release signing: no usable keystore.properties, release APK will be UNSIGNED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Problem configuring task :services:connectors:test from command line.
+> Unknown command-line option '--tests'.
+
+* Try:
+> Run gradlew help --task :services:connectors:test to get task usage details.
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 6s
+rc=1

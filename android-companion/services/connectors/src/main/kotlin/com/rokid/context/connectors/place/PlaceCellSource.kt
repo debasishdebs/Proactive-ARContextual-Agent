@@ -21,6 +21,8 @@ class PlaceCellSource(
     private val wikipedia: WikipediaSource,
     private val wikidata: WikidataSource,
     private val overpass: OverpassSource?,
+    /** Settings > Place Guide "Include mountains and peaks" (default OFF): admits [MOUNTAIN_CLASSES] too. Read at every cell, so a change applies to the next seed. */
+    private val includeMountains: () -> Boolean = { false },
     private val log: (String) -> Unit = {},
 ) : CellSource {
     override suspend fun fetchCell(cell: String): CellFetch {
@@ -35,18 +37,25 @@ class PlaceCellSource(
         val qids = (pages.mapNotNull { it.qid } + extras.keys).distinct()
         val entities = qids.chunked(WikidataHttpSource.BATCH).fold(emptyMap<String, WikidataEntity>()) { acc, ids -> zoneCheck(); acc + wikidata.entities(ids) }
 
+        val mountains = includeMountains()
         val kept = LinkedHashMap<String, FetchedPlace>()
+        val radiusCaps = HashMap<String, Int>() // places whose OSM extent must not widen the radius past a cap (see RADIUS_CAP_M)
         val hasPart = HashMap<String, List<String>>()
         var rejected = 0
         var coordsDisagree = 0
         // The 1 km rule is per PLACE (QID), not per page: when two pages share one QID and ANY of them disagrees with Wikidata, the QID is rejected entirely (fail closed), counted once.
         val disagreeingQids = HashSet<String>()
+        val wideAllowed = HashSet<String>()
         for (p in pages) {
             val q = p.qid ?: continue
             val ent = entities[q] ?: continue
             val wpLat = hitById[p.pageId]?.lat ?: p.lat
             val wpLon = hitById[p.pageId]?.lon ?: p.lon
-            if (ent.lat != null && ent.lon != null && wpLat != null && wpLon != null && coordsDisagree(wpLat, wpLon, ent.lat, ent.lon)) disagreeingQids += q
+            if (ent.lat != null && ent.lon != null && wpLat != null && wpLon != null) {
+                val limit = disagreeLimitM(ent.classes, q)
+                if (coordsDisagree(wpLat, wpLon, ent.lat, ent.lon, limit)) disagreeingQids += q
+                else if (limit > COORD_DISAGREE_M && coordsDisagree(wpLat, wpLon, ent.lat, ent.lon)) wideAllowed += q // an area-like place whose two points are 1 to 5 km apart: kept, stored at Wikidata's point
+            }
         }
         val countedDisagree = HashSet<String>()
         for (p in pages) {
@@ -54,19 +63,21 @@ class PlaceCellSource(
             val ent = entities[q] ?: run { rejected++; null } ?: continue
             if (ent.p31Malformed) { rejected++; continue } // unreadable classification is not absence: person exclusion cannot be checked, so not even a curated QID is admitted
             if (ent.classes.any { it in PERSON_CLASSES }) continue // people are never candidates, not even for a curated QID
-            val kind = ent.classes.firstNotNullOfOrNull { MONUMENT_CLASSES[it] } ?: CURATED_LANDMARK_QIDS[q] ?: continue
+            val kind = kindOf(ent.classes, q, mountains) ?: continue
             // Fail closed on a coordinate conflict: when Wikipedia (geosearch hit, else the page) and Wikidata P625 both have a point and they are more than COORD_DISAGREE_M apart, the place (QID) is dropped, curated or not; the rule is per QID, not per page.
             if (q in disagreeingQids) { if (countedDisagree.add(q)) coordsDisagree++; continue } // per QID, see above
             val lat = ent.lat ?: p.lat ?: hitById[p.pageId]?.lat ?: continue
             val lon = ent.lon ?: p.lon ?: hitById[p.pageId]?.lon ?: continue
-            kept["wd:$q"] = FetchedPlace("wd:$q", ent.partOf.firstOrNull()?.let { "wd:$it" }, p.title, kind, lat, lon, PlaceKinds.defaultRadiusM(kind), p.extract, "wikipedia:en", "page:${p.pageId}")
+            val cap = radiusCapOf(ent.classes)
+            if (cap != null) radiusCaps["wd:$q"] = cap
+            kept["wd:$q"] = FetchedPlace("wd:$q", ent.partOf.firstOrNull()?.let { "wd:$it" }, p.title, kind, lat, lon, PlaceKinds.defaultRadiusM(kind).coerceAtMost(cap ?: Int.MAX_VALUE), p.extract, "wikipedia:en", "page:${p.pageId}")
             if (ent.hasPart.isNotEmpty()) hasPart[q] = ent.hasPart
         }
         for ((q, c) in extras) {
             val ent = entities[q] ?: run { rejected++; null } ?: continue
             if (ent.p31Malformed) { rejected++; continue }
             if (ent.classes.any { it in PERSON_CLASSES }) continue
-            val kind = ent.classes.firstNotNullOfOrNull { MONUMENT_CLASSES[it] } ?: CURATED_LANDMARK_QIDS[q] ?: continue
+            val kind = kindOf(ent.classes, q, mountains) ?: continue
             // Coordinates come from the verified table only; the entity's own P625 is never used for these.
             kept.putIfAbsent("wd:$q", FetchedPlace("wd:$q", ent.partOf.firstOrNull()?.let { "wd:$it" }, c.name, kind, c.lat, c.lon, PlaceKinds.defaultRadiusM(kind), "", "wikidata", "wd:$q"))
             if (ent.hasPart.isNotEmpty()) hasPart[q] = ent.hasPart
@@ -84,7 +95,7 @@ class PlaceCellSource(
                     val joined = wd?.let { kept[it] }
                     if (joined != null) {
                         val r = el.radiusM
-                        if (r != null && r > joined.radiusM) kept[joined.id] = joined.copy(radiusM = r.coerceAtMost(PlaceKinds.MAX_RADIUS_M))
+                        if (r != null && r > joined.radiusM) kept[joined.id] = joined.copy(radiusM = r.coerceAtMost(radiusCaps[joined.id] ?: PlaceKinds.MAX_RADIUS_M))
                     } else osmKind(el.tags)?.let { kind ->
                         val name = el.tags["name"] ?: return@let
                         osmPlaces += FetchedPlace("osm:${el.shortId}", null, name, kind, el.lat, el.lon, (el.radiusM ?: PlaceKinds.defaultRadiusM(kind)).coerceIn(10, PlaceKinds.MAX_RADIUS_M), "", "osm", "osm:${el.type}")
@@ -97,13 +108,25 @@ class PlaceCellSource(
             }
         }
         val out = kept.values.toList() + osmPlaces.filter { it.id !in kept }
-        log("cell parsed hits=${hits.size} pages=${pages.size} kept=${kept.size} osm=${osmPlaces.size} rejected=$rejected coordsDisagree=$coordsDisagree")
+        log("cell parsed coordAllowedWide=${wideAllowed.size} hits=${hits.size} pages=${pages.size} kept=${kept.size} osm=${osmPlaces.size} rejected=$rejected coordsDisagree=$coordsDisagree")
         return CellFetch(out, complete)
     }
 
     companion object {
         /** Two sources for one entity that are further apart than this (metres) disagree about where it is. */
         const val COORD_DISAGREE_M = 1000.0
+
+        /** Area-like places (a lake, a park, a mountain...) have no single point: Wikipedia and Wikidata may put theirs a few km apart. Such an item is kept up to this distance (metres); the stored point stays Wikidata's. */
+        const val WIDE_COORD_DISAGREE_M = 5000.0
+
+        /** P31 classes that are areas rather than points: lake, glacial lake, park, national park, wildlife refuge, protected area, waterfall, mountain pass and the mountain classes (admitted or not, the limit only matters once admitted). TODO-verify classes (proglacial lake, sanctuary, bird sanctuary) join when their ids are verified. */
+        val AREA_LIKE_CLASSES: Set<String> = setOf("Q23397", "Q211302", "Q22698", "Q46169", "Q1377575", "Q473972", "Q34038", "Q133056", "Q8502", "Q207326", "Q1595289")
+
+        /** Curated ids with no admitted area class that still get the wide limit: Do-drul Chorten Q5285886 (no P31 at all; owner follow-up 27 Nov). A point-like curated place is not listed. */
+        val WIDE_COORD_QIDS: Set<String> = setOf("Q5285886")
+
+        /** The 1 km rule for point-like places (monastery, fort, temple, stupa, palace, museum, bridge...), [WIDE_COORD_DISAGREE_M] for area-like ones. The radius cap (300 m) is NOT a limit: it would be tighter than the 1 km point rule. */
+        fun disagreeLimitM(classes: Set<String>, qid: String): Double = if (classes.any { it in AREA_LIKE_CLASSES } || qid in WIDE_COORD_QIDS) WIDE_COORD_DISAGREE_M else COORD_DISAGREE_M
 
         /** Great-circle distance in metres between two points (haversine, mean Earth radius 6,371,008.8 m). Pure. */
         fun haversineM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
@@ -115,9 +138,9 @@ class PlaceCellSource(
         }
 
         /** True when the two points are more than [COORD_DISAGREE_M] apart; a non-finite result is treated as a disagreement (fail closed). */
-        fun coordsDisagree(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Boolean {
+        fun coordsDisagree(lat1: Double, lon1: Double, lat2: Double, lon2: Double, limitM: Double = COORD_DISAGREE_M): Boolean {
             val d = haversineM(lat1, lon1, lat2, lon2)
-            return !d.isFinite() || d > COORD_DISAGREE_M
+            return !d.isFinite() || d > limitM
         }
 
         /**
@@ -148,12 +171,46 @@ class PlaceCellSource(
             "Q207694" to PlaceKinds.MUSEUM, "Q17431399" to PlaceKinds.MUSEUM, // art museum, national museum: the P31 of "Salar Jung Museum" (Q1864572)
             "Q2416723" to PlaceKinds.ATTRACTION, // theme park: the P31 of "Ramoji Film City" (Q1786944), with film studio (Q375336), which is not admitted
             // Added 2026-11-18 after the trip coverage check (docs/superpowers/reviews/2026-11/trip-seed-coverage-2026-11-18.md), each id and English label read back from wikidata.org on 2026-11-18.
-            // Not admitted although seen: lake, glacial lake, waterfall, mountain pass, geographical feature, railway station, horseshoe curve, tea plantation, remarkable tree, human settlement.
+            // Not admitted at that time (lake, glacial lake, waterfall, mountain pass: admitted 2026-11-27, below) although seen: geographical feature, railway station, horseshoe curve, tea plantation, remarkable tree, human settlement.
             "Q844619" to PlaceKinds.TEMPLE, "Q54074585" to PlaceKinds.TEMPLE, // vihara, Tibetan Buddhist monastery: Rumtek, Enchey, Ghum, Pemayangtse
             "Q1456873" to PlaceKinds.STUPA, // peace pagoda (a Buddhist stupa): Darjeeling Peace Pagoda
             "Q109607" to PlaceKinds.ARCHAEOLOGICAL_SITE, // ruins: Polonnaruwa Vatadage
             "Q167346" to PlaceKinds.ATTRACTION, // botanical garden: Royal Botanic Gardens, Peradeniya
+            // Added 2026-11-27 (owner decision, design 2026-11-27-large-area-seeding-design.md sections 9 and 10, Sikkim coverage). Ids from that document and from trip-seed-coverage-2026-11-18.md (glacial lake Q211302 was
+            // read back from wikidata.org on 2026-11-18); the English labels are in the comments. Not admitted: tea garden Q1827414, villages, human settlements, schools, zoos.
+            // TODO-verify (no id in the repo docs, NOT guessed, so NOT admitted yet): proglacial lake, sanctuary, bird sanctuary.
+            "Q23397" to PlaceKinds.ATTRACTION, "Q211302" to PlaceKinds.ATTRACTION, // lake, glacial lake
+            "Q34038" to PlaceKinds.ATTRACTION, // waterfall
+            "Q133056" to PlaceKinds.ATTRACTION, // mountain pass
+            "Q1559394" to PlaceKinds.TEMPLE, // gompa
+            "Q46169" to PlaceKinds.ATTRACTION, // national park (radius capped, see RADIUS_CAP_M)
+            "Q1377575" to PlaceKinds.ATTRACTION, // wildlife refuge (radius capped)
+            "Q473972" to PlaceKinds.ATTRACTION, // protected area (radius capped)
+            "Q537127" to PlaceKinds.ATTRACTION, // road bridge
+            "Q22698" to PlaceKinds.ATTRACTION, // park
+            "Q1139682" to PlaceKinds.MUSEUM, // Tibet museum
         )
+
+        /**
+         * Admitted only while Settings > Place Guide "Include mountains and peaks" is ON (default OFF; adds many places, good for a mountain trip): mountain Q8502, summit Q207326, sacred mountain Q1595289.
+         * Matched on P31 only, like [MONUMENT_CLASSES]; their radius is capped like the large areas.
+         */
+        val MOUNTAIN_CLASSES: Map<String, String> = mapOf(
+            "Q8502" to PlaceKinds.VIEWPOINT, // mountain
+            "Q207326" to PlaceKinds.VIEWPOINT, // summit
+            "Q1595289" to PlaceKinds.VIEWPOINT, // sacred mountain
+        )
+
+        /** Large areas: the radius an OSM extent may widen a place to (metres). A national park or a mountain is hundreds of square kilometres: the card is for being near its sign, not inside its border. */
+        const val AREA_RADIUS_CAP_M = 300
+        val RADIUS_CAP_M: Map<String, Int> = mapOf("Q473972" to AREA_RADIUS_CAP_M, "Q46169" to AREA_RADIUS_CAP_M, "Q1377575" to AREA_RADIUS_CAP_M, "Q8502" to AREA_RADIUS_CAP_M, "Q207326" to AREA_RADIUS_CAP_M, "Q1595289" to AREA_RADIUS_CAP_M)
+
+        /** The kind of an item with these P31 [classes] and this [qid], or null when it is not admitted (the one class rule of the per-cell and the bulk path; people are checked by the caller). */
+        fun kindOf(classes: Set<String>, qid: String, mountains: Boolean): String? =
+            classes.firstNotNullOfOrNull { MONUMENT_CLASSES[it] } ?: CURATED_LANDMARK_QIDS[qid] ?: if (mountains) classes.firstNotNullOfOrNull { MOUNTAIN_CLASSES[it] } else null
+
+        /** The smallest radius cap of the item's classes, or null. */
+        fun radiusCapOf(classes: Set<String>): Int? = classes.mapNotNull { RADIUS_CAP_M[it] }.minOrNull()
 
         /** Wikidata classes that make an item a person or character: such an item is rejected even when its QID is curated. Labels read back from wikidata.org on 2026-11-18. */
         val PERSON_CLASSES: Set<String> = setOf(

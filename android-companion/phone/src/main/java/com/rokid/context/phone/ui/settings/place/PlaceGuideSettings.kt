@@ -78,6 +78,8 @@ data class PlaceGuideUiState(
     /** The history Developer flag (off by default): the list collapses to one line. */
     val historyOn: Boolean = true,
     /** V2b "Offline place guess (Maybe)": the user's switch (default OFF) and its two Advanced fields (cut-off, candidate radius in metres). */
+    /** 27 Nov: "Include mountains and peaks" (default OFF). */
+    val includeMountains: Boolean = false,
     val offlineGuess: Boolean = false, val maybeCutoff: Float = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_CUTOFF, val candidateRadiusM: Int = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_RADIUS_M,
 )
 
@@ -128,6 +130,10 @@ interface PlaceGuideControl {
         set(@Suppress("UNUSED_PARAMETER") v) {}
     /** V2b: the "Offline place guess (Maybe)" switch (default OFF), the "Maybe cut-off" and the "Candidate radius" (metres). Stored by the app; a fake keeps them in memory. */
     var offlineGuess: Boolean
+        get() = false
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    /** "Include mountains and peaks" (default OFF): mountain, summit and sacred mountain classes are admitted by NEW seeds; places already stored are not removed. */
+    var includeMountains: Boolean
         get() = false
         set(@Suppress("UNUSED_PARAMETER") v) {}
     var maybeCutoff: Float
@@ -253,6 +259,7 @@ object PlaceGuideModel {
     fun snapCutoff(v: Float): Float = clampCutoff(Math.round(v / 0.05f) * 0.05f)
     fun snapRadius(v: Float): Int = clampRadius(Math.round(v / 50f) * 50)
     fun clampRadius(m: Int): Int = m.coerceIn(com.rokid.context.work.frames.place.OfflineTier.MIN_RADIUS_M, com.rokid.context.work.frames.place.OfflineTier.WIDE_RADIUS_M)
+    const val MOUNTAINS_LABEL = "Include mountains and peaks (adds many places; good for a mountain trip)"
     const val OFFLINE_NOTE = "When there is no network and the photo could not be matched, the phone describes the photo itself and may show one card marked \"Maybe\". It is only a guess and is not checked. Needs the offline photo captions (Developer) and the SmolVLM2 download."
 
     const val ZONE_NOTE = "Place cards stay off whenever a pause zone is active or you are near one."
@@ -266,7 +273,7 @@ object PlaceGuideModel {
 }
 
 class PlaceGuideViewModel(private val control: PlaceGuideControl, private val work: CoroutineDispatcher = Dispatchers.IO, developerMode: Boolean = false, private val now: () -> Long = System::currentTimeMillis, private val zone: java.time.ZoneId = java.time.ZoneId.systemDefault()) : ViewModel() {
-    private val _state = MutableStateFlow(PlaceGuideUiState(enabled = control.enabled, cardSide = control.cardSide, developerMode = developerMode, budgetMb = control.budgetMb, offlineGuess = control.offlineGuess, maybeCutoff = control.maybeCutoff, candidateRadiusM = control.candidateRadiusM))
+    private val _state = MutableStateFlow(PlaceGuideUiState(enabled = control.enabled, cardSide = control.cardSide, developerMode = developerMode, budgetMb = control.budgetMb, includeMountains = control.includeMountains, offlineGuess = control.offlineGuess, maybeCutoff = control.maybeCutoff, candidateRadiusM = control.candidateRadiusM))
     val state: StateFlow<PlaceGuideUiState> = _state
 
     init { refreshSummary() }
@@ -277,6 +284,7 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     fun setEnabled(on: Boolean) { control.enabled = on; _state.update { it.copy(enabled = on) } }
 
     /** V2b: the user's switch; the screen shows what was stored (a value is clamped to its range on the way in). */
+    fun setIncludeMountains(on: Boolean) { control.includeMountains = on; _state.update { it.copy(includeMountains = control.includeMountains) } }
     fun setOfflineGuess(on: Boolean) { control.offlineGuess = on; _state.update { it.copy(offlineGuess = control.offlineGuess) } }
     fun setMaybeCutoff(v: Float) { control.maybeCutoff = PlaceGuideModel.clampCutoff(v); _state.update { it.copy(maybeCutoff = control.maybeCutoff) } }
     fun setCandidateRadius(m: Int) { control.candidateRadiusM = PlaceGuideModel.clampRadius(m); _state.update { it.copy(candidateRadiusM = control.candidateRadiusM) } }
@@ -631,7 +639,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     }
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setIncludeMountains = vm::setIncludeMountains, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius))
 }
 
 /**
@@ -676,7 +684,7 @@ class PlaceGuideActions(
     /** S3: cancels the active background seed(s). */
     val cancelSeeds: () -> Unit = {},
     /** V2b: the "Offline place guess (Maybe)" switch and its two Advanced fields. */
-    val setOfflineGuess: (Boolean) -> Unit = {}, val setMaybeCutoff: (Float) -> Unit = {}, val setCandidateRadius: (Int) -> Unit = {},
+    val setIncludeMountains: (Boolean) -> Unit = {}, val setOfflineGuess: (Boolean) -> Unit = {}, val setMaybeCutoff: (Float) -> Unit = {}, val setCandidateRadius: (Int) -> Unit = {},
 )
 
 @Composable
@@ -688,6 +696,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 SwitchRow("Place Guide", "Names the monument you are looking at after you pause on it", state.enabled, onEnabled, tag = "place_guide_switch")
                 NoticeText(PlaceGuideModel.ZONE_NOTE, tag = "place_guide_zone_note")
                 if (state.packSummary.isNotEmpty()) NoticeText(state.packSummary, tag = "place_guide_pack")
+                SwitchRow("Include mountains and peaks", "Adds many places; good for a mountain trip. Applies to areas you seed from now on; places already stored stay.", state.includeMountains, on.setIncludeMountains, tag = "place_guide_mountains")
                 SwitchRow("Offline place guess (Maybe)", PlaceGuideModel.OFFLINE_NOTE, state.offlineGuess, on.setOfflineGuess, tag = "place_guide_offline_guess")
             }
         }

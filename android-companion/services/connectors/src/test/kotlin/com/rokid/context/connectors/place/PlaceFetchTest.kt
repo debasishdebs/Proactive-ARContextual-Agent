@@ -132,7 +132,9 @@ class PlaceFetchTest {
             // read back from wikidata.org on 2026-11-18 (trip coverage check): the P31 of Rumtek/Enchey/Ghum/Pemayangtse, Darjeeling Peace Pagoda, Polonnaruwa Vatadage, Peradeniya
             "Q844619" to "vihāra", "Q54074585" to "Tibetan Buddhist monastery", "Q1456873" to "peace pagoda", "Q109607" to "ruins", "Q167346" to "botanical garden",
         )
-        assertEquals(verified.keys, PlaceCellSource.MONUMENT_CLASSES.keys)
+        // Added 2026-11-27 by owner decision (ids from the large-area design doc sections 9 and 10; glacial lake Q211302 read back 2026-11-18); asserted separately in classRuleLoosened27Nov.
+        val loosened27Nov = setOf("Q23397", "Q211302", "Q34038", "Q133056", "Q1559394", "Q46169", "Q1377575", "Q473972", "Q537127", "Q22698", "Q1139682")
+        assertEquals(verified.keys + loosened27Nov, PlaceCellSource.MONUMENT_CLASSES.keys)
         assertEquals(PlaceKinds.PRISON_MUSEUM, PlaceCellSource.MONUMENT_CLASSES["Q10500763"])
         assertFalse("Q40357 is a plain prison") { "Q40357" in PlaceCellSource.MONUMENT_CLASSES }
         assertFalse("Q160742 is an abbey") { "Q160742" in PlaceCellSource.MONUMENT_CLASSES }
@@ -140,9 +142,25 @@ class PlaceFetchTest {
 
     /** Classes seen on the trip check and deliberately NOT admitted (not monument-like, or people/organisations/businesses), ids and labels from wikidata.org 2026-11-18. */
     @Test fun tripClassesThatAreNotMonumentsStayOut() {
-        val out = mapOf("Q23397" to "lake", "Q211302" to "glacial lake", "Q34038" to "waterfall", "Q133056" to "mountain pass", "Q618123" to "geographical feature", "Q55488" to "railway station",
+        val out = mapOf("Q618123" to "geographical feature", "Q1827414" to "tea garden", "Q8502" to "mountain (toggle only)", "Q207326" to "summit (toggle only)", "Q1595289" to "sacred mountain (toggle only)", "Q55488" to "railway station",
             "Q1395089" to "horseshoe curve", "Q70780172" to "tea plantation", "Q811534" to "remarkable tree", "Q486972" to "human settlement", "Q5" to "human")
         for ((id, label) in out) assertFalse("$label ($id) must not be admitted") { id in PlaceCellSource.MONUMENT_CLASSES }
+    }
+
+    @Test fun classRuleLoosened27Nov() {
+        val none = emptySet<String>()
+        for (c in listOf("Q23397", "Q211302", "Q34038", "Q133056", "Q1559394", "Q46169", "Q1377575", "Q473972", "Q537127", "Q22698", "Q1139682")) assertNotNull(PlaceCellSource.kindOf(setOf(c), "Q1", false), c)
+        assertEquals(PlaceKinds.TEMPLE, PlaceCellSource.kindOf(setOf("Q1559394"), "Q1", false))
+        assertEquals(PlaceKinds.MUSEUM, PlaceCellSource.kindOf(setOf("Q1139682"), "Q1", false))
+        for (c in listOf("Q1827414", "Q486972", "Q3914", "Q5", "Q43501")) assertNull(PlaceCellSource.kindOf(setOf(c), "Q1", true), "$c stays out") // tea garden, settlement, school, human, zoo
+        // mountains: toggle only
+        for (c in PlaceCellSource.MOUNTAIN_CLASSES.keys) { assertNull(PlaceCellSource.kindOf(setOf(c), "Q1", false)); assertNotNull(PlaceCellSource.kindOf(setOf(c), "Q1", true)) }
+        assertEquals(setOf("Q8502", "Q207326", "Q1595289"), PlaceCellSource.MOUNTAIN_CLASSES.keys)
+        assertNull(PlaceCellSource.kindOf(none, "Q2", true))
+        assertEquals(300, PlaceCellSource.radiusCapOf(setOf("Q473972", "Q23397")))
+        assertNull(PlaceCellSource.radiusCapOf(setOf("Q23397")))
+        // a person is never admitted by the class rule callers (PERSON_CLASSES stays)
+        assertTrue("Q5" in PlaceCellSource.PERSON_CLASSES)
     }
 
     @Test fun httpIsHttpsOnlyAndRateLimited() = runTest {
@@ -212,8 +230,10 @@ class PlaceFetchTest {
             Triple("Peace Pagoda, Darjeeling", "Q7157413", setOf("Q1456873")) to PlaceKinds.STUPA,
             Triple("Polonnaruwa Vatadage", "Q7225955", setOf("Q109607")) to PlaceKinds.ARCHAEOLOGICAL_SITE,
             Triple("Royal Botanic Gardens, Peradeniya", "Q3119056", setOf("Q167346")) to PlaceKinds.ATTRACTION,
-            Triple("Some other lake", "Q9999981", setOf("Q23397")) to null,
-            Triple("Some other waterfall", "Q9999982", setOf("Q34038")) to null,
+            Triple("Some other lake", "Q9999981", setOf("Q23397")) to PlaceKinds.ATTRACTION, // admitted 2026-11-27
+            Triple("Some other waterfall", "Q9999982", setOf("Q34038")) to PlaceKinds.ATTRACTION, // admitted 2026-11-27
+            Triple("Some peak", "Q9999985", setOf("Q8502")) to null, // mountain: only with the Settings toggle
+            Triple("Some tea garden", "Q9999986", setOf("Q1827414")) to null,
             Triple("Some other tea estate", "Q9999983", setOf("Q70780172", "Q56436498")) to null,
             Triple("Some other settlement", "Q9999984", setOf("Q486972")) to null,
             Triple("Some Lama", "Q9999991", setOf("Q5")) to null,
@@ -227,6 +247,48 @@ class PlaceFetchTest {
         }
         val got = PlaceCellSource(wiki, wd, null).fetchCell(Geohash5.encode(27.3, 88.6)).places.associate { it.id to it.kind }
         assertEquals(rows.filter { it.second != null }.associate { "wd:${it.first.second}" to it.second!! }, got)
+    }
+
+    /** 27 Nov owner follow-up: area-like classes tolerate up to 5 km between the two points (kept, stored at Wikidata's point); point-like ones keep the 1 km rule; generic fixture coordinates. */
+    @Test fun classAwareCoordinateRule() = runTest {
+        // wikipedia points ~2.2 km and ~3.3 km north of the Wikidata point (0.02 and 0.03 degrees of latitude)
+        val rows = listOf(Triple("Some Lake", "Q81", setOf("Q23397")) to 0.02, Triple("Some Stupa", "Q82", emptySet<String>()) to 0.02, Triple("Some Fort", "Q83", setOf("Q57821")) to 0.03, Triple("Some Far Lake", "Q84", setOf("Q23397")) to 0.06)
+        val wiki = object : WikipediaSource {
+            override suspend fun geosearch(box: com.rokid.context.memory.place.GeoBox) = rows.mapIndexed { i, r -> WikiHit(i + 1L, r.first.first, 27.3 + r.second, 88.6) }
+            override suspend fun pages(pageIds: List<Long>) = rows.mapIndexed { i, r -> WikiPage(i + 1L, r.first.first, "x.", r.first.second, 27.3 + r.second, 88.6) }
+        }
+        val wd = object : WikidataSource {
+            override suspend fun entities(ids: List<String>) = rows.associate { it.first.second to WikidataEntity(it.first.second, it.first.third, emptyList(), emptyList(), 27.3, 88.6) }
+        }
+        val logs = mutableListOf<String>()
+        val got = PlaceCellSource(wiki, wd, null) { logs += it }.fetchCell(Geohash5.encode(27.3, 88.6)).places.associateBy { it.id }
+        assertEquals(setOf("wd:Q81"), got.keys) // lake kept at 2.2 km; the unclassed non-curated stupa and the fort (point-like) dropped; the lake at 6.6 km dropped
+        assertEquals(27.3, got.getValue("wd:Q81").lat) // the stored point is Wikidata's
+        assertTrue(logs.any { "coordAllowedWide=1 " in it }, logs.toString())
+        // a curated no-class item (Do-drul-like) gets the wide limit
+        assertEquals(5000.0, PlaceCellSource.disagreeLimitM(emptySet(), "Q5285886"))
+        assertEquals(1000.0, PlaceCellSource.disagreeLimitM(setOf("Q57821"), "Q1"))
+        assertEquals(1000.0, PlaceCellSource.disagreeLimitM(emptySet(), "Q4868648")) // a point-like curated place is not widened
+    }
+
+    /** 27 Nov: the mountain classes enter through the per-cell path only while the Settings toggle is ON; a protected area keeps its radius under the cap even when OSM reports a huge extent. */
+    @Test fun mountainToggleAndRadiusCapInTheCellPath() = runTest {
+        val wiki = object : WikipediaSource {
+            override suspend fun geosearch(box: com.rokid.context.memory.place.GeoBox) = listOf(WikiHit(1, "Some Peak", 27.3, 88.6), WikiHit(2, "Some Reserve", 27.3, 88.6))
+            override suspend fun pages(pageIds: List<Long>) = listOf(WikiPage(1, "Some Peak", "x.", "Q91", 27.3, 88.6), WikiPage(2, "Some Reserve", "x.", "Q92", 27.3, 88.6))
+        }
+        val wd = object : WikidataSource {
+            override suspend fun entities(ids: List<String>) = mapOf("Q91" to WikidataEntity("Q91", setOf("Q8502"), emptyList(), emptyList(), 27.3, 88.6), "Q92" to WikidataEntity("Q92", setOf("Q473972"), emptyList(), emptyList(), 27.3, 88.6))
+        }
+        val osm = object : OverpassSource {
+            override suspend fun elements(box: com.rokid.context.memory.place.GeoBox) = listOf(OsmElement("relation", 5, 27.3, 88.6, 40_000, mapOf("wikidata" to "Q92", "name" to "Some Reserve")))
+        }
+        val cell = Geohash5.encode(27.3, 88.6)
+        assertEquals(setOf("wd:Q92"), PlaceCellSource(wiki, wd, osm).fetchCell(cell).places.map { it.id }.toSet())
+        val on = PlaceCellSource(wiki, wd, osm, includeMountains = { true }).fetchCell(cell).places.associateBy { it.id }
+        assertEquals(setOf("wd:Q91", "wd:Q92"), on.keys)
+        assertEquals(300, on.getValue("wd:Q92").radiusM)
+        assertTrue(on.getValue("wd:Q91").radiusM <= 300)
     }
 
     /** Curated landmark allowlist (version 1): ids and English labels as wikidata.org returned them on 2026-11-18. */
@@ -262,7 +324,7 @@ class PlaceFetchTest {
         val at = 27.3 to 88.6
         val got = curatedCell(listOf(
             Triple("Q3214979", setOf("Q23397"), at), // Khecheopalri Lake: curated lake
-            Triple("Q1111111", setOf("Q23397"), at), // another lake: not curated
+            Triple("Q1111111", setOf("Q1827414"), at), // another class that is not admitted (tea garden), not curated
             Triple("Q4868648", setOf("Q1395089"), at), // Batasia Loop
             Triple("Q5285886", emptySet(), at), // Do-drul Chorten, no P31
             Triple("Q2222222", emptySet(), at), // no P31, not curated

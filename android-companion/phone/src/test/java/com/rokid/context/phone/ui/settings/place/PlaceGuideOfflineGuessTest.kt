@@ -12,6 +12,12 @@ class PlaceGuideOfflineGuessTest {
         assertFalse(s.offlineGuess); assertEquals(0.55f, s.maybeCutoff); assertEquals(150, s.candidateRadiusM)
     }
 
+    /** 27 Nov: "Include mountains and peaks" is OFF by default and the plain wording is in the label. */
+    @Test fun mountainsToggleDefaultsOffWithPlainWording() {
+        assertFalse(PlaceGuideUiState().includeMountains)
+        assertEquals("Include mountains and peaks (adds many places; good for a mountain trip)", PlaceGuideModel.MOUNTAINS_LABEL)
+    }
+
     @Test fun cutoffRangeIs030To090AndNaNReadsAsTheDefault() {
         assertEquals(0.30f, PlaceGuideModel.clampCutoff(0.0f)); assertEquals(0.90f, PlaceGuideModel.clampCutoff(2f)); assertEquals(0.55f, PlaceGuideModel.clampCutoff(Float.NaN)); assertEquals(0.62f, PlaceGuideModel.clampCutoff(0.62f))
     }
