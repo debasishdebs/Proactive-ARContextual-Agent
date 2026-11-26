@@ -129,6 +129,15 @@ object MomentHeat {
     const val EMPTY = "No saved locations yet. Turn on Save location with Moments in Settings."
     const val NONE_IN_RANGE = "No Moments with a saved location in this period."
     const val CAPPED = "Showing the first 20,000 saved locations. Choose a shorter period to see the rest."
+    const val NO_FIX = "No recent location from the phone yet. Try again once the phone has a location."
+    /** Half the width of the view after "Centre on me": about 2 km across (design S2). */
+    const val CENTRE_HALF_SPAN_M = 1_000.0
+
+    /** The newest fix of the zone guard if it is fresh enough, else null. Pure: the guard's own staleness limit, no new location request. */
+    fun centreOn(fix: com.rokid.context.core.model.zone.ZoneFix?, elapsedNowMs: Long): com.rokid.context.phone.ui.settings.privacy.zones.LatLon? =
+        fix?.takeIf { it.lat.isFinite() && it.lon.isFinite() && elapsedNowMs - it.timeMs <= com.rokid.context.core.model.zone.ZoneEvaluator.STALE_MS }
+            ?.let { com.rokid.context.phone.ui.settings.privacy.zones.LatLon(it.lat, it.lon) }
+
     const val NO_NETWORK = "No network: plain grid. Your Moments are shown from the phone."
     const val NEEDS_CONSENT = "Turn on the street map under Pause zones to see streets here. The plain grid is used until then."
 

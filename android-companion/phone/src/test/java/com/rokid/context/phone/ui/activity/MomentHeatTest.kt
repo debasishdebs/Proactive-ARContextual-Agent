@@ -95,4 +95,12 @@ class MomentHeatTest {
         assertEquals(ActivityViewMode.LIST, ActivityViewMode.DEFAULT)
         assertEquals(ActivityViewMode.LIST, ActivityViewMode.parse(null)); assertEquals(ActivityViewMode.LIST, ActivityViewMode.parse("SIDEWAYS")); assertEquals(ActivityViewMode.MAP, ActivityViewMode.parse("MAP"))
     }
+
+    @Test fun centreOnMeUsesOnlyAFreshZoneGuardFix() {
+        val fresh = com.rokid.context.core.model.zone.ZoneFix(1_000L, 17.38, 78.48, 10f)
+        assertEquals(17.38, MomentHeat.centreOn(fresh, 2_000L)!!.lat, 0.0)
+        assertNull(MomentHeat.centreOn(null, 2_000L))
+        assertNull("a stale fix is not used", MomentHeat.centreOn(fresh, 1_000L + com.rokid.context.core.model.zone.ZoneEvaluator.STALE_MS + 1))
+        assertNull(MomentHeat.centreOn(com.rokid.context.core.model.zone.ZoneFix(1_000L, Double.NaN, 78.48, 10f), 2_000L))
+    }
 }

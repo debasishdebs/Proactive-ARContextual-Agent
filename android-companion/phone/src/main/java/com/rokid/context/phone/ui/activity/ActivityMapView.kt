@@ -68,23 +68,25 @@ private const val MAX_ROWS_SHOWN = 50
  * Pinch, drag and double-tap zoom like the zones map. Tapping a hot cell lists its Moments; a tap on a row opens the usual preview. Positions are drawn only; nothing is logged.
  */
 @Composable
-fun ActivityMapPanel(vm: ActivityMapViewModel, state: ActivityUiState, zone: java.time.ZoneId, onlineMap: (() -> OnlineMapDeps)?, onPreview: (List<String>) -> Unit, network: kotlinx.coroutines.flow.Flow<Boolean>? = null) {
+fun ActivityMapPanel(vm: ActivityMapViewModel, state: ActivityUiState, zone: java.time.ZoneId, onlineMap: (() -> OnlineMapDeps)?, onPreview: (List<String>) -> Unit, network: kotlinx.coroutines.flow.Flow<Boolean>? = null, lastFix: (() -> com.rokid.context.core.model.zone.ZoneFix?)? = null) {
     val networkOnline by remember(network) { network ?: kotlinx.coroutines.flow.flowOf(true) }.collectAsStateWithLifecycle(true)
     val map by vm.state.collectAsStateWithLifecycle()
     val range = MomentHeat.range(state, zone)
     LaunchedEffect(range, state.granularity) { vm.load(range, state.granularity) }
     val onlineDeps = com.rokid.context.phone.ui.settings.privacy.zones.online.rememberOnlineDeps(onlineMap) // built on IO (it reads the encrypted key vault)
     val online: OnlineMapPanel? = onlineDeps.deps?.let { d -> rememberOnlinePanel(d, { false }, {}) }
-    ActivityHeatMap(map, state.granularity, online, vm, zone, onlineLoading = onlineDeps.loading, onPreview = onPreview, networkOnline = networkOnline)
+    ActivityHeatMap(map, state.granularity, online, vm, zone, onlineLoading = onlineDeps.loading, onPreview = onPreview, networkOnline = networkOnline, lastFix = lastFix)
 }
 
 @Composable
-internal fun ActivityHeatMap(map: ActivityMapState, g: Granularity, online: OnlineMapPanel?, vm: ActivityMapViewModel?, zone: java.time.ZoneId, onlineLoading: Boolean = false, onPreview: (List<String>) -> Unit, networkOnline: Boolean = true) {
+internal fun ActivityHeatMap(map: ActivityMapState, g: Granularity, online: OnlineMapPanel?, vm: ActivityMapViewModel?, zone: java.time.ZoneId, onlineLoading: Boolean = false, onPreview: (List<String>) -> Unit, networkOnline: Boolean = true, lastFix: (() -> com.rokid.context.core.model.zone.ZoneFix?)? = null, elapsed: () -> Long = android.os.SystemClock::elapsedRealtime) {
     val measurer = rememberTextMeasurer()
     var size by remember { mutableStateOf(Size.Zero) }
     var vp by remember { mutableStateOf<MapViewport?>(null) }
     var fitKey by remember { mutableStateOf(0) }
     var picked by remember { mutableStateOf<HeatCell?>(null) }
+    var you by remember { mutableStateOf<com.rokid.context.phone.ui.settings.privacy.zones.LatLon?>(null) } // screen state only: never stored, logged or sent
+    var fixNote by remember { mutableStateOf<String?>(null) }
     val notice = if (!networkOnline) MomentHeat.NO_NETWORK else if (onlineLoading) null else MomentHeat.tileNotice(online?.ui?.available == true, online?.ui?.enabled == true) // no "add a key" notice while the key is still being read
     LaunchedEffect(map.points) { picked = null } // review2 #6: a new set of points (a reload after a deletion) never keeps a cell of the old one selected
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
@@ -135,6 +137,7 @@ internal fun ActivityHeatMap(map: ActivityMapState, g: Granularity, online: Onli
                     painted = true
                 }
                 if (!painted) drawGrid(v, measurer)
+                you?.let { y -> val p = v.toPx(y.lat, y.lon); if (p.x.isFinite() && p.y.isFinite()) { drawCircle(Color.White, 9.dp.toPx(), Offset(p.x, p.y)); drawCircle(PcColors.Sky, 6.dp.toPx(), Offset(p.x, p.y)) } }
                 for (c in cells) {
                     val p = v.toPx(c.lat, c.lon)
                     if (!(p.x.isFinite() && p.y.isFinite()) || p.x < -80f || p.y < -80f || p.x > this.size.width + 80f || p.y > this.size.height + 80f) continue
@@ -150,10 +153,18 @@ internal fun ActivityHeatMap(map: ActivityMapState, g: Granularity, online: Onli
                 TextButton({ vp = vp?.zoomed(1.6) }, Modifier.testTag("activity_map_zoom_in")) { Text("+") }
                 TextButton({ vp = vp?.zoomed(1 / 1.6) }, Modifier.testTag("activity_map_zoom_out")) { Text("-") }
                 TextButton({ fitKey++ }, Modifier.testTag("activity_map_fit")) { Text("Fit") }
+                if (lastFix != null) TextButton({
+                    val at = MomentHeat.centreOn(lastFix(), elapsed())
+                    if (at == null) { fixNote = MomentHeat.NO_FIX } else {
+                        fixNote = null; you = at
+                        if (size.width >= 10f && size.height >= 10f) vp = MapViewport.fit(listOf(MapViewport.grown(at.lat, at.lon, at.lat, at.lon, MomentHeat.CENTRE_HALF_SPAN_M)), size.width, size.height)
+                    }
+                }, Modifier.testTag("activity_map_centre")) { Text("Me") }
             }
         }
         Text(summary + if (map.capped) "\n" + MomentHeat.CAPPED else "", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft, modifier = Modifier.padding(top = 6.dp).testTag("activity_map_summary"))
         notice?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft, modifier = Modifier.padding(top = 4.dp).testTag("activity_map_notice")) }
+        fixNote?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft, modifier = Modifier.padding(top = 4.dp).testTag("activity_map_centre_note")) }
         picked?.let { cell -> CellMoments(cell, vm, zone, onPreview) { picked = null } }
     }
 }

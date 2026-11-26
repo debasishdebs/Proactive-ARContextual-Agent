@@ -71,7 +71,7 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
             mapContent = { s ->
                 val ctx = androidx.compose.ui.platform.LocalContext.current.applicationContext
                 val mapVm = viewModel { com.rokid.context.phone.ui.activity.ActivityMapViewModel(com.rokid.context.phone.ui.activity.AppMomentMapSource(ctx), deps.memory.timeline) }
-                com.rokid.context.phone.ui.activity.ActivityMapPanel(mapVm, s, deps.zone(), { com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineMapGraph.get(ctx).deps() }, onPreview = { ids -> nav.navigate(previewMoment(ids, PreviewMode.OPEN).route) }, network = androidx.compose.runtime.remember(ctx) { com.rokid.context.phone.ui.settings.privacy.zones.networkOnlineFlow(ctx) })
+                com.rokid.context.phone.ui.activity.ActivityMapPanel(mapVm, s, deps.zone(), { com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineMapGraph.get(ctx).deps() }, onPreview = { ids -> nav.navigate(previewMoment(ids, PreviewMode.OPEN).route) }, network = androidx.compose.runtime.remember(ctx) { com.rokid.context.phone.ui.settings.privacy.zones.networkOnlineFlow(ctx) }, lastFix = { com.rokid.context.phone.zone.ZoneGraph.get(ctx).lastFix() })
             },
         )
     }

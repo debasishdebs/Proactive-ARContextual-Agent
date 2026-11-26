@@ -101,13 +101,14 @@ class ActivityMapViewTest {
     }
 
     private var networkOnline by mutableStateOf(true)
+    private var fix: (() -> com.rokid.context.core.model.zone.ZoneFix?)? = null
 
     private fun show(mode: ActivityViewMode, map: ActivityMapState, picks: MutableList<ActivityViewMode> = mutableListOf()) = compose.setContent {
         PcTheme {
             ActivityScreen(
                 ActivityUiState(today = TODAY, viewMode = mode), {}, {}, {}, {}, { _, _ -> }, {},
                 onSelectViewMode = { picks += it },
-                mapContent = { ActivityHeatMap(map, Granularity.MOMENTS, null, null, ZONE, onPreview = {}, networkOnline = networkOnline) },
+                mapContent = { ActivityHeatMap(map, Granularity.MOMENTS, null, null, ZONE, onPreview = {}, networkOnline = networkOnline, lastFix = fix, elapsed = { 2_000L }) },
             )
         }
     }
@@ -126,6 +127,20 @@ class ActivityMapViewTest {
         show(ActivityViewMode.MAP, ActivityMapState(loaded = true, points = listOf(HeatPoint("a", 17.38, 78.48, 1))))
         compose.onNodeWithTag("activity_map_no_network").assertExists()
         compose.onNodeWithText(MomentHeat.NO_NETWORK).assertExists()
+    }
+
+    @Test fun centreOnMeShowsNoteWithoutAFixAndNothingWithOne() {
+        fix = { null }
+        show(ActivityViewMode.MAP, ActivityMapState(listOf(HeatPoint("a", 17.38, 78.48, 1)), loaded = true))
+        compose.onNodeWithTag("activity_map_centre").performClick()
+        compose.onNodeWithTag("activity_map_centre_note").assertExists()
+    }
+
+    @Test fun centreOnMeWithAFreshFixShowsNoNote() {
+        fix = { com.rokid.context.core.model.zone.ZoneFix(1_000L, 17.38, 78.48, 10f) }
+        show(ActivityViewMode.MAP, ActivityMapState(listOf(HeatPoint("a", 17.38, 78.48, 1)), loaded = true))
+        compose.onNodeWithTag("activity_map_centre").performClick()
+        compose.onNodeWithTag("activity_map_centre_note").assertDoesNotExist()
     }
 
     @Test fun anEmptyMapSaysHowToTurnLocationsOn() {
