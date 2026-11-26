@@ -19,20 +19,24 @@ class PlaceGuideExtraTypesTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     @Before fun setUp() { ctx.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE).edit().clear().commit() }
 
-    @Test fun everyTypeIsOnByDefault() {
+    @Test fun everyTypeIsOnByDefaultExceptTheFourNewOptionalOnes() {
         val s = PlaceGuideSettings.of(ctx)
+        val off = setOf(ExtraPlaceTypes.BATTLES, ExtraPlaceTypes.VALLEYS, ExtraPlaceTypes.CITIES, ExtraPlaceTypes.AIRPORTS)
         assertEquals(ExtraPlaceTypes.DEFAULT_ON, s.extraTypes)
-        for (k in ExtraPlaceTypes.KEYS) assertTrue(k, s.extraType(k))
+        assertEquals(ExtraPlaceTypes.KEYS - off, s.extraTypes)
+        for (k in ExtraPlaceTypes.KEYS) assertEquals(k, k !in off, s.extraType(k))
     }
 
     @Test fun eachSwitchPersistsOnItsOwn() {
         for (t in ExtraPlaceTypes.SHOWN) {
-            PlaceGuideSettings.of(ctx).setExtraType(t.key, false)
+            val flipped = !t.defaultOn // flip each switch away from its default; it persists on its own
+            PlaceGuideSettings.of(ctx).setExtraType(t.key, flipped)
             ctx.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE).edit().commit()
             val s = PlaceGuideSettings.of(ctx)
-            assertFalse(t.key, s.extraType(t.key)); assertEquals(ExtraPlaceTypes.KEYS - t.key, s.extraTypes)
-            s.setExtraType(t.key, true)
-            assertTrue(PlaceGuideSettings.of(ctx).extraType(t.key))
+            assertEquals(t.key, flipped, s.extraType(t.key))
+            assertEquals(if (flipped) ExtraPlaceTypes.DEFAULT_ON + t.key else ExtraPlaceTypes.DEFAULT_ON - t.key, s.extraTypes)
+            s.setExtraType(t.key, !flipped)
+            assertEquals(!flipped, PlaceGuideSettings.of(ctx).extraType(t.key))
         }
     }
 
