@@ -41,4 +41,11 @@ class PlaceCardIntroTest {
     @Test fun aPinShowsItsOwnNote() {
         assertEquals("My note · here", PlaceCards.nearby(pe("My note", source = PlaceCards.USER_SOURCE), 0.0, "f").line)
     }
+
+    @Test fun theMaybeCardIsPlainWordsWithTheIntroAndNoNumber() {
+        val c = PlaceCards.maybe(pe(three), "f")
+        assertEquals("Maybe: Charminar", c.title); assertEquals(three, c.line); assertEquals("offline guess · not checked", c.sourceLabel); assertEquals(PlaceConfidence.MAYBE, c.confidence)
+        assertEquals("Monument", PlaceCards.maybe(pe(""), "f").line)
+        assertTrue(PlaceCards.maybe(pe(three, name = "N".repeat(200)), "f").title.length <= PlaceCards.TITLE_MAX)
+    }
 }

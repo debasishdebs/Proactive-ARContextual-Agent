@@ -352,6 +352,9 @@ fun DiagnosticsScreen(
     offlineCaption: Boolean = false,
     onOfflineCaption: (Boolean) -> Unit = {},
     offlineCaptionTest: (@Composable () -> Unit)? = null,
+    /** V2b offline "Maybe" place tier (Developer; default OFF). Also needs the user switch in Settings > Place Guide, the offline captions above and the model download. */
+    offlineTier: Boolean = false,
+    onOfflineTier: (Boolean) -> Unit = {},
     /** WP8: the Developer "test place and test photos" section (null = not available). Shown only with [developerMode]. */
     testPlace: (@Composable () -> Unit)? = null,
     /** Room v16 suspect descriptions: mark one, mark every one, undo the last marking. */
@@ -522,6 +525,13 @@ fun DiagnosticsScreen(
                         Switch(checked = offlineCaption, onCheckedChange = onOfflineCaption, modifier = Modifier.testTag("offline_caption_switch"))
                     }
                     if (offlineCaption) offlineCaptionTest?.invoke()
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Offline Maybe place tier (experimental)", style = MaterialTheme.typography.titleSmall)
+                            Text("Off (default). On, together with Settings > Place Guide > Offline place guess and the offline photo captions: with no network and no confident place, the phone describes the photo and may show ONE card marked Maybe. The caption is never saved or logged.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                        }
+                        Switch(checked = offlineTier, onCheckedChange = onOfflineTier, modifier = Modifier.testTag("offline_tier_switch"))
+                    }
                     NoticeText(CanvasSessionCopy.note(devSessionHours), tag = "dev_session_note")
                     testPlace?.invoke()
                 }

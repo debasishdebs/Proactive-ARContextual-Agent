@@ -35,6 +35,17 @@ class AndroidPlaceGuideControl(
         get() = settings.budgetMb
         set(v) { settings.budgetMb = v }
 
+    override var offlineGuess: Boolean
+        get() = settings.offlineGuess
+        set(v) { settings.offlineGuess = v; if (!v) com.rokid.context.phone.vision.OfflineCaptionerHolder.releaseIfCreated() }
+
+    override var maybeCutoff: Float
+        get() = settings.maybeCutoff
+        set(v) { settings.maybeCutoff = v }
+
+    override var candidateRadiusM: Int
+        get() = settings.candidateRadiusM
+        set(v) { settings.candidateRadiusM = v }
 
     private val seedWork by lazy { SeedWork(app) }
 

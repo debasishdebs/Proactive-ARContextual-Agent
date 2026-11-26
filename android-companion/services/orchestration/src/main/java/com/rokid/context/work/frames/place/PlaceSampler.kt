@@ -86,7 +86,7 @@ data class BackendChoice(val backend: Backend?, val reason: ResolveReason, val m
 /** Why [PlaceSampler.retryRecent] was called: a pin was just saved, or the place pack of the cell arrived after a miss. */
 enum class RetryReason { PIN_CREATED, CELL_RETRY }
 
-enum class PlaceOutcome { DISABLED, ZONE, NO_FRAME, STALE_FRAME, SEEN, NO_FIX, STALE_FIX, NO_CANDIDATES, DUPLICATE, RATE_LIMITED, BUSY, MATCHED, NONE, CONTRACT, LOW_CONFIDENCE, NEARBY, NOTHING_NEARBY, DROPPED, FAILED, NOT_ADMITTED, PIN_FIRST }
+enum class PlaceOutcome { DISABLED, ZONE, NO_FRAME, STALE_FRAME, SEEN, NO_FIX, STALE_FIX, NO_CANDIDATES, DUPLICATE, RATE_LIMITED, BUSY, MATCHED, NONE, CONTRACT, LOW_CONFIDENCE, NEARBY, MAYBE, NOTHING_NEARBY, DROPPED, FAILED, NOT_ADMITTED, PIN_FIRST }
 
 /**
  * Process-wide single-flight and spacing state shared by every [PlaceSampler] (the hub makes a new one at each restart): one run at a time, one model call per [PlaceSampler.MIN_CALL_GAP_MS],
@@ -216,6 +216,11 @@ class PlaceSampler(
     private val pinsNear: (List<PlaceEntity>) -> List<PlaceEntity> = { it },
     /** F3: the places that had a card in the last 30 min (place id, time), read once at the first attempt after a process start (position unknown). */
     private val seedRecent: suspend (sinceMs: Long) -> List<PlaceSeed> = { emptyList() },
+    /**
+     * V2b: the offline place guess, null = absent (the default; production passes it only behind its flags). Asked ONLY on the offline path (no allowed network, or Offline only / data saver) with the candidates the pack gave for the fix
+     * (place, distance to its centre in metres). Returns the place to show as "Maybe <place>" or null (no guess). It never throws except for cancellation. Its [OfflineTierResult.token] is the only thing logged.
+     */
+    private val offlineGuess: (suspend (frameId: String, hits: List<Pair<PlaceEntity, Double>>) -> OfflineTierResult)? = null,
     /** Test and replay seam: the ids the attempt chose, handed over once when it ends. NEVER logged (a user-pin id is private). */
     internal val chosenSink: (List<String>) -> Unit = {},
 ) {
@@ -232,6 +237,8 @@ class PlaceSampler(
         var frameAgeS = -1L; var fixAgeB = "-"; var accB = "-"; var candMs = -1L; var callMs = -1L
         var chosen = "-"; var distB = "-"; var confPct = -1; var dedupeAgeS = -1L; var dedupeDistB = "-"; var callGapS = -1L
         var card = "none"; var cardWhy = "-"; var reveal = "-"; var err = "-"
+        /** V2b: the offline tier's fixed outcome token and the candidate and margin buckets; null = the tier was not asked (the line is then unchanged). */
+        var maybe: String? = null
         var mode = "-"; var backend = "-"; var resolve = "-"; var label = "-"
         /** F7 fields (default "-"): where the fix came from, how old a reused fix really was, the pin-first decision, the weak back-off window, the retry reason, the history write, the text hit. */
         /** The place ids this attempt chose (a model pick, a pin card, a cluster, the nearest): handed to [chosenSink] ONLY; user-pin ids are never written to the log. */
@@ -295,8 +302,11 @@ class PlaceSampler(
         try { chosenSink(t.chosenIds) } catch (_: Exception) { }
         log("place outcome=${o.name}")
         val totalMs = (elapsed() - t.startedAt).coerceAtLeast(0L)
-        log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} pinCand=${t.pinCand} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err} mode=${t.mode} backend=${t.backend} resolve=${t.resolve} label=${t.label} thrV=${BackendThresholds.VERSION} fixSrc=${t.fixSrc} fixRealAgeB=${t.fixRealAgeB} pinFirst=${t.pinFirst} weakWin=${t.weakWin} retry=${t.retry} hist=${t.hist} textHit=${t.textHit}${shadowFields(t)}")
+        log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} pinCand=${t.pinCand} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err} mode=${t.mode} backend=${t.backend} resolve=${t.resolve} label=${t.label} thrV=${BackendThresholds.VERSION} fixSrc=${t.fixSrc} fixRealAgeB=${t.fixRealAgeB} pinFirst=${t.pinFirst} weakWin=${t.weakWin} retry=${t.retry} hist=${t.hist} textHit=${t.textHit}${maybeFields(t)}${shadowFields(t)}")
     }
+
+    /** `maybe=<token>`: the offline tier's fixed outcome token (counts and buckets only inside it). Empty when the tier was not asked. */
+    private fun maybeFields(t: Trace): String = t.maybe?.let { " maybe=$it" }.orEmpty()
 
     /** The content-free shadow fields: buckets, a rank, a boolean and a duration. Empty when the shadow flag is off, so the line is then byte-identical to before. */
     private fun shadowFields(t: Trace): String {
@@ -463,9 +473,9 @@ class PlaceSampler(
         stopped(gen, ticket, f.frameId)?.let { return it } // before the upload (the router asks again inside its permit)
         if (!callOk) { // Offline only without an on-device model keeps the pack-only fallback (no photo analysis, nothing leaves the phone) and says why in the log
             tr.reason = if (picked.needsOnDeviceModel) "offline_only_no_local_model" else "offline"; tr.call = if (picked.needsOnDeviceModel) "skipped_offline_only" else "skipped_offline"
-            return fallback(hits, f.frameId, gen, cardEpoch, ticket) } // offline: the only no-call fallback (G1)
+            return offlineFallback(hits, f.frameId, gen, cardEpoch, ticket) } // offline: the only no-call fallback (G1)
         // Roaming data saver: online, but photos may not go out on this network (mobile, roaming, unknown). Same path as offline: the name-and-distance card from the pack, no identification, no photo sent.
-        if (!photoAllowed()) { tr.reason = "data_saver"; tr.call = "skipped_data_saver"; return fallback(hits, f.frameId, gen, cardEpoch, ticket) }
+        if (!photoAllowed()) { tr.reason = "data_saver"; tr.call = "skipped_data_saver"; return offlineFallback(hits, f.frameId, gen, cardEpoch, ticket) }
         // G1 (ruling 2026-11-17): a power, thermal or policy denial is NOT a failure of the match and never becomes a nearby identification: no call, no card.
         if (!admit()) { tr.reason = "not_admitted"; tr.call = "skipped_not_admitted"; return PlaceOutcome.NOT_ADMITTED }
         flight.lastCallAt = elapsed()
@@ -586,6 +596,30 @@ class PlaceSampler(
         if (shown) tr.cardId = newId
         if (shown) { tr.card = "shown"; tr.cardWhy = "-" } else { tr.card = "dropped"; tr.cardWhy = "withdrawn_or_fenced"; tr.reason = "card_dropped" }
         return shown
+    }
+
+    /**
+     * The offline path (V2b): first the offline tier (a "Maybe <place>" card from a photo caption, flags permitting), else the nearest-place card of [fallback] exactly as before. The tier is never asked online, and a
+     * place it names is shown at most once per [ONCE_PER_PLACE_MS] like every other card. A refusal, a miss or a score under the cut-off is "no guess".
+     */
+    private suspend fun offlineFallback(hits: List<Pair<PlaceEntity, Double>>, frameId: String, gen: Long, epoch: Long, ticket: ZoneTicket): PlaceOutcome {
+        val ask = offlineGuess ?: return fallback(hits, frameId, gen, epoch, ticket)
+        stopped(gen, ticket, frameId)?.let { return it } // nothing is read or captioned when a zone, a Forget or a switch came first
+        val r = try { ask(frameId, hits) } catch (c: CancellationException) { throw c } catch (_: Exception) { tr.maybe = "err"; null }
+        if (r != null) tr.maybe = r.token
+        val place = r?.place ?: return fallback(hits, frameId, gen, epoch, ticket)
+        stopped(gen, ticket, frameId)?.let { return it }
+        setChosen(place); tr.distB = bucketM(hits.firstOrNull { it.first.id == place.id }?.second ?: 0.0)
+        if (suppressedHere(place.id)) { tr.reason = "maybe_card"; return PlaceOutcome.MAYBE }
+        val ids = listOf(place.id)
+        if (!flight.reserve(ids, tr.nowAt)) return reservedElsewhere()
+        try {
+            if (!publish(PlaceCards.maybe(place, frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
+            noteCard(place.id)
+        } finally { flight.unreserve(ids) }
+        record(HistoryKind.MAYBE, place.id, place.name, emptyList(), frameId, null)
+        tr.reason = "maybe_card"
+        return PlaceOutcome.MAYBE
     }
 
     /** The nearest place's card when it is unique within [NEARBY_M] (edge distance); otherwise nothing. */
@@ -730,7 +764,7 @@ class PlaceSampler(
     }
 
     private fun isCardEvent(r: PlaceSeed): Boolean = when (r.kind) {
-        "PHOTO", "NEARBY", "PIN", "PIN_CLUSTER" -> true
+        "PHOTO", "NEARBY", "MAYBE", "PIN", "PIN_CLUSTER" -> true
         "TEXT" -> r.delivery != com.rokid.context.memory.place.CardDelivery.NOT_SENT_LATE
         else -> false
     }

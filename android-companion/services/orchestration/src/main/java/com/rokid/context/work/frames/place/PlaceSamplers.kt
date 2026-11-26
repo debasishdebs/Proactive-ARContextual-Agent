@@ -20,6 +20,8 @@ import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
 import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import com.rokid.context.memory.place.PlaceEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
@@ -91,10 +93,15 @@ object PlaceSamplers {
     fun create(
         app: Context, scope: CoroutineScope, fix: suspend () -> PlaceFix?, zoneBlocked: suspend () -> Boolean, zones: suspend () -> List<com.rokid.context.core.model.zone.PauseZone>?, onCard: (PlaceCard) -> Unit,
         fence: ZoneFence = PlaceGraph.fence,
+        /** V2b: the on-device captioner (the phone module owns the native engine); null = no offline tier in this build. */
+        offlineCaptioner: (() -> com.rokid.context.core.model.vision.OfflineCaptioner)? = null,
+        /** V2b: the captioner model files are downloaded (both files, exact size). */
+        offlineModelReady: () -> Boolean = { false },
     ): PlaceSampler {
         val keyframes = KeyframeGraph.get(app)
         val share = SharedPhoto { id -> FramePhotos.load(app, listOf(id)).photos.singleOrNull() } // ONE loaded photo for the model call and the shadow
         val shadowOf by lazy { shadowCompareFor(app, zoneBlocked, share::get) }
+        val tier = offlineCaptioner?.let { cap -> offlineTierFor(app, cap, offlineModelReady) }
         return PlaceSampler(
             scope = scope, store = RoomPlaceFrameStore { MemoryGraph.get(app).db }, fix = fix,
             candidates = { lat, lon, up ->
@@ -118,8 +125,59 @@ object PlaceSamplers {
             seedRecent = { since -> PlaceGraph.existingHistory(app)?.seedRecent(since)?.map { PlaceSeed(it.placeId, it.at, it.kind, it.members?.split(',')?.filter { m -> m.isNotEmpty() }.orEmpty(), it.delivery) }.orEmpty() },
             pinFirstOn = { DeveloperFlags.placePinFirst(app) }, fixReuseOn = { DeveloperFlags.placeFixReuse(app) },
             dedupeV2On = { DeveloperFlags.placeDedupeV2(app) }, retryOn = { DeveloperFlags.placeRetryOnPin(app) },
+            offlineGuess = tier?.let { t -> { id, hits -> offlineGuessOf(app, t, id, hits, zoneBlocked, share::get) } },
         )
     }
+
+    /** The process-wide offline tier (one rate limit for every sampler the hub makes), created on first use. */
+    @Volatile private var tierRef: OfflineTier? = null
+    private fun offlineTierFor(app: Context, cap: () -> com.rokid.context.core.model.vision.OfflineCaptioner, ready: () -> Boolean): OfflineTier = tierRef ?: synchronized(this) {
+        tierRef ?: OfflineTier(
+            captioner = LazyCaptioner(cap), embedder = BoundTextEmbed(app),
+            // all four must hold: the Developer flag of the tier, the Developer flag of the captioner, the user's switch, the downloaded model
+            enabled = { DeveloperFlags.offlineTier(app) && DeveloperFlags.offlineCaption(app) && PlaceGuideSettings.of(app).offlineGuess && ready() },
+            cutoff = { PlaceGuideSettings.of(app).maybeCutoff }, elapsed = android.os.SystemClock::elapsedRealtime,
+        ).also { tierRef = it }
+    }
+
+    /** Creates the captioner only when a caption is first asked for (nothing at app start). */
+    private class LazyCaptioner(private val make: () -> com.rokid.context.core.model.vision.OfflineCaptioner) : com.rokid.context.core.model.vision.OfflineCaptioner {
+        private val c by lazy(make)
+        override suspend fun caption(jpegPath: String) = c.caption(jpegPath)
+        override suspend fun release() = c.release()
+    }
+
+    /** The configured EMBED model (bge-small by default) over the caption and the candidate texts, as documents on both sides (no query prefix: that is how the Mac test ranked). Null while it is unbound, paused or refused (Offline only refuses a remote one). */
+    private class BoundTextEmbed(private val app: Context) : TextEmbed {
+        override suspend fun embed(texts: List<String>): List<FloatArray>? {
+            val e = AiGraph.get(app).embedders.forBinding() ?: return null
+            return e.embedDocuments(texts)
+        }
+    }
+
+    /**
+     * One offline guess (V2b): the candidates from the pack's list, the photo from the attempt's one loaded copy written to a temp file for the captioner (deleted at once), and the tier's answer. Nothing is read when the tier is
+     * off or rate limited. Never throws except for cancellation.
+     */
+    internal suspend fun offlineGuessOf(
+        app: Context, tier: OfflineTier, frameId: String, hits: List<Pair<PlaceEntity, Double>>, zoneBlocked: suspend () -> Boolean,
+        photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?,
+    ): OfflineTierResult {
+        if (!tier.isEnabled()) return OfflineTierResult.OFF
+        val cands = OfflineTier.select(emptyList(), hits.map { (p, d) -> p to (d - p.radiusM).coerceAtLeast(0.0) }, PlaceGuideSettings.of(app).candidateRadiusM)
+        if (cands.isEmpty()) return OfflineTierResult.NO_CANDIDATES
+        if (tier.rateLimited()) return OfflineTierResult.RATE_LIMITED
+        val gate = com.rokid.context.provenance.ProvenanceGate(MemoryGraph.get(app).db)
+        if (zoneBlocked() || gate.goneFrames(setOf(frameId), requirePresent = false).isNotEmpty()) return OfflineTierResult.failed()
+        val photo = photoOf(frameId) ?: return OfflineTierResult.failed()
+        val file = java.io.File(app.cacheDir, TIER_PHOTO)
+        return try {
+            val ok = withContext(Dispatchers.IO) { runCatching { file.writeBytes(android.util.Base64.decode(photo.image.base64Data, android.util.Base64.DEFAULT)) }.isSuccess }
+            if (!ok) OfflineTierResult.failed() else tier.guess(file.path, cands)
+        } finally { withContext(NonCancellable) { file.delete() } }
+    }
+
+    private const val TIER_PHOTO = "offline-tier-photo.jpg"
 
     /** F5b: the quoted-sign matcher over the user's own pins. It shares the sampler's process-wide [flight] (the last good fix, the once-per-place and visit state). */
     fun createTextMatch(app: Context, scope: CoroutineScope, zoneBlocked: suspend () -> Boolean, onCard: (PlaceCard) -> Unit, fence: ZoneFence = PlaceGraph.fence): PlaceTextMatch =

@@ -162,6 +162,21 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
         get() = com.rokid.context.core.model.PlaceSide.parse(prefs.getString(SIDE_KEY, null))
         set(v) { prefs.edit().putString(SIDE_KEY, v.name).apply() }
 
+    /** V2b "Offline place guess (Maybe)": the user's switch, default OFF. It only matters while the `offlineTier` and `offlineCaption` Developer flags are on and the captioner model is downloaded. */
+    var offlineGuess: Boolean
+        get() = runCatching { prefs.getBoolean(OFFLINE_GUESS_KEY, false) }.getOrDefault(false)
+        set(v) { prefs.edit().putBoolean(OFFLINE_GUESS_KEY, v).apply() }
+
+    /** "Maybe cut-off": the lowest caption-to-place score that may show a "Maybe" card, [OfflineTier.MIN_CUTOFF]..[OfflineTier.MAX_CUTOFF], 0.55 by default. A stored value out of range reads as the default. */
+    var maybeCutoff: Float
+        get() = runCatching { prefs.getFloat(CUTOFF_KEY, OfflineTier.DEFAULT_CUTOFF) }.getOrDefault(OfflineTier.DEFAULT_CUTOFF).takeIf { it in OfflineTier.MIN_CUTOFF..OfflineTier.MAX_CUTOFF } ?: OfflineTier.DEFAULT_CUTOFF
+        set(v) { if (v.isFinite()) prefs.edit().putFloat(CUTOFF_KEY, v.coerceIn(OfflineTier.MIN_CUTOFF, OfflineTier.MAX_CUTOFF)).apply() }
+
+    /** "Candidate radius" in metres, [OfflineTier.MIN_RADIUS_M]..[OfflineTier.WIDE_RADIUS_M], 150 by default. A stored value out of range reads as the default. */
+    var candidateRadiusM: Int
+        get() = runCatching { prefs.getInt(RADIUS_KEY, OfflineTier.DEFAULT_RADIUS_M) }.getOrDefault(OfflineTier.DEFAULT_RADIUS_M).takeIf { it in OfflineTier.MIN_RADIUS_M..OfflineTier.WIDE_RADIUS_M } ?: OfflineTier.DEFAULT_RADIUS_M
+        set(v) { prefs.edit().putInt(RADIUS_KEY, v.coerceIn(OfflineTier.MIN_RADIUS_M, OfflineTier.WIDE_RADIUS_M)).apply() }
+
     var enabled: Boolean
         get() = prefs.getBoolean(KEY, false)
         set(v) { prefs.edit().putBoolean(KEY, v).apply(); if (!v) PlaceGraph.fence.trip() }
@@ -171,6 +186,9 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
         private const val KEY = "enabled"
         private const val BUDGET_KEY = "budgetMb"
         private const val SIDE_KEY = "cardSide"
+        private const val OFFLINE_GUESS_KEY = "offlineGuess"
+        private const val CUTOFF_KEY = "maybeCutoff"
+        private const val RADIUS_KEY = "candidateRadiusM"
         const val DEFAULT_BUDGET_MB = 50
         fun of(context: Context) = PlaceGuideSettings(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
         fun over(prefs: android.content.SharedPreferences) = PlaceGuideSettings(prefs)

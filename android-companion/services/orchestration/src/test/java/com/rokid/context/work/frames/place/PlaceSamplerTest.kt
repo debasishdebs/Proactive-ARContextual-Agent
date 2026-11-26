@@ -73,6 +73,11 @@ class PlaceSamplerTest {
     private var reuse = false
     private var histOn = true // the history tests set the flag ON explicitly; the production default is OFF
 
+    /** V2b seam: null = the sampler has no offline tier (like production with the flags off); else the fake tier answers with [guessResult] and counts its calls. */
+    private var guessResult: OfflineTierResult? = null
+    private var guessCalls = 0
+    private val guessHits = mutableListOf<List<Pair<PlaceEntity, Double>>>()
+
     private fun sampler(scope: TestScope) = PlaceSampler(
         scope = scope, store = store, fix = { fixCalls++; fix },
         candidates = { _, _, _ -> candidateCalls++; PlaceCandidates(places, cell, nearby) },
@@ -80,6 +85,7 @@ class PlaceSamplerTest {
         saveMemory = { memories += it; saved }, onCard = { cards += it }, clock = { now }, enabled = { enabled }, zoneBlocked = { zone }, networkUp = { online }, zones = { zoneList },
         admit = { admit }, photoAllowed = { photoOk }, generation = { gen }, flight = flight, log = { logs += it }, stats = { outcomes += it },
         dedupeV2On = { v2 }, seedRecent = { seed }, retryOn = { retry }, fixReuseOn = { reuse }, pinFirstOn = { pf }, history = { historyEvents += it }, historyOn = { histOn }, chosenSink = { chosenIds += it },
+        offlineGuess = guessResult?.let { r -> { _, hits -> guessCalls++; guessHits += hits; r } },
     )
 
     private fun TestScope.poke(s: PlaceSampler = sampler(this)) { s.poke(); runCurrent() }
@@ -697,6 +703,51 @@ class PlaceSamplerTest {
         assertTrue(long.length <= PlaceCards.LINE_MAX); assertTrue(long.endsWith("…"))
         assertEquals("Monument", PlaceCards.photo(place("wd:Q1", "X", summary = ""), "f").line)
         assertEquals("OpenStreetMap", PlaceCards.sourceLabel(place("osm:w1", "X").copy(source = "osm", fetchedAt = 0)))
+    }
+    // ---- V2b: the offline Maybe tier ----
+
+    private fun offlinePoke(r: OfflineTierResult?, onlineNow: Boolean = false) = runTest {
+        online = onlineNow; fix = PlaceFix(north(130.0), LON, 1_000, 10f); guessResult = r; poke()
+    }
+
+    @Test fun noTierSeamMeansTheNearbyCardAsBefore() { offlinePoke(null); assertEquals(listOf(PlaceOutcome.NEARBY), outcomes); assertEquals(0, guessCalls); assertFalse(logs.last { it.startsWith("place attempt ") }.contains(" maybe=")) }
+
+    @Test fun aMaybeShowsOneMaybeCardAndRecordsAMaybeRow() {
+        offlinePoke(OfflineTierResult.maybe(place("wd:Q1", "Charminar"), "lt60", "lt03", 1))
+        assertEquals(listOf(PlaceOutcome.MAYBE), outcomes); assertEquals(1, guessCalls); assertEquals(0, matchCalls.size)
+        val c = cards.single()
+        assertEquals("Maybe: Charminar", c.title); assertEquals(PlaceConfidence.MAYBE, c.confidence); assertEquals(PlaceCards.MAYBE_LABEL, c.sourceLabel); assertEquals(SUMMARY, c.line)
+        assertFalse("no confidence number in the card", Regex("""\d\.\d|%""").containsMatchIn(c.title + c.line))
+        assertEquals(HistoryKind.MAYBE, historyEvents.single().kind); assertTrue(memories.isEmpty())
+        val line = logs.last { it.startsWith("place attempt ") }
+        assertTrue(line, line.contains("maybe=maybe(n=1,score=lt60,margin=lt03)") && line.contains("reason=maybe_card")); assertFalse(line.contains("Charminar"))
+    }
+
+    @Test fun noGuessFallsBackToTheNearbyCard() {
+        offlinePoke(OfflineTierResult.below("lt50", "lt03", 1))
+        assertEquals(listOf(PlaceOutcome.NEARBY), outcomes); assertEquals(PlaceConfidence.NEARBY, cards.single().confidence)
+        assertTrue(logs.last { it.startsWith("place attempt ") }.contains("maybe=below(n=1,score=lt50,margin=lt03)"))
+    }
+
+    @Test fun theTierIsNeverAskedOnline() {
+        offlinePoke(OfflineTierResult.maybe(place("wd:Q1", "Charminar"), "lt60", "lt03", 1), onlineNow = true)
+        assertEquals(0, guessCalls); assertEquals(listOf(PlaceOutcome.MATCHED), outcomes); assertEquals(PlaceConfidence.PHOTO, cards.single().confidence)
+    }
+
+    @Test fun theDataSaverPathIsAnOfflinePathToo() = runTest {
+        photoOk = false; fix = PlaceFix(north(130.0), LON, 1_000, 10f); guessResult = OfflineTierResult.maybe(place("wd:Q1", "Charminar"), "lt60", "lt03", 1); poke()
+        assertEquals(1, guessCalls); assertEquals(0, matchCalls.size); assertEquals(PlaceOutcome.MAYBE, outcomes.single())
+    }
+
+    @Test fun aZoneBlocksTheTierAndEveryCard() = runTest {
+        online = false; zone = true; guessResult = OfflineTierResult.maybe(place("wd:Q1", "Charminar"), "lt60", "lt03", 1); poke()
+        assertEquals(0, guessCalls); assertTrue(cards.isEmpty())
+    }
+
+    @Test fun theTierGetsTheHitsOfTheAttemptWithTheirDistances() {
+        offlinePoke(OfflineTierResult.OFF)
+        assertEquals(1, guessCalls); assertEquals("wd:Q1", guessHits.single().single().first.id)
+        assertEquals(PlaceOutcome.NEARBY, outcomes.single()) // OFF is no guess
     }
 }
 

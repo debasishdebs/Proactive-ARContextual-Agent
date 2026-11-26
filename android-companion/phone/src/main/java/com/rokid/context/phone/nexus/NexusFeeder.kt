@@ -59,7 +59,7 @@ class NexusFeeder(
         if (c == null) return
         if (c.cardId.isNotEmpty() && c.cardId == lastCard) return
         lastCard = c.cardId
-        val note = if (c.confidence == PlaceConfidence.NEARBY) "Nearby, not checked against your photo" else null
+        val note = if (c.confidence == PlaceConfidence.NEARBY) "Nearby, not checked against your photo" else if (c.confidence == PlaceConfidence.MAYBE) "Offline guess, not checked" else null
         val body = listOfNotNull(c.line, c.sourceLabel.takeIf { it.isNotBlank() }, note).joinToString("\n")
         send(HudEvent.PlaceCard(ref = c.cardId.ifEmpty { "place" }, title = c.title, body = body, sources = setOf("frame:" + c.frameId), ttlMs = popupMs()))
     }

@@ -12,7 +12,8 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
 /** What kind of card a history row records. */
-enum class HistoryKind { PHOTO, NEARBY, PIN, PIN_CLUSTER, TEXT, POSSIBLE }
+/** [MAYBE] (V2b): an offline guess card. It lives in the existing `kind` text column; no schema change. */
+enum class HistoryKind { PHOTO, NEARBY, PIN, PIN_CLUSTER, TEXT, POSSIBLE, MAYBE }
 
 /**
  * The authority an attempt acts under, captured at its START (before the frame, fix or pins are read): the durable `frame_forget_rev` (moved by every photo Forget, range Forget and Delete all), the wipe

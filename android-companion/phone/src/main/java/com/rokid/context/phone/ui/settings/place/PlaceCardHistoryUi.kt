@@ -74,6 +74,7 @@ object PlaceHistoryModel {
         "PIN" -> "your pin"
         "PIN_CLUSTER" -> "several pins"
         "NEARBY" -> "nearby · not checked"
+        "MAYBE" -> "maybe · offline guess"
         "TEXT" -> "sign read"
         "POSSIBLE" -> "possible · not shown"
         else -> "place card"

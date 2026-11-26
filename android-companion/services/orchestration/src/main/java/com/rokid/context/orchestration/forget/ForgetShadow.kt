@@ -61,6 +61,14 @@ object DeveloperFlags {
     fun setOfflineCaption(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(OFFLINE_CAPTION, on).apply() }
 
     /**
+     * V2b offline place tier (owner round 6, 26 Nov): with this ON, no accepted place and an offline model path, the photo is captioned on the phone and ranked against the nearby places for ONE "Maybe <place>" card. Needs the
+     * user switch "Offline place guess (Maybe)" (Settings > Place Guide, default OFF) AND the `offlineCaption` flag AND the captioner download. OFF by default (also OFF when the prefs cannot be read).
+     */
+    const val OFFLINE_TIER = "offlineTier"
+    fun offlineTier(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(OFFLINE_TIER, false) }.getOrDefault(false)
+    fun setOfflineTier(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(OFFLINE_TIER, on).apply() }
+
+    /**
      * v18 WP12a: the Scene centroid producer (`scene_centroid`, the mean of a Scene's member vectors per embedding space). Runs inside the existing Scene rebuild (the 15-minute cadence worker), derived data only, nothing
      * is shown, sent or prompted. OFF by default (also OFF when the prefs cannot be read); no UI. Turning it OFF stops new rows; existing rows go with their Scene and every Forget as always.
      */

@@ -29,6 +29,11 @@ class PlaceCardRebuildTest {
         assertEquals(PlaceConfidence.NEARBY, c.confidence); assertEquals(PlaceCards.NEARBY_LABEL, c.sourceLabel); assertEquals("A big old place. It has more text.", c.line) // V2a
     }
 
+    @Test fun maybeRowRebuildsTheMaybeCard() {
+        val c = PlaceCardRebuild.card(row("MAYBE", "wd:Q1"), places)!!
+        assertEquals("Maybe: Site A", c.title); assertEquals(PlaceConfidence.MAYBE, c.confidence); assertEquals(PlaceCards.MAYBE_LABEL, c.sourceLabel); assertEquals("A big old place. It has more text.", c.line)
+    }
+
     @Test fun pinRowUsesTheUsersNoteOrAFixedFallback() {
         assertEquals("My own note.", PlaceCardRebuild.card(row("PIN", pin1.id, null), places)!!.line)
         assertEquals("Your pin", PlaceCardRebuild.card(row("PIN", pin2.id, null), places)!!.line)

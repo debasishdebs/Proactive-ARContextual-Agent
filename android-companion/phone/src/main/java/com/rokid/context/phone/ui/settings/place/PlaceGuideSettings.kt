@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -66,6 +67,8 @@ data class PlaceGuideUiState(
     val history: List<PlaceHistoryRowUi> = emptyList(), val historyShown: Int = PlaceHistoryModel.PAGE, val historyDetail: PlaceHistoryDetail? = null,
     /** The history Developer flag (off by default): the list collapses to one line. */
     val historyOn: Boolean = true,
+    /** V2b "Offline place guess (Maybe)": the user's switch (default OFF) and its two Advanced fields (cut-off, candidate radius in metres). */
+    val offlineGuess: Boolean = false, val maybeCutoff: Float = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_CUTOFF, val candidateRadiusM: Int = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_RADIUS_M,
 )
 
 /**
@@ -112,6 +115,16 @@ interface PlaceGuideControl {
         set(@Suppress("UNUSED_PARAMETER") v) {}
     var budgetMb: Int
         get() = 50
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    /** V2b: the "Offline place guess (Maybe)" switch (default OFF), the "Maybe cut-off" and the "Candidate radius" (metres). Stored by the app; a fake keeps them in memory. */
+    var offlineGuess: Boolean
+        get() = false
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    var maybeCutoff: Float
+        get() = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_CUTOFF
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    var candidateRadiusM: Int
+        get() = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_RADIUS_M
         set(@Suppress("UNUSED_PARAMETER") v) {}
     /** Applies [budgetMb] to the open pack now (evicts least-recently-used fetched places). */
     suspend fun applyBudget(): Int = 0
@@ -208,6 +221,16 @@ object PlaceGuideModel {
     val SIDE_LABELS = listOf("Left", "Centre", "Right")
     const val SIDE_NOTE = "Where the card sits on the glasses. The visible area of the glasses was not measured: the margins are cautious and the side must be tuned while worn."
 
+    /** V2b ranges: the Maybe cut-off 0.30..0.90 (0.55 default), the candidate radius 50..500 m (150 default). */
+    fun clampCutoff(v: Float): Float = if (v.isFinite()) v.coerceIn(com.rokid.context.work.frames.place.OfflineTier.MIN_CUTOFF, com.rokid.context.work.frames.place.OfflineTier.MAX_CUTOFF) else com.rokid.context.work.frames.place.OfflineTier.DEFAULT_CUTOFF
+    /** Slider snaps: 0.05 and 50 m grids (both defaults sit on them). */
+    const val CUTOFF_STEPS = 11
+    const val RADIUS_STEPS = 8
+    fun snapCutoff(v: Float): Float = clampCutoff(Math.round(v / 0.05f) * 0.05f)
+    fun snapRadius(v: Float): Int = clampRadius(Math.round(v / 50f) * 50)
+    fun clampRadius(m: Int): Int = m.coerceIn(com.rokid.context.work.frames.place.OfflineTier.MIN_RADIUS_M, com.rokid.context.work.frames.place.OfflineTier.WIDE_RADIUS_M)
+    const val OFFLINE_NOTE = "When there is no network and the photo could not be matched, the phone describes the photo itself and may show one card marked \"Maybe\". It is only a guess and is not checked. Needs the offline photo captions (Developer) and the SmolVLM2 download."
+
     const val ZONE_NOTE = "Place cards stay off whenever a pause zone is active or you are near one."
 
     /** "south, west, north, east" in degrees; null when not four numbers or not a valid box. */
@@ -219,7 +242,7 @@ object PlaceGuideModel {
 }
 
 class PlaceGuideViewModel(private val control: PlaceGuideControl, private val work: CoroutineDispatcher = Dispatchers.IO, developerMode: Boolean = false, private val now: () -> Long = System::currentTimeMillis, private val zone: java.time.ZoneId = java.time.ZoneId.systemDefault()) : ViewModel() {
-    private val _state = MutableStateFlow(PlaceGuideUiState(enabled = control.enabled, cardSide = control.cardSide, developerMode = developerMode, budgetMb = control.budgetMb))
+    private val _state = MutableStateFlow(PlaceGuideUiState(enabled = control.enabled, cardSide = control.cardSide, developerMode = developerMode, budgetMb = control.budgetMb, offlineGuess = control.offlineGuess, maybeCutoff = control.maybeCutoff, candidateRadiusM = control.candidateRadiusM))
     val state: StateFlow<PlaceGuideUiState> = _state
 
     init { refreshSummary() }
@@ -228,6 +251,11 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     fun setCardSide(side: com.rokid.context.core.model.PlaceSide) { control.cardSide = side; _state.update { it.copy(cardSide = side) } }
 
     fun setEnabled(on: Boolean) { control.enabled = on; _state.update { it.copy(enabled = on) } }
+
+    /** V2b: the user's switch; the screen shows what was stored (a value is clamped to its range on the way in). */
+    fun setOfflineGuess(on: Boolean) { control.offlineGuess = on; _state.update { it.copy(offlineGuess = control.offlineGuess) } }
+    fun setMaybeCutoff(v: Float) { control.maybeCutoff = PlaceGuideModel.clampCutoff(v); _state.update { it.copy(maybeCutoff = control.maybeCutoff) } }
+    fun setCandidateRadius(m: Int) { control.candidateRadiusM = PlaceGuideModel.clampRadius(m); _state.update { it.copy(candidateRadiusM = control.candidateRadiusM) } }
 
     fun seed(box: GeoBox?) {
         if (box == null) { _state.update { it.copy(message = "Type four numbers: south, west, north, east (degrees).", messageIsError = true) }; return }
@@ -539,7 +567,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     }
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius))
 }
 
 /**
@@ -583,6 +611,8 @@ class PlaceGuideActions(
     val openMoment: ((String) -> Unit)? = null,
     /** S3: cancels the active background seed(s). */
     val cancelSeeds: () -> Unit = {},
+    /** V2b: the "Offline place guess (Maybe)" switch and its two Advanced fields. */
+    val setOfflineGuess: (Boolean) -> Unit = {}, val setMaybeCutoff: (Float) -> Unit = {}, val setCandidateRadius: (Int) -> Unit = {},
 )
 
 @Composable
@@ -594,6 +624,18 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 SwitchRow("Place Guide", "Names the monument you are looking at after you pause on it", state.enabled, onEnabled, tag = "place_guide_switch")
                 NoticeText(PlaceGuideModel.ZONE_NOTE, tag = "place_guide_zone_note")
                 if (state.packSummary.isNotEmpty()) NoticeText(state.packSummary, tag = "place_guide_pack")
+                SwitchRow("Offline place guess (Maybe)", PlaceGuideModel.OFFLINE_NOTE, state.offlineGuess, on.setOfflineGuess, tag = "place_guide_offline_guess")
+            }
+        }
+        if (state.offlineGuess) item {
+            SettingsCard {
+                Text("Advanced: offline guess", style = MaterialTheme.typography.titleMedium)
+                Text("Maybe cut-off ${String.format(java.util.Locale.US, "%.2f", state.maybeCutoff)}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("maybe_cutoff_label"))
+                Slider(value = state.maybeCutoff, onValueChange = { on.setMaybeCutoff(PlaceGuideModel.snapCutoff(it)) }, valueRange = com.rokid.context.work.frames.place.OfflineTier.MIN_CUTOFF..com.rokid.context.work.frames.place.OfflineTier.MAX_CUTOFF, steps = PlaceGuideModel.CUTOFF_STEPS, modifier = Modifier.testTag("maybe_cutoff"))
+                NoticeText("Higher shows fewer, safer guesses. Default 0.55.", tag = "maybe_cutoff_note")
+                Text("Candidate radius ${state.candidateRadiusM} m", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("candidate_radius_label"))
+                Slider(value = state.candidateRadiusM.toFloat(), onValueChange = { on.setCandidateRadius(PlaceGuideModel.snapRadius(it)) }, valueRange = com.rokid.context.work.frames.place.OfflineTier.MIN_RADIUS_M.toFloat()..com.rokid.context.work.frames.place.OfflineTier.WIDE_RADIUS_M.toFloat(), steps = PlaceGuideModel.RADIUS_STEPS, modifier = Modifier.testTag("candidate_radius"))
+                NoticeText("Places this close are compared with the photo. Default 150 m, up to 500 m.", tag = "candidate_radius_note")
             }
         }
         placeHistoryItems(state.history, state.historyShown, java.time.ZoneId.systemDefault(), on.openHistory, on.historyMore, state.historyOn)

@@ -10,6 +10,8 @@ import java.util.Locale
 
 /** How sure the card is: [PHOTO] = the vision model picked this place from the photo; [NEARBY] = only the nearest place, not checked against the photo. */
 enum class PlaceConfidence(val wire: String) { PHOTO("photo"), NEARBY("nearby"),
+    /** V2b: an offline guess ("Maybe <place>"): the photo was captioned on the phone and the caption ranked against the places around. Never checked by a vision model; the glasses render it like [NEARBY]. */
+    MAYBE("maybe"),
     /** The user's own pin(s) at this position: no photo was analysed (F1). The glasses render it like [PHOTO]: the wire label is the card text. */
     PIN("pin") }
 
@@ -112,6 +114,15 @@ object PlaceCards {
     }
 
     const val DIST_SEP = " \u00b7 "
+    const val MAYBE_PREFIX = "Maybe: "
+    const val MAYBE_LABEL = "offline guess · not checked"
+
+    /** V2b: the offline guess. The title says "Maybe: <place>" in plain words (no number), the line is the stored intro, the source label says it is an offline guess that was not checked. */
+    fun maybe(p: PlaceEntity, frameId: String): PlaceCard =
+        PlaceCard(p.id, (MAYBE_PREFIX + p.name).take(TITLE_MAX), introOf(p, LINE_MAX).ifEmpty { kindLabel(p.kind) }, MAYBE_LABEL, PlaceConfidence.MAYBE, frameId)
+
+    const val TITLE_MAX = 80
+
     /** The stored intro of [p] fitted into [max] characters: a user pin gives its note, a pack place whole sentences from the start of its summary (the card's one-line length rule, see [intro]). */
     fun introOf(p: PlaceEntity, max: Int): String = if (p.source == USER_SOURCE) userLine(p.summary).take(max.coerceAtLeast(0)) else intro(p.summary, max)
 

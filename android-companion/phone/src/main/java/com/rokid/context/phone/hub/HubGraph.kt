@@ -213,6 +213,9 @@ object HubGraph {
             zoneBlocked = placeZoneBlocked,
             zones = { com.rokid.context.phone.zone.ZoneGraph.get(app).zonesForCheck() },
             onCard = com.rokid.context.work.frames.place.PlaceGraph.port::publish,
+            // V2b: the offline "Maybe" tier; the captioner is created only when a caption is first asked for, and the tier runs only behind its flags (default OFF).
+            offlineCaptioner = { com.rokid.context.phone.vision.OfflineCaptionerHolder.get(app) },
+            offlineModelReady = { com.rokid.context.phone.vision.OfflineCaptionerHolder.modelFiles(app) != null },
         )
         // F4: a pin the user just saved asks the sampler to look again at the frame in view (one retry; the collector ends with the hub's scope and is replaced at a restart).
         placeRetryJob?.cancel()

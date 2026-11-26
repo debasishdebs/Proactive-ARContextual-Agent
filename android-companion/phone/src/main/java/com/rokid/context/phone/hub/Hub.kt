@@ -693,7 +693,7 @@ class Hub(
         placeExpiry?.cancel(); placeExpiry = null
         resolvePlacePending() // the card before this one (replaced, withdrawn or expired) that no frame carried
         if (c != null) {
-            if (c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.PHOTO) PcLog.i(TAG, "place card up (photo)") else PcLog.i(TAG, "place card up (nearby)")
+            if (c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.PHOTO) PcLog.i(TAG, "place card up (photo)") else if (c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.MAYBE) PcLog.i(TAG, "place card up (maybe)") else PcLog.i(TAG, "place card up (nearby)")
             if (c.cardId.isNotEmpty()) synchronized(placeLock) { placePending = c.cardId }
             placeExpiry = scope.launch { delay(PlaceCardInfo.SHOW_MS); resolvePlacePending(); placeClear() }
         }
@@ -718,7 +718,7 @@ class Hub(
     fun placeOverlay(): Overlay? {
         val c = placeCards.value ?: return null
         if (zoneApproach() || zoneEnforce()) return null
-        val info = PlaceCardInfo(c.title, c.line, c.sourceLabel, nearby = c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.NEARBY, id = c.cardId.ifEmpty { null }, side = com.rokid.context.core.model.PlaceSide.toWire(placeSide()))
+        val info = PlaceCardInfo(c.title, c.line, c.sourceLabel, nearby = c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.NEARBY || c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.MAYBE, id = c.cardId.ifEmpty { null }, side = com.rokid.context.core.model.PlaceSide.toWire(placeSide()))
         return Overlay.Nudge("${c.title}: ${c.line}", info)
     }
 
