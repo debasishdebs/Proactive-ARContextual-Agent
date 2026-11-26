@@ -498,7 +498,7 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
         vp = MapViewport.fit(boxes, size.width, size.height)
     }
     // An offline PMTiles file wins; otherwise the opt-in online source (only while this screen is in the foreground); otherwise the plain grid.
-    val onlineSource = online?.source?.takeIf { reader == null }
+    val onlineSource = online?.source?.takeIf { reader == null && !blank } // no network: the plain grid only, cached online tiles are not painted
     val tiles: RasterTileSource? = remember(reader, onlineSource) { reader?.let { r -> ReaderTiles(r) } ?: onlineSource }
     val cache = remember(tiles) { tiles?.let { t -> TileCache<ImageBitmap>(weigh = { it.width.toLong() * it.height * 4 }, rememberAbsent = onlineSource == null) { k -> t.tile(k)?.let { b -> decodeTileBounded(b) } } } }
     var loaded by remember(cache) { mutableStateOf(0) }

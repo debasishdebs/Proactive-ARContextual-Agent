@@ -100,7 +100,7 @@ internal fun ActivityHeatMap(map: ActivityMapState, g: Granularity, online: Onli
             vp = MomentHeat.fit(map.points, size.width, size.height); picked = null
         }
         val cells = vp?.let { v -> MomentHeat.cells(map.points, v.ppd) }.orEmpty()
-        val tiles = online?.source
+        val tiles = online?.source?.takeIf { networkOnline } // no network: the plain grid only, cached tiles are not painted
         val cache = remember(tiles) { tiles?.let { t -> TileCache<ImageBitmap>(weigh = { it.width.toLong() * it.height * 4 }, rememberAbsent = false) { k -> t.tile(k)?.let { b -> decodeTileBounded(b) } } } }
         var loaded by remember(cache) { mutableStateOf(0) }
         val zoom = vp?.let { v -> tiles?.let { TileMath.zoomFor(v.ppd, it.minZoom, it.maxZoom) } }
