@@ -41,6 +41,8 @@ data class PlaceHistoryEvent(
     /** Developer IMPORT only: the ORIGINAL row id and time of a restored card (null = a new card: a fresh id and now). The same fences apply; the 90-day retention still prunes it. */
     val importedId: String? = null,
     val importedAt: Long? = null,
+    /** Developer IMPORT only: asked INSIDE the add transaction (after the authority fences); false refuses the row (`reason=moment`), so a Moment Forget cannot land between the check and the write. */
+    val momentGuard: (suspend () -> Boolean)? = null,
 )
 
 /**
@@ -94,6 +96,7 @@ class PlaceCardHistory(
                     else -> null
                 }
                 if (reason != null) { log("place history add refused reason=$reason"); return@withTransaction null }
+                if (e.momentGuard != null && !e.momentGuard.invoke()) { log("place history add refused reason=moment"); return@withTransaction null }
                 var photoGone = 0
                 if (e.frameId != null) {
                     val ids = setOf(e.frameId)

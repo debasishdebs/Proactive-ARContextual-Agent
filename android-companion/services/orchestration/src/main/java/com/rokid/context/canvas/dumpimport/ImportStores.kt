@@ -90,17 +90,19 @@ class ImportMemoryStore(private val app: Context) : ImportMemoryWriter {
 /**
  * Developer IMPORT, the place card writer: a card-history row through the one guarded writer [PlaceCardHistory.add] (its fences: `frame_forget_rev`, Delete all generation, the Place Guide fence, a forgotten photo, a removed
  * pin; the `place_link` row of a single-place card of a user pin is made by that writer, nowhere else) with the ORIGINAL row id and time. A fixed token comes back: `ok`, `exists`, `expired` (older than the 90-day history),
- * `no_members` (a cluster card: the dump does not carry its members), `pin_missing` (a user pin that is not on the phone), `history_off` (the Developer flag), `refused` (a fence).
+ * `no_members` (a cluster card: the dump does not carry its members), `pin_missing` (a user pin that is not on the phone), `history_off` (the Developer flag), `moment_gone` (its Moment was forgotten or removed, checked INSIDE the add transaction), `refused` (a fence).
  */
 class ImportCardStore(private val history: PlaceCardHistory, private val pinIds: () -> Set<String>, private val now: () -> Long = System::currentTimeMillis) : ImportCardWriter {
-    override suspend fun store(card: DumpImportParser.Card): String {
+    override suspend fun store(card: DumpImportParser.Card, momentHere: suspend () -> Boolean): String {
         if (!history.isEnabled) return "history_off"
         if (card.kind == HistoryKind.PIN_CLUSTER) return "no_members"
         if (history.get(card.id) != null) return "exists"
         if (card.at < now() - PlaceCardHistory.RETAIN_MS) return "expired"
         if (UserPlace.isUserId(card.placeId) && card.placeId !in pinIds()) return "pin_missing"
         val e = PlaceHistoryEvent(card.kind, card.placeId, card.title, emptyList(), card.frameId, card.cardId, null, card.delivery, history.capture(), importedId = card.id, importedAt = card.at)
-        return if (history.add(e) != null) "ok" else "refused"
+        var gone = false
+        val id = history.add(e.copy(momentGuard = { momentHere().also { if (!it) gone = true } }))
+        return if (id != null) "ok" else if (gone) "moment_gone" else "refused"
     }
 }
 

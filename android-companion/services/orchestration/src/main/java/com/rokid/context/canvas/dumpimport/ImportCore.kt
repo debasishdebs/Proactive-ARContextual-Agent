@@ -283,7 +283,7 @@ fun interface ImportFrameWriter {
     /** [gen0] = the Delete all generation the request began with; a writer that can must refuse when it moved. */
     suspend fun store(frame: DumpImportParser.Frame, gen0: Long): Boolean = store(frame)
 }
-fun interface ImportCardWriter { suspend fun store(card: DumpImportParser.Card): String }
+fun interface ImportCardWriter { suspend fun store(card: DumpImportParser.Card, momentHere: suspend () -> Boolean): String }
 /** What the importer needs from the Scene builder: a normal rebuild of the clock hours of a time span, and the guarded derived-text write with the attribution `imported`. */
 interface ImportSceneWriter {
     suspend fun rebuild(fromMs: Long, toMs: Long)
@@ -322,7 +322,7 @@ class DumpImporter(
     /** The ids of the pins that exist now (for `dedup` / conflict and `dry_run`). */
     private val pinIds: () -> Set<String> = { emptySet() },
     /** The card-history writer ([ImportCardStore] in production). */
-    private val cards: ImportCardWriter = ImportCardWriter { "history_off" },
+    private val cards: ImportCardWriter = ImportCardWriter { _, _ -> "history_off" },
     /** The Scene builder ([ImportSceneStore] in production). */
     private val scenes: ImportSceneWriter = object : ImportSceneWriter { override suspend fun rebuild(fromMs: Long, toMs: Long) {}; override suspend fun derive(sceneId: String, field: String, text: String) = false },
     /** The pause zones now (null = unreadable, which blocks): a restored point inside or near one is not saved, like the location import. */
@@ -355,7 +355,7 @@ class DumpImporter(
         phase { it !is DumpImportParser.Entry.Pin && it !is DumpImportParser.Entry.Scene }
         phase { it is DumpImportParser.Entry.Pin }
         if (!stopped) for (m in t.newMoments + t.dedupMoments) {
-            try { for (c in m.cards) { if (dryRun) t.cardsDone++ else { check(gen0); if (momentHere(m)) cardOne(c, t) else t.cardsSkipped.merge("moment_gone", 1, Int::plus) } } } catch (s: Stopped) { stopped = true; break }
+            try { for (c in m.cards) { if (dryRun) t.cardsDone++ else { check(gen0); if (momentHere(m)) cardOne(c, m, t) else t.cardsSkipped.merge("moment_gone", 1, Int::plus) } } } catch (s: Stopped) { stopped = true; break }
             catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (x: Exception) { t.cardsSkipped.merge("error", 1, Int::plus) }
         }
         phase { it is DumpImportParser.Entry.Scene }
@@ -392,9 +392,9 @@ class DumpImporter(
     private suspend fun momentHere(m: DumpImportParser.MomentItem): Boolean =
         db.momentDao().moment(m.id) != null && db.momentDao().tombstonedAmong(listOf(m.id)).isEmpty() && !db.canvasSlice3Dao().momentFenced(m.startMs, m.startMs + 999)
 
-    private suspend fun cardOne(c: DumpImportParser.Card, t: Tally) {
+    private suspend fun cardOne(c: DumpImportParser.Card, m: DumpImportParser.MomentItem, t: Tally) {
         val frameOk = c.frameId == null || db.frameDao().byIds(listOf(c.frameId)).isNotEmpty()
-        val token = if (!frameOk) "frame_missing" else cards.store(c)
+        val token = if (!frameOk) "frame_missing" else cards.store(c) { momentHere(m) }
         if (token == "ok") t.cardsDone++ else t.cardsSkipped.merge(token, 1, Int::plus)
     }
 

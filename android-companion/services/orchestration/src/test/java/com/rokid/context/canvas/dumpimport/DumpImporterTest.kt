@@ -29,7 +29,9 @@ import org.junit.Before
 import com.rokid.context.memory.place.UserPinStore
 import com.rokid.context.memory.place.UserPlace
 import com.rokid.context.work.frames.place.PinMomentLinks
+import com.rokid.context.work.frames.place.HistoryKind
 import com.rokid.context.work.frames.place.PlaceCardHistory
+import com.rokid.context.work.frames.place.PlaceHistoryEvent
 import com.rokid.context.work.frames.place.PlacePinning
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -182,8 +184,8 @@ class DumpImporterTest {
     @Test fun aMomentForgottenWhileItsCardsAreBeingRestoredGetsNoFurtherCard() = runBlocking<Unit> {
         run(body(cardsJson = ""))
         val inner = ImportCardStore(history, { pinStore.pins().map { it.id }.toSet() }) { start + 1000 }
-        val forgetAfterFirst = ImportCardWriter { c ->
-            inner.store(c).also {
+        val forgetAfterFirst = ImportCardWriter { c, g ->
+            inner.store(c, g).also {
                 val svc = ForgetService(db, ProposalRepository(db.proposalDao(), db.actionDao(), db)) { 99L }
                 MomentForget(db, svc) { 99L }.forgetMoments(listOf(id))
             }
@@ -192,6 +194,27 @@ class DumpImporterTest {
         val r = runBlocking { DumpImporter(db, frameWriter, memoryWriter, { k, photo -> recorder.importMark(k.id, k.source, k.atMs, photo, k.createdAt) }, { ids -> MomentBuilder(db).build(ids) }, { locOn }, { gen }, { 777L },
             importPin = { pinning.importPin(it) }, pinIds = { emptySet() }, cards = forgetAfterFirst, scenes = ImportSceneStore(db, SceneBuilder(db), { DaoFence(0, epoch, { gen }, { epoch }) }), zones = { zoneList }).run(DumpImportParser.parse(two), true, false) }
         assertEquals(1, r.cards); assertEquals(1, r.cardsSkipped["moment_gone"])
+    }
+
+    /** The card guard is atomic: the Moment check runs INSIDE the add transaction, so a Forget landing after the loop's pre-check but before the write leaves no card. */
+    @Test fun aMomentForgottenBetweenThePreCheckAndTheCardWriteLeavesNoCard() = runBlocking<Unit> {
+        run(body(cardsJson = ""))
+        val inner = ImportCardStore(history, { pinStore.pins().map { it.id }.toSet() }) { start + 1000 }
+        val forgetBeforeWrite = ImportCardWriter { c, g ->
+            val svc = ForgetService(db, ProposalRepository(db.proposalDao(), db.actionDao(), db)) { 99L }
+            MomentForget(db, svc) { 99L }.forgetMoments(listOf(id)) // lands after momentHere() said yes, before the add transaction
+            inner.store(c, g)
+        }
+        val r = runBlocking { DumpImporter(db, frameWriter, memoryWriter, { k, photo -> recorder.importMark(k.id, k.source, k.atMs, photo, k.createdAt) }, { ids -> MomentBuilder(db).build(ids) }, { locOn }, { gen }, { 777L },
+            importPin = { pinning.importPin(it) }, pinIds = { emptySet() }, cards = forgetBeforeWrite, scenes = ImportSceneStore(db, SceneBuilder(db), { DaoFence(0, epoch, { gen }, { epoch }) }), zones = { zoneList }).run(DumpImportParser.parse(body(cardsJson = card("c1", at = start + 600))), true, false) }
+        assertEquals(0, r.cards); assertEquals(1, r.cardsSkipped["moment_gone"]); assertEquals(0, cardRows())
+    }
+
+    @Test fun theMomentGuardRunsInsideTheAddTransactionAndRefusesTheRow() = runBlocking<Unit> {
+        var inTx = false
+        val a = history.capture()
+        val e = PlaceHistoryEvent(HistoryKind.PHOTO, "wd:Q1", "Site A", authority = a, importedId = "g1", importedAt = start + 5, momentGuard = { inTx = db.inTransaction(); false })
+        assertNull(history.add(e)); assertTrue(inTx); assertEquals(0, cardRows())
     }
 
     @Test fun locationSettingOffSavesNoLocation() {
