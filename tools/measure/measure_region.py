@@ -118,8 +118,13 @@ def stage_probe(out, key, box, R):
     rows, stats = sparql_all(box); its = {}; fold(rows, its)
     stats["items"] = len(its); stats["app"] = sum(R.app(q, it) for q, it in its.items()); stats["loose"] = sum(R.loose(q, it) for q, it in its.items()); out[key] = stats
 
+def check_out(path):
+    """The detail file holds names and coordinates: refuse a path inside this repository."""
+    root = here.parents[1].resolve(); o = pathlib.Path(path).resolve()
+    if o == root or root in o.parents: raise SystemExit("refusing --out inside the repository: write to a scratch directory")
+
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("--out", required=True); a = ap.parse_args()
+    ap = argparse.ArgumentParser(); ap.add_argument("--out", required=True); a = ap.parse_args(); check_out(a.out)
     R = Rules(); out = {"app_class_ids": len(R.app_cls), "curated_ids": len(R.curated)}; t0 = time.monotonic()
     try:
         stage_trip(out, R)
@@ -129,6 +134,6 @@ def main():
     except Stop as s: out["stopped"] = str(s)
     out["loose_class_ids"] = len(R.loose_ids); out["requests_total"] = state["n"]; out["wall_s_total"] = round(time.monotonic() - t0); out["http_status_counts"] = rec["http"]
     pathlib.Path(a.out).write_text(json.dumps(out, indent=1, default=list)); print(json.dumps({k: v for k, v in out.items() if k != "landmarks"}, indent=1, default=list))
-    for k, v in out.get("landmarks", {}).items(): print(k, "->", [(x["title"], x["app"], x["loose"], x["disagree_1km"]) for x in v] or "NOT FOUND")
+    for k, v in out.get("landmarks", {}).items(): print("landmark", "found" if v else "NOT FOUND", sum(1 for x in v if x["app"]), "app")  # counts only: names stay in --out
 
 if __name__ == "__main__": main()

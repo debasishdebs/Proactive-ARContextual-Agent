@@ -10,9 +10,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import measure_region as mr
 mr.ns["CAP"] = 120
 CELL = mr.CELL_SRC
-mono = CELL.split("val MONUMENT_CLASSES")[1].split("val MOUNTAIN_CLASSES")[0]
+mono = CELL.split("val MONUMENT_CLASSES")[1].split("val RADIUS_CAP_M")[0]
 STRICT_IDS = set(re.findall(r'"(Q\d+)"\s+to\s+PlaceKinds\.', mono))
-MOUNT_IDS = set(re.findall(r'"(Q\d+)"\s+to\s+PlaceKinds\.', CELL.split("val MOUNTAIN_CLASSES")[1].split("Large areas")[0]))
+EXTRA_SRC = (mr.here.parents[1] / "android-companion/services/connectors/src/main/kotlin/com/rokid/context/connectors/place/ExtraPlaceTypes.kt").read_text()
+MOUNT_IDS = set(re.findall(r'ClassDef\("(Q\d+)"', EXTRA_SRC.split("Type(MOUNTAINS")[1].split("        Type(")[0]))
 # planned (design doc section 10, TODO-verify ids) + owner 27 Nov additions: matched by English label because ids are not in the repo
 LOOSE_LABELS = {"proglacial lake", "wildlife sanctuary", "bird sanctuary", "sanctuary", "mountain", "summit", "sacred mountain"}
 OWNER_LABELS = {"mountain", "tea garden", "stream", "glacier", "hill", "railway station", "bus stop", "hydroelectric power station", "run-of-river hydroelectric power station", "stadium", "mountain ridge", "mountain range", "mountain railway"}
@@ -51,7 +52,7 @@ def analyse(items, tag, out, lab_cache):
     out[tag + "_admitted_class_counts"] = [(k, lab.get(k, ""), n) for k, n in collections.Counter(k for q, it in items.items() if t[q] != "none" for k in it["cls"]).most_common(60)]
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("--out", required=True); a = ap.parse_args()
+    ap = argparse.ArgumentParser(); ap.add_argument("--out", required=True); a = ap.parse_args(); mr.check_out(a.out)
     out = {"strict_class_ids": len(STRICT_IDS), "mount_ids": len(MOUNT_IDS)}; lab = {}
     try:
         for tag, boxes in (("raj", {k: mr.centred(*v) for k, v in RAJ.items()}), ("sikkim", {"trip": (27.0, 87.9, 28.2, 89.1)})):

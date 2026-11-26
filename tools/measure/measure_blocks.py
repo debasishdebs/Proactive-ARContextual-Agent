@@ -130,6 +130,8 @@ def pct(v, p):
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--out", required=True); ap.add_argument("--blocks", type=int, default=60); ap.add_argument("--no-overpass", action="store_true"); ap.add_argument("--intro-only", action="store_true", help="skip steps 1-2; take 20-40 qualifying titles from one 300 km SPARQL box around the state centre")
     a = ap.parse_args()
+    _root = pathlib.Path(__file__).resolve().parents[2]; _o = pathlib.Path(a.out).resolve()
+    if _o == _root or _root in _o.parents: raise SystemExit("refusing --out inside the repository: write to a scratch directory")
     cls = classes(); out = {"class_count": len(cls)}
     if a.intro_only:
         try:
