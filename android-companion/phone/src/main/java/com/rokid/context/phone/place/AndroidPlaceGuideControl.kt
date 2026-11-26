@@ -173,7 +173,7 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
         val pack = PlaceGraph.readyPack(app)
         val cells = pack.areas().flatMap { com.rokid.context.memory.place.Geohash5.cellsCovering(it.box) }.toSet().size
         val st = pack.areaStats().values
-        return com.rokid.context.phone.ui.settings.privacy.zones.SeedRates.of(cells, st.sumOf { it.places }, st.sumOf { it.bytes })
+        return com.rokid.context.phone.ui.settings.privacy.zones.SeedRates.of(cells, st.sumOf { it.places }, st.sumOf { it.bytes }, SeedTimingStore(app).secondsPerCell())
     }
     override suspend fun cancelSeed(id: String) { seedWork.cancel(id) }
     override suspend fun retry(id: String): Result<com.rokid.context.phone.ui.settings.place.SeedOutcome> = runCatching {

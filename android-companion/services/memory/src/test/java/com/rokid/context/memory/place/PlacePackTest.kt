@@ -347,6 +347,18 @@ class PlacePackTest {
         assertEquals(0, r.failed); assertEquals(AREA_DONE, db.dao().areas().single().status)
     }
 
+    @Test fun everyFetchedCellReportsItsDurationAndSkippedCellsDoNot() = run {
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        val cells = Geohash5.cellsCovering(box)
+        val src = FakeSource { c -> t += 1_500; CellFetch(listOf(seedPlace(c))) }
+        val p = pack(src)
+        val ms = mutableListOf<Long>()
+        p.seedArea("z", box, onCellMs = { ms += it })
+        assertEquals(cells.size, ms.size); assertTrue(ms.all { it == 1_500L })
+        ms.clear(); p.seedArea("z", box, onCellMs = { ms += it })
+        assertTrue("fresh cells are skipped, not timed", ms.isEmpty())
+    }
+
     @Test fun partialCellsAreCountedStoredWithTheMarkerAndRetriedByTheNextSeed() = run {
         val box = GeoBox(17.30, 78.40, 17.36, 78.46)
         val cells = Geohash5.cellsCovering(box)

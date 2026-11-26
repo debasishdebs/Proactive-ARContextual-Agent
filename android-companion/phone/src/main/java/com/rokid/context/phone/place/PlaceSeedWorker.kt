@@ -37,6 +37,7 @@ import java.util.concurrent.TimeUnit
  */
 class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     private val store by lazy { SeedProgressStore(applicationContext) }
+    private val timing by lazy { SeedTimingStore(applicationContext) }
     private val key: String get() = inputData.getString(KEY).orEmpty()
 
     override suspend fun getForegroundInfo(): ForegroundInfo = info(store.get(key).percent)
@@ -74,7 +75,7 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
             // the notification and the work progress follow the cell progress; a conflated channel keeps the cell loop from ever waiting on them
             val reporter = launch { for (pct in updates) { try { setProgress(workDataOf(PROGRESS to pct)); setForeground(info(pct)) } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e } } }
             try {
-                withContext(Dispatchers.IO) { pack.seedArea(id, box, admit = admit, onProgress = { done, total -> store.progress(key, done, total); updates.trySend(store.get(key).percent) }) }
+                withContext(Dispatchers.IO) { pack.seedArea(id, box, admit = admit, onProgress = { done, total -> store.progress(key, done, total); updates.trySend(store.get(key).percent) }, onCellMs = { ms -> timing.add(ms) }) }
             } finally { updates.close(); reporter.join() }
         }
         PcLog.i(TAG, "seed work done failed=${r.failed} partial=${r.partial}")

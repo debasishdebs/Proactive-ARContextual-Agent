@@ -42,7 +42,8 @@ class SeedEstimateTest {
     }
 
     @Test fun durationWords() {
-        assertEquals("about 10 s", SeedEstimate.duration(1)); assertEquals("about 2 min", SeedEstimate.duration(12)); assertEquals("about 17 min", SeedEstimate.duration(100)); assertEquals("about 12 h", SeedEstimate.duration(4_000))
+        assertEquals("about 7 s", SeedEstimate.duration(1)); assertEquals("about 89 s", SeedEstimate.duration(12)); assertEquals("about 13 min", SeedEstimate.duration(100)); assertEquals("about 9 h", SeedEstimate.duration(4_000))
+        assertEquals("about 3 min", SeedEstimate.duration(100, 1.5)) // the phone's own figure replaces the laptop one
     }
 
     @Test fun boxOfRejectsBadBoxes() {
@@ -55,9 +56,12 @@ class SeedEstimateTest {
         val n = SeedEstimate.cells(sikkim)
         val rough = SeedEstimate.estimate(sikkim)
         assertTrue(rough, rough.startsWith("About $n cells (5 km), about ${n / 2} places, about "))
-        assertTrue(rough, rough.contains("estimate, not measured") && rough.contains("rough"))
+        assertTrue(rough, rough.contains("(measured on a laptop; your phone will refine it)") && rough.contains("rough"))
         val own = SeedRates.of(cells = 40, places = 80, bytes = 80 * 2048L)
         assertFalse(own.rough)
+        val phone = SeedEstimate.estimate(sikkim, SeedRates.of(cells = 5, places = 0, bytes = 0, secondsPerCell = 2.0))
+        assertTrue(phone, phone.contains("(from this phone's earlier seeds)") && !phone.contains("laptop") && phone.contains("rough")) // own timing is used even while places/size are still rough
+        assertEquals(null, SeedRates.of(40, 80, 80 * 2048L, secondsPerCell = Double.NaN).secondsPerCell)
         val line = SeedEstimate.estimate(sikkim, own)
         assertTrue(line, line.contains("about ${n * 2} places") && !line.contains("rough"))
         assertTrue(SeedRates.of(19, 80, 1000).rough)

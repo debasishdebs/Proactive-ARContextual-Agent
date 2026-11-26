@@ -88,4 +88,17 @@ class SeedJobTest {
         }
         assertEquals("Seeding places 42%", SeedAreaState(SeedPhase.RUNNING, 42).text)
     }
+
+    // S7: the phone's own per-cell timing: durations only, used once 10 cells are in, fading past 200
+    @Test fun ownTimingNeedsTenCellsAndStoresOnlyDurations() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        ctx.getSharedPreferences("place_seed_timing", Context.MODE_PRIVATE).edit().clear().commit()
+        val t = SeedTimingStore(ctx)
+        repeat(9) { t.add(4_000) }; assertEquals(null, t.secondsPerCell())
+        t.add(4_000); assertEquals(4.0, t.secondsPerCell()!!, 0.001)
+        repeat(300) { t.add(2_000) }
+        assertEquals(2.0, t.secondsPerCell()!!, 0.1)
+        assertEquals(setOf("n", "ms"), ctx.getSharedPreferences("place_seed_timing", Context.MODE_PRIVATE).all.keys) // nothing but a count and a sum
+        assertEquals(null, SeedTimingStore.Timing.secondsPerCell(50, 0))
+    }
 }

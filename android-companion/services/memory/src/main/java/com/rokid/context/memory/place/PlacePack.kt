@@ -225,7 +225,7 @@ class PlacePack(
      * Fetches the blue zone [bbox] cell by cell and marks everything found seeded. A cell that is already fresh is not fetched again but its places are marked. A cell that fails is
      * counted and the rest go on: the area ends [AREA_PARTIAL] and can be seeded again. [onProgress] gets (cells done, cells total).
      */
-    suspend fun seedArea(blueZoneId: String, bbox: GeoBox, admit: () -> String? = { null }, onProgress: (Int, Int) -> Unit = { _, _ -> }): SeedResult {
+    suspend fun seedArea(blueZoneId: String, bbox: GeoBox, admit: () -> String? = { null }, onCellMs: (Long) -> Unit = {}, onProgress: (Int, Int) -> Unit = { _, _ -> }): SeedResult {
         val cells = Geohash5.cellsCovering(bbox)
         val src = source
         if (cells.isEmpty() || cells.size > MAX_SEED_CELLS || src == null) { log("seed refused cells=${cells.size}"); return SeedResult(cells.size, 0, 0, if (src == null) cells.size else 0, 0) }
@@ -234,7 +234,7 @@ class PlacePack(
         var stopped: String? = null
         val result: SeedResult? = try {
             withContext(mine + SeedAdmission(admit)) {
-                try { seedBody(blueZoneId, bbox, cells, src, onProgress) } catch (e: SeedStopped) {
+                try { seedBody(blueZoneId, bbox, cells, src, onProgress, onCellMs) } catch (e: SeedStopped) {
                     stopped = e.reason
                     writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_PARTIAL))
                     null
@@ -267,7 +267,7 @@ class PlacePack(
     /** The area row, written under the fetch lock and only while this seed is still wanted: a removal cancels the seed first, so its last write cannot bring the area back. */
     private suspend fun writeArea(row: AreaEntity) = fetchLock.withLock { currentCoroutineContext().ensureActive(); dao.putArea(if (row.name == null) row.copy(name = dao.areaName(row.blueZoneId)) else row) } // a seed rewrite keeps the owner's name (v18 WP11b)
 
-    private suspend fun seedBody(blueZoneId: String, bbox: GeoBox, cells: List<String>, src: CellSource, onProgress: (Int, Int) -> Unit): SeedResult {
+    private suspend fun seedBody(blueZoneId: String, bbox: GeoBox, cells: List<String>, src: CellSource, onProgress: (Int, Int) -> Unit, onCellMs: (Long) -> Unit): SeedResult {
         writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_SEEDING))
         var fetched = 0; var skipped = 0; var partial = 0; var done = 0
         val failedCells = ArrayList<String>()
@@ -279,6 +279,8 @@ class PlacePack(
                 if (c?.status == CELL_OK && isFresh(c)) CellOutcome.FRESH else { seedAdmitCheck(); fetchAndStore(cell, src, seeded = true) }
             }
         }
+        // how long a fetched cell took (fetch only, no retry wait): a duration alone, never which cell; the caller keeps sums and counts
+        suspend fun timed(cell: String): CellOutcome { val t0 = now(); val o = seedOne(cell); if (o == CellOutcome.FETCHED || o == CellOutcome.PARTIAL) onCellMs((now() - t0).coerceAtLeast(0)); return o }
         fun count(outcome: CellOutcome): Boolean = when (outcome) {
             CellOutcome.FETCHED -> { fetched++; true }
             CellOutcome.PARTIAL -> { fetched++; partial++; true }
@@ -286,7 +288,7 @@ class PlacePack(
         }
         for (cell in cells) {
             val box = Geohash5.bounds(cell)!!
-            val outcome = seedOne(cell)
+            val outcome = timed(cell)
             if (outcome == CellOutcome.FRESH) { skipped++; dao.markSeeded(box.south, box.north, box.west, box.east) }
             else if (!count(outcome)) failedCells += cell
             onProgress(++done, cells.size)
@@ -300,7 +302,7 @@ class PlacePack(
             round++
             pause(retryBackoffMs(round))
             val still = ArrayList<String>()
-            for (cell in remaining) if (!count(seedOne(cell))) still += cell
+            for (cell in remaining) if (!count(timed(cell))) still += cell
             log("seed retry round=$round cells=${remaining.size} recovered=${remaining.size - still.size}")
             remaining = still
         }

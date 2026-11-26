@@ -95,3 +95,31 @@ class SeedProgressStore(app: Context) {
     fun clear(key: String) { p.edit().remove("$key.done").remove("$key.total").remove("$key.wait").remove("$key.cancel").remove("$key.queued").remove("$key.failed").apply() }
     fun clearAll() { p.edit().clear().apply() }
 }
+
+/**
+ * How long a fetched cell takes on THIS phone: a running total of milliseconds and a count of fetched cells, nothing else (no cell, no place, no position). Skipped (fresh) cells and retry waits
+ * are not counted. The weights fade past [KEEP] cells so a change of network shows up. Used only for the seed estimate once [MIN_CELLS] cells are in.
+ */
+class SeedTimingStore(app: Context) {
+    private val p = app.getSharedPreferences("place_seed_timing", Context.MODE_PRIVATE)
+
+    @Synchronized fun add(ms: Long) {
+        var n = p.getLong("n", 0); var total = p.getLong("ms", 0)
+        n++; total += ms.coerceIn(0, MAX_MS)
+        if (n > KEEP) { total = total * KEEP / n; n = KEEP }
+        p.edit().putLong("n", n).putLong("ms", total).apply()
+    }
+
+    /** Seconds per fetched cell from this phone's own seeds, or null while fewer than [MIN_CELLS] cells were timed. */
+    fun secondsPerCell(): Double? = Timing.secondsPerCell(p.getLong("n", 0), p.getLong("ms", 0))
+
+    object Timing {
+        fun secondsPerCell(cells: Long, totalMs: Long): Double? = if (cells < MIN_CELLS || totalMs <= 0) null else totalMs / 1000.0 / cells
+    }
+
+    companion object {
+        const val MIN_CELLS = 10L
+        const val KEEP = 200L
+        private const val MAX_MS = 10 * 60_000L // one cell is never longer than this in the average (a stuck cell must not skew it)
+    }
+}

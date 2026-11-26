@@ -58,14 +58,17 @@ interface SeedMapControl {
     suspend fun cellStatuses(box: GeoBox): Map<String, String> = emptyMap()
 }
 
-/** Places per cell and bytes per place for the estimate. Below [MIN_CELLS] seeded cells the defaults (0.5 place a cell, 1 KB a place) are used and marked rough. */
-data class SeedRates(val placesPerCell: Double, val bytesPerPlace: Long, val rough: Boolean) {
+/**
+ * Places per cell and bytes per place for the estimate. Below [MIN_CELLS] seeded cells the defaults (0.5 place a cell, 1 KB a place) are used and marked rough. [secondsPerCell] is this phone's own
+ * measured time for a fetched cell (null until it has timed enough cells): the estimate then uses it instead of the laptop figure.
+ */
+data class SeedRates(val placesPerCell: Double, val bytesPerPlace: Long, val rough: Boolean, val secondsPerCell: Double? = null) {
     companion object {
         const val MIN_CELLS = 20
         val ROUGH = SeedRates(0.5, 1024, true)
-        /** From the pack: [cells] seeded cells, [places] seeded places in them, [bytes] their text. */
-        fun of(cells: Int, places: Int, bytes: Long): SeedRates =
-            if (cells < MIN_CELLS || places <= 0) ROUGH else SeedRates(places.toDouble() / cells, Math.max(1L, bytes / places), false)
+        /** From the pack: [cells] seeded cells, [places] seeded places in them, [bytes] their text; [secondsPerCell] from the phone's own seed timing, if any. */
+        fun of(cells: Int, places: Int, bytes: Long, secondsPerCell: Double? = null): SeedRates =
+            (if (cells < MIN_CELLS || places <= 0) ROUGH else SeedRates(places.toDouble() / cells, Math.max(1L, bytes / places), false)).copy(secondsPerCell = secondsPerCell?.takeIf { it.isFinite() && it > 0 })
     }
 }
 
@@ -77,8 +80,15 @@ object SeedEstimate {
     const val CONFIRM_CELLS = 100L
     /** The pack's own hard cap; a box above it is refused here before any request. */
     const val MAX_CELLS: Long = PlacePack.MAX_SEED_CELLS.toLong()
-    /** About 10 s a cell (from "a dozen cells in about 2 minutes"). UNVERIFIED: measure on the first real seed. */
-    const val SECONDS_PER_CELL = 10L
+    /**
+     * Seconds a cell takes, MEASURED on a laptop on 26 Nov (tools/measure/measure_seed_cells.py, 25 cells of a busy tourist area, same requests as PlacePack.seedArea): median 3.0 s, p90 8.8 s,
+     * MEAN 7.4 s. The estimate multiplies by the mean (a total is cells times the mean; the mean carries the slow cells, such as Overpass mirrors timing out). Replaced by the phone's own
+     * timing once it has timed 10 cells.
+     */
+    const val SECONDS_PER_CELL = 7.4
+
+    const val TIME_FROM_LAPTOP = "(measured on a laptop; your phone will refine it)"
+    const val TIME_FROM_PHONE = "(from this phone's earlier seeds)"
 
     /** The box as a [GeoBox], or null when it is missing or not a valid box. */
     fun boxOf(b: DoubleArray?): GeoBox? = b?.takeIf { it.size == 4 }?.let { GeoBox(it[0], it[1], it[2], it[3]) }?.takeIf { it.valid }
@@ -97,10 +107,10 @@ object SeedEstimate {
         else -> SeedLevel.OK
     }
 
-    fun seconds(cells: Long): Long = cells * SECONDS_PER_CELL
+    fun seconds(cells: Long, secondsPerCell: Double = SECONDS_PER_CELL): Long = Math.round(cells * secondsPerCell)
 
-    fun duration(cells: Long): String {
-        val s = seconds(cells)
+    fun duration(cells: Long, secondsPerCell: Double = SECONDS_PER_CELL): String {
+        val s = seconds(cells, secondsPerCell)
         return if (s < 90) "about $s s" else if (s < 5_400) "about ${ceil(s / 60.0).toLong()} min" else "about ${ceil(s / 3_600.0).toLong()} h"
     }
 
@@ -112,7 +122,7 @@ object SeedEstimate {
         val places = Math.round(n * rates.placesPerCell)
         val bytes = Math.round(places * rates.bytesPerPlace.toDouble())
         val rough = if (rates.rough) " (rough: not enough seeded cells on this phone yet)" else ""
-        return "About $n cell${if (n == 1L) "" else "s"} (5 km), about $places place${if (places == 1L) "" else "s"}, about ${sizeText(bytes)} of text, ${duration(n)} on Wi-Fi. The time is an estimate, not measured.$rough"
+        return "About $n cell${if (n == 1L) "" else "s"} (5 km), about $places place${if (places == 1L) "" else "s"}, about ${sizeText(bytes)} of text, ${duration(n, rates.secondsPerCell ?: SECONDS_PER_CELL)} on Wi-Fi ${if (rates.secondsPerCell != null) TIME_FROM_PHONE else TIME_FROM_LAPTOP}.$rough"
     }
 
     fun sizeText(bytes: Long): String = if (bytes < 100_000) "${Math.max(1, (bytes + 512) / 1024)} KB" else String.format(java.util.Locale.US, "%.1f MB", bytes / 1_048_576.0)
