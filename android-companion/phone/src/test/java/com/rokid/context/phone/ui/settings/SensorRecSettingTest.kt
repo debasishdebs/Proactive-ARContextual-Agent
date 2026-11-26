@@ -5,6 +5,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.ui.theme.PcTheme
 import org.junit.Assert.assertEquals
@@ -30,13 +31,13 @@ class SensorRecSettingTest {
 
     @Test fun offByDefaultWithTheWarningOnlyWhenRecording() {
         show(dev = true)
-        compose.onNodeWithTag("sensor_rec_rate").assertIsDisplayed()
+        compose.onNodeWithTag("sensor_rec_rate").performScrollTo().assertIsDisplayed() // the Developer rows above it (captions, Maybe tier, import) push it below the fold
         compose.onNodeWithTag("sensor_rec_warning").assertDoesNotExist()
     }
 
     @Test fun theWarningNamesTheRateAndTheBatteryCost() {
         show(dev = true, hz = 25)
-        compose.onNodeWithTag("sensor_rec_warning").assertIsDisplayed()
+        compose.onNodeWithTag("sensor_rec_warning").performScrollTo().assertIsDisplayed()
         val t = SensorRecCopy.warning(25)
         assertTrue(t, t.contains("25 Hz at most") && t.contains("never faster than the glasses already sample") && t.contains("batches") && t.contains("more battery"))
         assertEquals("records sensor data at 10 Hz at most (never faster than the glasses already sample, and nothing while they save battery, rest or are paused) and saves it in batches on the glasses (not sent to the phone yet; a developer pull reads it). Uses more battery.", SensorRecCopy.warning(10))
@@ -45,8 +46,8 @@ class SensorRecSettingTest {
     @Test fun choosingARateReportsAPreset() {
         var got = -1
         show(dev = true, on = { got = it })
-        compose.onNodeWithTag("sensor_rec_rate").performClick()
-        compose.onNodeWithTag("sensor_rec_rate_2").performClick()
+        compose.onNodeWithTag("sensor_rec_rate").performScrollTo().performClick()
+        compose.onNodeWithTag("sensor_rec_rate_2").performScrollTo().performClick()
         assertEquals(10, got)
     }
 
