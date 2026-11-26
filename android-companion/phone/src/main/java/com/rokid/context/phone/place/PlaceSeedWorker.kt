@@ -25,6 +25,8 @@ import com.rokid.context.work.frames.place.PlaceGraph
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
 
@@ -47,27 +49,50 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
         try { setForeground(info(store.get(key).percent)) } catch (e: Exception) { PcLog.i(TAG, "seed work: no foreground (${e.javaClass.simpleName})") } // a refused foreground start must not fail the seed
         store.setWaiting(key, false)
         return try {
-            val updates = kotlinx.coroutines.channels.Channel<Int>(kotlinx.coroutines.channels.Channel.CONFLATED)
-            val r = kotlinx.coroutines.coroutineScope {
-                // the notification and the work progress follow the cell progress; a conflated channel keeps the cell loop from ever waiting on them
-                val reporter = launch { for (pct in updates) { try { setProgress(workDataOf(PROGRESS to pct)); setForeground(info(pct)) } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e } } }
-                try {
-                    withContext(Dispatchers.IO) { pack.seedArea(area.blueZoneId, area.box, admit = admit, onProgress = { done, total -> store.progress(key, done, total); updates.trySend(store.get(key).percent) }) }
-                } finally { updates.close(); reporter.join() }
+            // One area at a time (Wikipedia's rate limit): a seed that starts while another runs waits here, first come first served, and reads "queued" meanwhile.
+            store.setQueued(key, true)
+            SeedQueue.gate.withLock {
+                store.setQueued(key, false)
+                runSeed(pack, area.blueZoneId, area.box, admit)
             }
-            PcLog.i(TAG, "seed work done")
-            if (r.failed == 0 && r.partial == 0) store.clear(key) // resumed seeds that ended partial keep their counts for the next try
-            Result.success()
         } catch (e: SeedStopped) {
             stopped(e.reason)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // A failure that is not a stop never leaves the area "seeding": it ends partial and the owner can retry (the log has the class only).
+            PcLog.i(TAG, "seed work failed cls=${e.javaClass.simpleName}")
+            runCatching { pack.stallSeeding(area.blueZoneId, graceMs = 0L) }
+            store.setQueued(key, false); store.setWaiting(key, false)
+            Result.failure()
+        } finally { store.setQueued(key, false) }
+    }
+
+    private suspend fun runSeed(pack: PlacePack, id: String, box: com.rokid.context.memory.place.GeoBox, admit: () -> String?): Result {
+        val updates = kotlinx.coroutines.channels.Channel<Int>(kotlinx.coroutines.channels.Channel.CONFLATED)
+        val r = kotlinx.coroutines.coroutineScope {
+            // the notification and the work progress follow the cell progress; a conflated channel keeps the cell loop from ever waiting on them
+            val reporter = launch { for (pct in updates) { try { setProgress(workDataOf(PROGRESS to pct)); setForeground(info(pct)) } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e } } }
+            try {
+                withContext(Dispatchers.IO) { pack.seedArea(id, box, admit = admit, onProgress = { done, total -> store.progress(key, done, total); updates.trySend(store.get(key).percent) }) }
+            } finally { updates.close(); reporter.join() }
         }
+        PcLog.i(TAG, "seed work done failed=${r.failed} partial=${r.partial}")
+        if (r.failed == 0 && r.partial == 0) store.clear(key) // resumed seeds that ended partial keep their counts for the next try
+        else store.setFailed(key, r.failed + r.partial) // the FAILED state shows this count and "Retry failed cells" re-queues exactly these
+        return Result.success()
     }
 
     /** A stop at the admission: no network or a closed data saver waits and retries with backoff; Offline only fails; a removed area ends quietly. */
     private fun stopped(reason: String): Result = when (reason) {
         SeedGate.OFFLINE_ONLY -> { PcLog.i(TAG, "seed work refused: offline only"); Result.failure() }
         REMOVED -> { store.clear(key); Result.success() }
-        else -> { store.setWaiting(key, true); PcLog.i(TAG, "seed work waits"); Result.retry() }
+        else -> if (runAttemptCount >= MAX_WORKER_ATTEMPTS) {
+            // give up after the cap: the area ends partial (never "seeding" forever) and "Retry failed cells" / Seed again restarts it
+            PcLog.i(TAG, "seed work gave up after $runAttemptCount attempts")
+            store.setWaiting(key, false)
+            Result.failure()
+        } else { store.setWaiting(key, true); PcLog.i(TAG, "seed work waits"); Result.retry() }
     }
 
     private fun info(pct: Int): ForegroundInfo {
@@ -81,6 +106,8 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
         const val PROGRESS = "pct"
         const val TAG_ALL = "place_seed"
         const val REMOVED = "area removed"
+        /** Waits for a network or the data saver with growing backoff; after this many tries the seed gives up (the work constraint itself waits for a network without running). */
+        const val MAX_WORKER_ATTEMPTS = 8
         private const val TAG = "PcPlaceSeed"
         private const val CHANNEL = "place_seed"
         private const val NOTIFICATION_ID = 7311
@@ -102,6 +129,9 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
         @androidx.annotation.VisibleForTesting internal var admission: (Context) -> (() -> String?) = ::seedAdmission
     }
 }
+
+/** One seed at a time in this process (the public APIs rate-limit; presets with several boxes run one after another). Mutex waiters are served in order. */
+object SeedQueue { val gate = Mutex() }
 
 /** Queues, cancels and reads the background seeds. One unique work per area (KEEP), expedited, network constraint by the global Wi-Fi-only setting. */
 class SeedWork(private val app: Context, private val wifiOnly: () -> Boolean = { com.rokid.context.ai.datasaver.DataSaverGraph.get(app).settingsNow().mode == com.rokid.context.core.net.DataMode.WIFI_ONLY },

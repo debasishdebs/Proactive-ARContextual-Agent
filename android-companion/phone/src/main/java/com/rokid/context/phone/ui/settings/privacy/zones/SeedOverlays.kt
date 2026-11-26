@@ -29,7 +29,9 @@ data class SeedAreaInfo(val id: String, val south: Double, val west: Double, val
     /** S3: the background seed's derived state while it is active (queued, running NN%, waiting for a network); null = no live seed. */
     val seed: com.rokid.context.phone.place.SeedAreaState? = null,
     /** S5: seeded places in the box, their text bytes and the seed date (ms); read from places.db, so they show offline. null = not known. */
-    val places: Int? = null, val bytes: Long = 0, val seededAt: Long = 0) {
+    val places: Int? = null, val bytes: Long = 0, val seededAt: Long = 0,
+    /** The last seed ended with this many cells failed (after the automatic retries); 0 = none known. The row, the selected-area card and the progress area offer "Retry failed cells". */
+    val failedCells: Int = 0) {
     val box: DoubleArray get() = doubleArrayOf(south, west, north, east)
 }
 
@@ -48,6 +50,8 @@ interface SeedMapControl {
     suspend fun cancelSeed(id: String) {}
     /** S4: stores the owner's label for the area (the label only: box and places are untouched). Returns false when it could not be stored. */
     suspend fun rename(id: String, name: String?): Boolean = false
+    /** "Retry failed cells": queues the area's own box again (cells that are fresh are skipped, so only the failed ones are fetched). Same Offline only refusal as a new seed. */
+    suspend fun retry(id: String): Result<SeedOutcome> = Result.failure(UnsupportedOperationException())
     /** S4: what this phone's own pack says about places and bytes per seeded cell (read only, offline). The default knows nothing, so the estimate is marked rough. */
     suspend fun rates(): SeedRates = SeedRates.ROUGH
     /** Map zones "Show cells" (read only): the stored status of each 5 km cell touching [box]; a missing cell is absent. The default is empty (nothing known). */
@@ -135,7 +139,7 @@ object SeedEstimate {
 enum class AreaLook { DONE, PARTIAL, SEEDING }
 
 /** One seeded area to draw: its box, its look (blue / amber with a badge / moving dash) and the list label. */
-data class SeedOverlay(val id: String, val box: DoubleArray, val look: AreaLook, val label: String)
+data class SeedOverlay(val id: String, val box: DoubleArray, val look: AreaLook, val label: String, val failedCells: Int = 0)
 
 /** The pure overlay model: what the canvas draws and the legend line. No Compose, no coordinates in any text. */
 object SeedOverlays {
@@ -146,7 +150,7 @@ object SeedOverlays {
 
     fun of(areas: List<SeedAreaInfo>): List<SeedOverlay> = areas.mapIndexed { i, a ->
         val look = look(a.status)
-        SeedOverlay(a.id, a.box, if (a.seed != null) AreaLook.SEEDING else look, (a.name?.takeIf { it.isNotBlank() } ?: "Seeded area ${i + 1}") + if (a.seed != null) " (${a.seed.text.replaceFirstChar { it.lowercase() }})" else when (look) { AreaLook.DONE -> ""; AreaLook.PARTIAL -> " (some cells failed, will retry)"; AreaLook.SEEDING -> " (seeding)" })
+        SeedOverlay(a.id, a.box, if (a.seed != null) AreaLook.SEEDING else look, (a.name?.takeIf { it.isNotBlank() } ?: "Seeded area ${i + 1}") + if (a.seed != null) " (${a.seed.text.replaceFirstChar { it.lowercase() }})" else when (look) { AreaLook.DONE -> ""; AreaLook.PARTIAL -> if (a.failedCells > 0) " (FAILED: ${a.failedCells} cell${if (a.failedCells == 1) "" else "s"})" else " (some cells failed, will retry)"; AreaLook.SEEDING -> " (not finished, seed again)" }, a.failedCells)
     }
 
     /** The legend: counts of what is drawn. Pause zones are counted by the caller's own list. */
@@ -196,7 +200,7 @@ data class SeedAreaRow(val id: String, val text: String)
 
 object SeedAreaList {
     const val ATTRIBUTION = "Place text from Wikipedia (CC BY-SA), Wikidata (CC0) and (c) OpenStreetMap contributors (ODbL). Licence names are from the projects' standard terms."
-    fun statusText(a: SeedAreaInfo): String = a.seed?.text ?: when (SeedOverlays.look(a.status)) { AreaLook.DONE -> "done"; AreaLook.PARTIAL -> "partial, seed again"; AreaLook.SEEDING -> "not finished, seed again" }
+    fun statusText(a: SeedAreaInfo): String = a.seed?.text ?: when (SeedOverlays.look(a.status)) { AreaLook.DONE -> "done"; AreaLook.PARTIAL -> if (a.failedCells > 0) "FAILED, ${a.failedCells} cell${if (a.failedCells == 1) "" else "s"} to retry" else "partial, seed again"; AreaLook.SEEDING -> "not finished, seed again" }
     fun row(index: Int, a: SeedAreaInfo, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
         val name = a.name?.takeIf { it.isNotBlank() } ?: "Seeded area ${index + 1}"
         val parts = mutableListOf(name, statusText(a))
@@ -204,10 +208,13 @@ object SeedAreaList {
         if (a.seededAt > 0) parts += java.time.Instant.ofEpochMilli(a.seededAt).atZone(zone).toLocalDate().toString()
         return parts.joinToString(" · ")
     }
+    /** The progress area: every active seed, then every area that ended with failed cells (so a failure stays visible with its Retry button). */
+    fun progress(areas: List<SeedAreaInfo>): List<SeedProgressRow> = areas.mapNotNull { x -> x.seed?.let { SeedProgressRow(x.id, it.text) } ?: x.takeIf { it.failedCells > 0 }?.let { SeedProgressRow(it.id, statusText(it), it.failedCells) } }
     fun rows(areas: List<SeedAreaInfo>): List<SeedAreaRow> = areas.mapIndexed { i, a -> SeedAreaRow(a.id, row(i, a)) }
 }
 
-data class SeedProgressRow(val id: String, val text: String)
+/** One line of the progress area: an active seed (Cancel) or a FAILED one ([failed] > 0: "Retry failed cells"). */
+data class SeedProgressRow(val id: String, val text: String, val failed: Int = 0)
 
 /** The seed side of the zones map. It only reads areas and pins and calls the existing seed; it never writes a pause zone. */
 class SeedMapViewModel(private val control: SeedMapControl, private val work: CoroutineDispatcher = Dispatchers.IO) : ViewModel() {
@@ -225,7 +232,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             val p = runCatching { control.pins() }.getOrDefault(emptyList())
             val r = runCatching { control.rates() }.getOrDefault(SeedRates.ROUGH)
             infos = a
-            _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), rates = r, pins = p, progress = a.mapNotNull { x -> x.seed?.let { SeedProgressRow(x.id, it.text) } }) }
+            _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), rates = r, pins = p, progress = SeedAreaList.progress(a)) }
             if (a.any { it.seed != null }) startPoll()
         }
     }
@@ -238,13 +245,22 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             com.rokid.context.phone.ui.settings.seedTicks(POLL_MS).takeWhile {
                 val a = runCatching { control.areas() }.getOrDefault(emptyList())
                 infos = a
-                _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), progress = a.mapNotNull { x -> x.seed?.let { SeedProgressRow(x.id, it.text) } }) }
+                _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), progress = SeedAreaList.progress(a)) }
                 a.any { it.seed != null }
             }.collect {}
         }
     }
 
     /** Cancel on a row or in the sheet: the work stops, the area stays (partial) and seeding it again resumes. */
+    /** "Retry failed cells" (row, selected-area card or progress area): queues only the cells that did not seed. */
+    fun retryFailed(id: String) {
+        viewModelScope.launch(work) {
+            val r = runCatching { control.retry(id) }.getOrElse { Result.failure(it) }
+            _state.update { it.copy(message = r.fold({ o -> o.message }, { t -> seedFailureText(t) }), messageIsError = r.isFailure) }
+            refresh()
+        }
+    }
+
     fun cancelSeed(id: String) { viewModelScope.launch(work) { runCatching { control.cancelSeed(id) }; refresh() } }
 
     /** The user taps "Seed places in this box". Too large is refused here; above the confirm threshold it waits for a yes. */

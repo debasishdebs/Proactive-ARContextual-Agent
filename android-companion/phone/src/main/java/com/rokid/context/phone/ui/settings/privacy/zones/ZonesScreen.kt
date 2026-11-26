@@ -157,7 +157,7 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
         val seedState by seedVm.state.collectAsStateWithLifecycle()
         LaunchedEffect(seedVm) { seedVm.refresh() }
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
-        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename)
+        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed)
     }
     if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back), null, online, seedPanel, networkOnline); return }
     val mapVm = viewModel(key = "offline_map") { OfflineMapViewModel(offline.files, offline.store) }
@@ -245,6 +245,8 @@ class SeedPanel(
     val setRemoveWithPlaces: (Boolean) -> Unit = {},
     /** S4: rename an area (label only). */
     val rename: (String, String) -> Unit = { _, _ -> },
+    /** "Retry failed cells": queues only the cells of the area that did not seed. */
+    val retryFailed: (String) -> Unit = {},
 )
 
 /** The remove-area dialog (both map screens): "the area and its places" is preselected; the other choice keeps the places as ordinary fetched places. */
@@ -273,8 +275,9 @@ internal fun SeedRemoveDialog(seed: SeedPanel) {
 @Composable
 internal fun SeedProgressRows(p: SeedPanel) {
     p.ui.progress.forEachIndexed { i, r ->
-        NoticeText(r.text, tag = "seed_progress_$i")
-        SecondaryAction("Cancel seeding", { p.cancelSeed(r.id) }, tag = "seed_cancel_$i")
+        NoticeText(r.text, error = r.failed > 0, tag = "seed_progress_$i")
+        if (r.failed > 0) SecondaryAction("Retry failed cells", { p.retryFailed(r.id) }, tag = "seed_retry_$i", enabled = !p.ui.seeding)
+        else SecondaryAction("Cancel seeding", { p.cancelSeed(r.id) }, tag = "seed_cancel_$i")
     }
 }
 

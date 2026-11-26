@@ -161,7 +161,13 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
         runCatching { seedWork.reconcile(pack) } // an area marked seeding with no live work becomes partial
         val states = runCatching { seedWork.states(pack, seedAdmission(app)() != null) }.getOrDefault(emptyMap())
         val stats = runCatching { pack.areaStats() }.getOrDefault(emptyMap())
-        return pack.areas().map { com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, it.status, it.name, states[it.blueZoneId]?.takeIf { s -> s.active }, stats[it.blueZoneId]?.places, stats[it.blueZoneId]?.bytes ?: 0, it.seededAt) }
+        return pack.areas().map {
+            val live = states[it.blueZoneId]?.takeIf { s -> s.active }
+            val failed = states[it.blueZoneId]?.takeIf { s -> s.phase == SeedPhase.FAILED }?.failedCells ?: 0
+            // a row still marked seeding with no live work is shown as partial at once (reconcile rewrites it after its grace): it can never read "(seeding)" forever
+            val status = if (it.status == com.rokid.context.memory.place.AREA_SEEDING && live == null) com.rokid.context.memory.place.AREA_PARTIAL else it.status
+            com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, status, it.name, live, stats[it.blueZoneId]?.places, stats[it.blueZoneId]?.bytes ?: 0, it.seededAt, failed)
+        }
     }
     override suspend fun rates(): com.rokid.context.phone.ui.settings.privacy.zones.SeedRates {
         val pack = PlaceGraph.readyPack(app)
@@ -170,6 +176,18 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
         return com.rokid.context.phone.ui.settings.privacy.zones.SeedRates.of(cells, st.sumOf { it.places }, st.sumOf { it.bytes })
     }
     override suspend fun cancelSeed(id: String) { seedWork.cancel(id) }
+    override suspend fun retry(id: String): Result<com.rokid.context.phone.ui.settings.place.SeedOutcome> = runCatching {
+        if (com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() != com.rokid.context.core.net.ModelPrivacy.AUTO) {
+            com.rokid.context.core.log.PcLog.i("PcData", "seed refused: offline only")
+            throw com.rokid.context.phone.ui.settings.place.SeedOfflineOnlyException()
+        }
+        val pack = PlaceGraph.readyPack(app)
+        val a = pack.areas().firstOrNull { it.blueZoneId == id } ?: throw IllegalArgumentException("area gone")
+        pack.beginArea(id, a.box) // the area's own id and box; cells that are fresh are skipped, so only the failed ones are fetched
+        seedWork.enqueue(id)
+        com.rokid.context.core.log.PcLog.i("PcPlaceSeed", "seed retry queued")
+        com.rokid.context.phone.ui.settings.place.SeedOutcome("Retrying the failed cells in the background.")
+    }
     override suspend fun rename(id: String, name: String?) = PlaceGraph.readyPack(app).setAreaName(id, name)
     override suspend fun pins() = guide.pinning?.pins().orEmpty().map { com.rokid.context.phone.ui.settings.privacy.zones.PinInfo(it.lat, it.lon, it.radiusM) }
     override suspend fun seed(box: GeoBox) = guide.seed(box)

@@ -271,8 +271,8 @@ class PlacePackTest {
         val r = pack(src).seedArea("z", box)
         assertEquals(1, r.failed); assertFalse(r.complete)
         assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
-        assertEquals(cells + cells.first(), src.asked) // the failed cell was tried once more after the others
-        assertEquals(listOf(PlacePack.RETRY_BACKOFF_MS), pauses); assertEquals(1, r.retried); assertEquals(cells.size - 1, r.ok)
+        assertEquals(cells + List(PlacePack.MAX_ATTEMPTS - 1) { cells.first() }, src.asked) // the failed cell was tried again after the others, 5 tries in all, then given up
+        assertEquals(listOf(5_000L, 10_000L, 20_000L, 40_000L), pauses); assertEquals(1, r.retried); assertEquals(cells.size - 1, r.ok)
         assertEquals(0, pack(null).seedArea("z", box).fetched)
     }
 
@@ -319,7 +319,32 @@ class PlacePackTest {
         assertEquals(cells + cells.first(), src.asked)
         assertEquals(AREA_DONE, db.dao().areas().single().status)
         assertEquals(cells.size, db.dao().placeCount())
-        assertTrue(logs.any { it == "seed retry cells=1 recovered=1" })
+        assertTrue(logs.any { it == "seed retry round=1 cells=1 recovered=1" })
+    }
+
+    @Test fun aCellThatFailsTwiceRecoversOnTheThirdTryAndTheBackoffGrowsAndCaps() = run {
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        val cells = Geohash5.cellsCovering(box)
+        var fails = 2
+        val src = FakeSource { c -> if (c == cells.first() && fails-- > 0) throw IOException("503") else CellFetch(listOf(seedPlace(c))) }
+        val r = pack(src).seedArea("z", box)
+        assertEquals(0, r.failed); assertTrue(r.complete); assertEquals(listOf(5_000L, 10_000L), pauses)
+        assertEquals(AREA_DONE, db.dao().areas().single().status)
+        assertEquals(listOf(5_000L, 10_000L, 20_000L, 40_000L, 60_000L, 60_000L), (1..6).map { PlacePack.retryBackoffMs(it) })
+    }
+
+    @Test fun retryingTheAreaFetchesOnlyTheCellsThatFailed() = run {
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        val cells = Geohash5.cellsCovering(box)
+        var down = true
+        val src = FakeSource { c -> if (c == cells.first() && down) throw IOException("429") else CellFetch(listOf(seedPlace(c))) }
+        val p = pack(src)
+        assertEquals(1, p.seedArea("z", box).failed)
+        assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
+        down = false; src.asked.clear()
+        val r = p.seedArea("z", box)
+        assertEquals(listOf(cells.first()), src.asked) // only the failed cell went to the source again
+        assertEquals(0, r.failed); assertEquals(AREA_DONE, db.dao().areas().single().status)
     }
 
     @Test fun partialCellsAreCountedStoredWithTheMarkerAndRetriedByTheNextSeed() = run {

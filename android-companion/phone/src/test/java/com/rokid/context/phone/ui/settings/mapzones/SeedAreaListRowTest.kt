@@ -18,6 +18,7 @@ import com.rokid.context.phone.ui.settings.privacy.zones.SeedPanel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -58,5 +59,23 @@ class SeedAreaListRowTest {
         compose.onNodeWithTag("seed_rename_field").performTextInput("Sikkim")
         compose.onNodeWithTag("seed_rename_save").performClick()
         assertEquals(listOf("rename:seed:1:Sikkim"), log)
+    }
+
+    private val failedInfo = listOf(SeedAreaInfo("seed:1", 27.0, 88.0, 27.1, 88.1, com.rokid.context.memory.place.AREA_PARTIAL, failedCells = 3))
+
+    @Test fun aFailedAreaShowsFAILEDWithItsCountAndARetryButtonOnTheRowAndInTheProgressArea() {
+        val ui = SeedMapUiState(areas = SeedOverlays.of(failedInfo), rows = SeedAreaList.rows(failedInfo), progress = SeedAreaList.progress(failedInfo))
+        assertTrue(ui.areas[0].label, ui.areas[0].label.contains("FAILED: 3 cells")); assertTrue(ui.rows[0].text, ui.rows[0].text.contains("FAILED, 3 cells to retry"))
+        val panel = SeedPanel(ui, false, {}, {}, {}, {}, {}, {}, {}, retryFailed = { log += "retry:$it" })
+        compose.setContent { PcTheme { androidx.compose.foundation.layout.Column { SeedAreaListRow(view, panel, ui.areas[0]) {}; com.rokid.context.phone.ui.settings.privacy.zones.SeedProgressRows(panel) } } }
+        compose.onNodeWithTag("seed_retry_seed:1").assertIsEnabled().performClick()
+        compose.onNodeWithTag("seed_retry_0").assertIsEnabled().performClick()
+        compose.onNodeWithTag("seed_cancel_0").assertDoesNotExist()
+        assertEquals(listOf("retry:seed:1", "retry:seed:1"), log)
+    }
+
+    @Test fun anAreaStillMarkedSeedingWithNoLiveSeedNeverReadsSeeding() {
+        val stuck = listOf(SeedAreaInfo("seed:1", 27.0, 88.0, 27.1, 88.1, com.rokid.context.memory.place.AREA_SEEDING))
+        assertEquals("Seeded area 1 (not finished, seed again)", SeedOverlays.of(stuck)[0].label)
     }
 }

@@ -21,6 +21,7 @@ import com.rokid.context.memory.place.Geohash5
 import com.rokid.context.memory.place.PlacePack
 import com.rokid.context.memory.place.PlaceKinds
 import com.rokid.context.memory.place.PlacesDatabase
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -94,6 +95,57 @@ class PlaceSeedWorkerTest {
         assertEquals(ListenableWorker.Result.success(), run())
         assertEquals(cells, asked) // every cell exactly once, in order
         assertEquals(AREA_DONE, db.dao().areas().single().status)
+    }
+
+    // S7: cells that still fail after the pack's retries end the seed FAILED with a count, and only those cells are fetched when the area is retried
+    @Test fun failedCellsGiveAFailedStateWithTheirCountAndTheRetryFetchesOnlyThose() = runBlocking {
+        val bad = cells.first(); var down = true
+        val flaky = object : CellSource { override suspend fun fetchCell(cell: String): CellFetch { if (cell == bad && down) throw java.io.IOException("429"); return source.fetchCell(cell) } }
+        pack = PlacePack(db, flaky, PlacePack.DEFAULT_BUDGET_BYTES, { t }, { }, { }); PlaceSeedWorker.packOf = { pack }
+        pack.beginArea(id, box)
+        assertEquals(ListenableWorker.Result.success(), run())
+        assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
+        val saved = SeedProgressStore(ctx).get(key); assertEquals(1, saved.failed)
+        val st = SeedStates.derive(WorkInfo.State.SUCCEEDED, saved, AREA_PARTIAL, false)
+        assertEquals(SeedPhase.FAILED, st.phase); assertEquals(1, st.failedCells); assertFalse(st.active); assertTrue(st.text, st.text.startsWith("FAILED: 1 cell did not seed"))
+        down = false; asked.clear()
+        SeedProgressStore(ctx).begin(key); pack.beginArea(id, box) // what "Retry failed cells" does
+        assertEquals(ListenableWorker.Result.success(), run())
+        assertEquals(listOf(bad), asked) // only the failed cell
+        assertEquals(AREA_DONE, db.dao().areas().single().status); assertEquals(SeedProgress(), SeedProgressStore(ctx).get(key))
+    }
+
+    // S7: an unexpected failure never leaves the area "seeding"
+    @Test fun anUnexpectedFailureEndsPartialNotSeeding() = runBlocking {
+        // a result whose place list throws when read: not a cell fetch failure (those are retried), a real internal failure
+        val broken = object : CellSource { override suspend fun fetchCell(cell: String) = CellFetch(object : AbstractList<FetchedPlace>() { override val size: Int get() = throw IllegalStateException("boom"); override fun get(index: Int): FetchedPlace = throw IllegalStateException("boom") }) }
+        pack = PlacePack(db, broken, PlacePack.DEFAULT_BUDGET_BYTES, { t }, { }, { }); PlaceSeedWorker.packOf = { pack }
+        pack.beginArea(id, box)
+        assertEquals(ListenableWorker.Result.failure(), run())
+        assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
+        assertFalse(SeedProgressStore(ctx).get(key).queued)
+    }
+
+    // S7: one area at a time: a second seed waits for the first, reads "queued" meanwhile, and runs after it
+    @Test fun aSecondSeedWaitsForTheGateAndReadsQueued() = runBlocking {
+        pack.beginArea(id, box)
+        SeedQueue.gate.lock()
+        val job = kotlinx.coroutines.GlobalScope.async(kotlinx.coroutines.Dispatchers.Default) { run() }
+        val until = System.currentTimeMillis() + 10_000
+        while (!SeedProgressStore(ctx).get(key).queued && System.currentTimeMillis() < until) kotlinx.coroutines.delay(20)
+        val waiting = SeedProgressStore(ctx).get(key)
+        assertTrue(waiting.queued); assertTrue(asked.isEmpty())
+        assertEquals(SeedPhase.QUEUED, SeedStates.derive(WorkInfo.State.RUNNING, waiting, AREA_SEEDING, false).phase)
+        SeedQueue.gate.unlock()
+        assertEquals(ListenableWorker.Result.success(), job.await())
+        assertFalse(SeedProgressStore(ctx).get(key).queued); assertEquals(AREA_DONE, db.dao().areas().single().status)
+    }
+
+    @Test fun workerRetriesAreCappedAndTheSeedGivesUp() = runBlocking {
+        pack.beginArea(id, box); refuse = SeedGate.NO_NETWORK
+        val w = TestListenableWorkerBuilder<PlaceSeedWorker>(ctx).setInputData(workDataOf(PlaceSeedWorker.KEY to key)).setRunAttemptCount(PlaceSeedWorker.MAX_WORKER_ATTEMPTS).build()
+        assertEquals(ListenableWorker.Result.failure(), w.doWork())
+        assertFalse(SeedProgressStore(ctx).get(key).waiting)
     }
 
     @Test fun offlineOnlyFailsWithoutAnyFetch() = runBlocking {

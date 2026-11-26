@@ -70,7 +70,7 @@ data class PlaceCandidates(
 
 /**
  * What a seed did. [fetched] = [ok] + [partial] (cells stored); [partial] cells were stored without OSM extras (Overpass did not answer) and are fetched again by the next seed or
- * at a glance after their backoff (5 min up to 1 h); [failed] cells stored nothing even after the one retry; [skipped] were already fresh. [retried] counts the cells the retry pass took (whatever its outcome).
+ * at a glance after their backoff (5 min up to 1 h); [failed] cells stored nothing even after the retries ([PlacePack.MAX_ATTEMPTS] tries with a growing wait); [skipped] were already fresh. [retried] counts the cells the retry pass took (whatever its outcome).
  */
 data class SeedResult(val cells: Int, val fetched: Int, val skipped: Int, val failed: Int, val places: Int, val partial: Int = 0, val retried: Int = 0) {
     val ok: Int get() = fetched - partial
@@ -291,14 +291,20 @@ class PlacePack(
             else if (!count(outcome)) failedCells += cell
             onProgress(++done, cells.size)
         }
-        // A failed cell gets one more try after the others (a rate limit or a blip has usually passed by then).
+        // Failed cells (network blip, rate limit 429, server 5xx) are tried again after the others, with a growing wait, up to MAX_ATTEMPTS tries per cell in all; then they are given up on (the area
+        // ends PARTIAL and the owner can "Retry failed cells"). A lost network is not a cell failure: the admission stops the seed and the worker waits for a network.
         val retried = failedCells.size
-        var failed = 0
-        if (failedCells.isNotEmpty()) {
-            pause(RETRY_BACKOFF_MS)
-            for (cell in failedCells) if (!count(seedOne(cell))) failed++
-            log("seed retry cells=$retried recovered=${retried - failed}")
+        var remaining: List<String> = failedCells
+        var round = 0
+        while (remaining.isNotEmpty() && round < MAX_ATTEMPTS - 1) {
+            round++
+            pause(retryBackoffMs(round))
+            val still = ArrayList<String>()
+            for (cell in remaining) if (!count(seedOne(cell))) still += cell
+            log("seed retry round=$round cells=${remaining.size} recovered=${remaining.size - still.size}")
+            remaining = still
         }
+        val failed = remaining.size
         writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), if (failed == 0 && partial == 0) AREA_DONE else AREA_PARTIAL))
         val n = dao.placeCount()
         log("seed done cells=${cells.size} ok=${fetched - partial} partial=$partial skipped=$skipped failed=$failed fetched=$fetched places=$n")
@@ -491,8 +497,12 @@ class PlacePack(
         const val SUMMARY_MAX = 400
         const val NAME_MAX = 160
         const val MAX_SEED_CELLS = 4_000
-        /** The wait before a seed retries its failed cells once. */
+        /** The wait before the first retry of the failed cells; it doubles each round (5 s, 10 s, 20 s, 40 s) up to [RETRY_BACKOFF_MAX_MS]. */
         const val RETRY_BACKOFF_MS = 5_000L
+        const val RETRY_BACKOFF_MAX_MS = 60_000L
+        /** Tries per cell in one seed (the first pass plus the retry rounds), then it is given up on. */
+        const val MAX_ATTEMPTS = 5
+        fun retryBackoffMs(round: Int): Long = (RETRY_BACKOFF_MS shl (round - 1).coerceIn(0, 10)).coerceAtMost(RETRY_BACKOFF_MAX_MS)
         private const val EVICT_BATCH = 200
         private const val SQL_CHUNK = 500
 

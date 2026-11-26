@@ -129,7 +129,7 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
         LaunchedEffect(seedState?.seeding) { if (seedState?.seeding == true) mapVm.cancelDraw() } // the sheet closes once the seed has really started
     }
-    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename) else null
+    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed) else null
     val view = remember { MapViewState() }
     val zoneCb = ZonesCallbacks.of(zonesVm, back)
     val offlinePanel = offline?.let { o ->
@@ -409,6 +409,7 @@ private fun SelectedCard(ui: MapZonesUiState, zones: ZonesUiState, seed: SeedPan
             Text(a.label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("mapzones_sel_name"))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SecondaryAction("Seed again", { s.seedBox(SeedEstimate.boxOf(a.box)) }, tag = "mapzones_sel_seed_again", enabled = !s.ui.seeding)
+                if (a.failedCells > 0) SecondaryAction("Retry failed cells (${a.failedCells})", { s.retryFailed(a.id) }, tag = "mapzones_sel_retry", enabled = !s.ui.seeding)
                 SecondaryAction("Remove", { s.askRemove(a.id) }, tag = "seed_remove_${a.id}")
             }
             if (p23 != null) {
@@ -434,6 +435,7 @@ internal fun SeedAreaListRow(view: MapViewState, p: SeedPanel, a: SeedOverlay, s
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
             SecondaryAction("Rename", { renaming = true }, tag = "seed_rename_${a.id}")
             SecondaryAction("Seed again", { p.seedBox(SeedEstimate.boxOf(a.box)) }, tag = "seed_again_${a.id}", enabled = !p.ui.seeding)
+            if (a.failedCells > 0) SecondaryAction("Retry failed cells", { p.retryFailed(a.id) }, tag = "seed_retry_${a.id}", enabled = !p.ui.seeding)
             SecondaryAction("Remove", { p.askRemove(a.id) }, tag = "seed_remove_${a.id}")
         }
     }

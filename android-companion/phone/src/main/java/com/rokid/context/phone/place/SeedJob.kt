@@ -10,7 +10,7 @@ import java.security.MessageDigest
 /** The state of one seed area's background seed, derived from the work state plus the persisted cell progress (S3). Never carries a name or a position. */
 enum class SeedPhase { QUEUED, RUNNING, WAITING_NETWORK, DONE, FAILED, CANCELLED }
 
-data class SeedAreaState(val phase: SeedPhase, val percent: Int = 0) {
+data class SeedAreaState(val phase: SeedPhase, val percent: Int = 0, /** FAILED only: cells that stored nothing (or no OSM extras) after the retries; the "Retry failed cells" button re-queues exactly these. */ val failedCells: Int = 0) {
     /** Still to finish (the row shows a progress line and a Cancel button). */
     val active: Boolean get() = phase == SeedPhase.QUEUED || phase == SeedPhase.RUNNING || phase == SeedPhase.WAITING_NETWORK
 
@@ -20,13 +20,13 @@ data class SeedAreaState(val phase: SeedPhase, val percent: Int = 0) {
         SeedPhase.RUNNING -> "Seeding places $percent%"
         SeedPhase.WAITING_NETWORK -> "Seeding paused at $percent%: waiting for a network"
         SeedPhase.DONE -> "Seeding done"
-        SeedPhase.FAILED -> "Seeding did not finish: some cells failed, seed again"
+        SeedPhase.FAILED -> if (failedCells > 0) "FAILED: $failedCells cell${if (failedCells == 1) "" else "s"} did not seed" else "Seeding did not finish, seed again"
         SeedPhase.CANCELLED -> "Seeding cancelled at $percent%"
     }
 }
 
 /** Persisted cell progress of one area (survives leaving the screen and process death). [total] 0 = nothing recorded yet. */
-data class SeedProgress(val done: Int = 0, val total: Int = 0, val waiting: Boolean = false, val cancelled: Boolean = false) {
+data class SeedProgress(val done: Int = 0, val total: Int = 0, val waiting: Boolean = false, val cancelled: Boolean = false, val queued: Boolean = false, val failed: Int = 0) {
     val percent: Int get() = if (total <= 0) 0 else (done.toLong().coerceIn(0, total.toLong()) * 100 / total).toInt()
 }
 
@@ -40,18 +40,18 @@ object SeedStates {
         return when (work) {
             WorkInfo.State.ENQUEUED -> if (progress.waiting || networkBlocked) SeedAreaState(SeedPhase.WAITING_NETWORK, pct) else SeedAreaState(SeedPhase.QUEUED, pct)
             WorkInfo.State.BLOCKED -> SeedAreaState(SeedPhase.QUEUED, pct)
-            WorkInfo.State.RUNNING -> SeedAreaState(SeedPhase.RUNNING, pct)
+            WorkInfo.State.RUNNING -> if (progress.queued) SeedAreaState(SeedPhase.QUEUED, pct) else SeedAreaState(SeedPhase.RUNNING, pct) // queued = waiting for the seed before it (one area at a time)
             WorkInfo.State.SUCCEEDED -> when {
                 areaStatus == null -> SeedAreaState(SeedPhase.CANCELLED, pct) // the area was removed while it ran
                 areaStatus == AREA_DONE -> SeedAreaState(SeedPhase.DONE, 100)
-                else -> SeedAreaState(SeedPhase.FAILED, pct)
+                else -> SeedAreaState(SeedPhase.FAILED, pct, progress.failed)
             }
-            WorkInfo.State.FAILED -> SeedAreaState(SeedPhase.FAILED, pct)
+            WorkInfo.State.FAILED -> SeedAreaState(SeedPhase.FAILED, pct, progress.failed)
             WorkInfo.State.CANCELLED -> SeedAreaState(SeedPhase.CANCELLED, pct)
             null -> when {
                 progress.cancelled -> SeedAreaState(SeedPhase.CANCELLED, pct)
                 areaStatus == AREA_DONE -> SeedAreaState(SeedPhase.DONE, 100)
-                else -> SeedAreaState(SeedPhase.FAILED, pct) // a "seeding" row with no live work (reconcile turns it into partial)
+                else -> SeedAreaState(SeedPhase.FAILED, pct, progress.failed) // a "seeding" row with no live work (reconcile turns it into partial)
             }
         }
     }
@@ -76,10 +76,10 @@ object SeedKeys {
 class SeedProgressStore(app: Context) {
     private val p = app.getSharedPreferences("place_seed_progress", Context.MODE_PRIVATE)
 
-    fun get(key: String) = SeedProgress(p.getInt("$key.done", 0), p.getInt("$key.total", 0), p.getBoolean("$key.wait", false), p.getBoolean("$key.cancel", false))
+    fun get(key: String) = SeedProgress(p.getInt("$key.done", 0), p.getInt("$key.total", 0), p.getBoolean("$key.wait", false), p.getBoolean("$key.cancel", false), p.getBoolean("$key.queued", false), p.getInt("$key.failed", 0))
 
     /** A new request for the area: counts are kept (the seed resumes), the flags are reset. */
-    fun begin(key: String) { p.edit().putBoolean("$key.wait", false).putBoolean("$key.cancel", false).apply() }
+    fun begin(key: String) { p.edit().putBoolean("$key.wait", false).putBoolean("$key.cancel", false).putBoolean("$key.queued", false).putInt("$key.failed", 0).apply() }
 
     fun progress(key: String, done: Int, total: Int) {
         val cur = get(key)
@@ -88,7 +88,10 @@ class SeedProgressStore(app: Context) {
     }
 
     fun setWaiting(key: String, on: Boolean) { p.edit().putBoolean("$key.wait", on).apply() }
+    fun setQueued(key: String, on: Boolean) { p.edit().putBoolean("$key.queued", on).apply() }
+    /** Cells left failed (or without OSM extras) when the seed ended: a count only, never which cells or where. */
+    fun setFailed(key: String, n: Int) { p.edit().putInt("$key.failed", n.coerceAtLeast(0)).apply() }
     fun markCancelled(key: String) { p.edit().putBoolean("$key.cancel", true).putBoolean("$key.wait", false).apply() }
-    fun clear(key: String) { p.edit().remove("$key.done").remove("$key.total").remove("$key.wait").remove("$key.cancel").apply() }
+    fun clear(key: String) { p.edit().remove("$key.done").remove("$key.total").remove("$key.wait").remove("$key.cancel").remove("$key.queued").remove("$key.failed").apply() }
     fun clearAll() { p.edit().clear().apply() }
 }
