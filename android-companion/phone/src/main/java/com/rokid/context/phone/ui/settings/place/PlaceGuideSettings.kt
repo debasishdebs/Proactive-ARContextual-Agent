@@ -59,7 +59,7 @@ data class MomentChoice(val id: String, val path: String, val atMs: Long)
 data class MomentPicker(val pinId: String?, val items: List<MomentChoice>, /** Local midnight of the day shown (epoch ms). */ val dayStartMs: Long = 0L, val hasMore: Boolean = false)
 
 data class PlaceGuideUiState(
-    val enabled: Boolean = false, val cardSide: com.rokid.context.core.model.PlaceSide = com.rokid.context.core.model.PlaceSide.CENTRE, val developerMode: Boolean = false, val seeding: Boolean = false, val message: String? = null, val messageIsError: Boolean = false, val packSummary: String = "",
+    val enabled: Boolean = false, val cardSide: com.rokid.context.core.model.PlaceSide = com.rokid.context.core.model.PlaceSide.CENTRE, val developerMode: Boolean = false, val seeding: Boolean = false, val seedLines: List<String> = emptyList(), val message: String? = null, val messageIsError: Boolean = false, val packSummary: String = "",
     val stats: PackStats? = null, val budgetMb: Int = 50, val confirmClear: Boolean = false,
     val pins: List<UserPlace> = emptyList(), val moments: Map<String, MomentChoice> = emptyMap(), val momentPicker: MomentPicker? = null, val pinBusy: Boolean = false, val pinMessage: String? = null, val pinMessageIsError: Boolean = false, val pinDialog: PinDialogState? = null,
     /** B2: the phone-only place card history (newest first), how many rows the list shows, and the open detail. */
@@ -99,6 +99,10 @@ data class SeedOutcome(val message: String, val failedCells: Int = 0)
 interface PlaceGuideControl {
     var enabled: Boolean
     suspend fun seed(box: GeoBox): Result<SeedOutcome>
+    /** S3: the background seeds still to finish (queued, running NN%, waiting for a network). */
+    suspend fun seedStates(): List<com.rokid.context.phone.place.SeedAreaState> = emptyList()
+    /** S3: cancels every active background seed (the areas stay, partial; seeding again resumes). */
+    suspend fun cancelSeeds() {}
     suspend fun summary(): String
     /** The pack's counts and bytes (null = unavailable). */
     suspend fun stats(): PackStats? = null
@@ -228,7 +232,7 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     fun seed(box: GeoBox?) {
         if (box == null) { _state.update { it.copy(message = "Type four numbers: south, west, north, east (degrees).", messageIsError = true) }; return }
         if (_state.value.seeding) return
-        _state.update { it.copy(seeding = true, message = "Fetching places…", messageIsError = false) }
+        _state.update { it.copy(seeding = true, message = "Starting…", messageIsError = false) }
         viewModelScope.launch(work) {
             val r = control.seed(box)
             _state.update { it.copy(seeding = false, message = r.fold({ o -> o.message }, { seedFailureText(it) }), messageIsError = r.isFailure) }
@@ -239,7 +243,7 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     /** Seeds a preset's boxes one after the other (never in parallel: Wikipedia's rate limit), stopping at the first failure or the first box with cells that failed after the retry. */
     fun seedPreset(preset: SeedPreset) {
         if (_state.value.seeding) return
-        _state.update { it.copy(seeding = true, message = "Fetching places…", messageIsError = false) }
+        _state.update { it.copy(seeding = true, message = "Starting…", messageIsError = false) }
         viewModelScope.launch(work) {
             val msgs = ArrayList<String>()
             var failure: Throwable? = null
@@ -431,6 +435,26 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
 
     private fun refreshSummary() { viewModelScope.launch(work) { refreshSummaryNow() } }
 
+    /** Cancel on the progress line: stops the background seed(s); the screen's lines refresh at once. */
+    fun cancelSeeds() { viewModelScope.launch(work) { runCatching { control.cancelSeeds() }; refreshSummaryNow() } }
+
+    private var poll: kotlinx.coroutines.Job? = null
+    /** While a background seed is active its % is re-read every few seconds (stops with the screen and when none is active). */
+    private fun pollSeeds() {
+        if (poll?.isActive == true) return
+        poll = viewModelScope.launch(work) {
+            while (true) { kotlinx.coroutines.delay(2_000L); val n = refreshSeedLines(); if (n == 0) break }
+        }
+    }
+
+    private fun lines(s: List<com.rokid.context.phone.place.SeedAreaState>) = s.map { it.text }
+
+    private suspend fun refreshSeedLines(): Int {
+        val l = lines(runCatching { control.seedStates() }.getOrDefault(emptyList()))
+        _state.update { it.copy(seedLines = l) }
+        return l.size
+    }
+
     // ---- B2: the place card history ----
 
     /** Re-reads the list (and the open detail: a Forget while it is shown closes it, a delivery change updates it). Called when the history changes and on resume (the route collects [historyChanges]); never on a timer. */
@@ -499,6 +523,7 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
         val pins = runCatching { control.pinning?.pins() }.getOrNull().orEmpty()
         val moments = runCatching { control.momentsOf(pins.mapNotNull { it.momentId }) }.getOrDefault(emptyMap())
         _state.update { it.copy(packSummary = s, stats = st, pins = pins, moments = moments) }
+        if (refreshSeedLines() > 0) pollSeeds()
         refreshHistoryNow()
     }
 }
@@ -514,7 +539,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     }
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds))
 }
 
 /**
@@ -556,6 +581,8 @@ class PlaceGuideActions(
     /** B2: the place card history: open a row, close the detail, show more rows, "Show on glasses again", "Delete from history", and "Open Moment" (a live frame; null hides the button). */
     val openHistory: (String) -> Unit = {}, val closeHistory: () -> Unit = {}, val historyMore: () -> Unit = {}, val showAgain: () -> Unit = {}, val deleteHistory: () -> Unit = {},
     val openMoment: ((String) -> Unit)? = null,
+    /** S3: cancels the active background seed(s). */
+    val cancelSeeds: () -> Unit = {},
 )
 
 @Composable
@@ -624,6 +651,8 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                     OutlinedTextField(n, { n = it }, label = { Text("North") }, singleLine = true, modifier = Modifier.weight(1f).testTag("seed_north"))
                     OutlinedTextField(e, { e = it }, label = { Text("East") }, singleLine = true, modifier = Modifier.weight(1f).testTag("seed_east"))
                 }
+                state.seedLines.forEachIndexed { i, t -> NoticeText(t, tag = "seed_progress_$i") }
+                if (state.seedLines.isNotEmpty()) SecondaryAction("Cancel seeding", on.cancelSeeds, tag = "seed_cancel")
                 PrimaryAction("Seed this area", { onSeed(PlaceGuideModel.parseBox(s, w, n, e)) }, tag = "seed_area", enabled = !state.seeding)
                 on.pickOnMap?.let { pick -> SecondaryAction("Pick on the map", pick, tag = "seed_pick_on_map") }
                 SecondaryAction("Seed Hyderabad (Charminar, Golconda)", { onSeed(PlaceGuideModel.HYDERABAD) }, tag = "seed_hyderabad", enabled = !state.seeding)

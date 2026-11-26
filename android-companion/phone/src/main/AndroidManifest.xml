@@ -64,6 +64,12 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice|microphone|location" />
 
+        <!-- Background place seeding (S3): WorkManager's own foreground service gets the dataSync type so the seed's notification ("Seeding places NN%", Cancel) can run while the app is closed. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
         <!-- Experiment canvas server (Developer mode only; started by the canvas screen, LAN on or a run). -->
         <service
             android:name=".phone.canvas.CanvasService"

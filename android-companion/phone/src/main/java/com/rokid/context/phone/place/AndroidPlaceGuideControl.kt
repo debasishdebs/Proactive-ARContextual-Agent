@@ -35,28 +35,36 @@ class AndroidPlaceGuideControl(
         get() = settings.budgetMb
         set(v) { settings.budgetMb = v }
 
+
+    private val seedWork by lazy { SeedWork(app) }
+
+    /**
+     * S3: queues the seed as background work and returns at once; leaving the screen does not cancel it. Offline only still refuses here (no network call, no work). Any other network is the worker's
+     * business: it waits (WAITING_NETWORK) until the admission allows, and the admission is asked again before EVERY cell and request (privacy, the global Wi-Fi-only rule, the data saver).
+     */
     override suspend fun seed(box: GeoBox): Result<com.rokid.context.phone.ui.settings.place.SeedOutcome> = runCatching {
-        // Model privacy: under Offline only no place is fetched from the internet, a user-started seed included.
         if (com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() != com.rokid.context.core.net.ModelPrivacy.AUTO) {
             com.rokid.context.core.log.PcLog.i("PcData", "seed refused: offline only")
             throw com.rokid.context.phone.ui.settings.place.SeedOfflineOnlyException()
         }
-        // Roaming data saver: a seed is hundreds of requests; only on free Wi-Fi (never mobile, roaming, unknown or a captive portal).
-        if (com.rokid.context.ai.datasaver.DataSaverGraph.get(app).costNow() != com.rokid.context.core.net.NetworkCost.FREE) {
-            com.rokid.context.core.log.PcLog.i("PcData", "seed refused: not free wifi")
-            throw com.rokid.context.phone.ui.settings.place.SeedNeedsWifiException()
-        }
-        // The same questions are asked again before EVERY cell and every request of the seed (the pack and PlaceHttp call the admission): privacy, free Wi-Fi and the data saver can all change mid-seed.
-        admission()?.let { throw com.rokid.context.memory.place.SeedStopped(it) }
+        val n = com.rokid.context.memory.place.Geohash5.cellsCovering(box).size
+        if (n == 0 || n > com.rokid.context.memory.place.PlacePack.MAX_SEED_CELLS) throw IllegalArgumentException("cells=$n") // counts only
         val id = String.format(Locale.ROOT, "seed:%.3f,%.3f,%.3f,%.3f", box.south, box.west, box.north, box.east)
-        val r = PlaceGraph.readyPack(app).seedArea(id, box, admit = ::admission)
-        com.rokid.context.phone.ui.settings.place.PlaceGuideModel.seedOutcome(r)
+        PlaceGraph.readyPack(app).beginArea(id, box)
+        seedWork.enqueue(id)
+        com.rokid.context.core.log.PcLog.i("PcPlaceSeed", "seed queued")
+        com.rokid.context.phone.ui.settings.place.SeedOutcome("Seeding started in the background. You can leave this screen; progress shows here and in the notification.")
     }
 
-    private fun admission(): String? {
-        val saver = com.rokid.context.ai.datasaver.DataSaverGraph.get(app)
-        return SeedGate.check({ com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() }, saver::costNow, saver)
+    override suspend fun seedStates(): List<SeedAreaState> {
+        val pack = PlaceGraph.readyPack(app)
+        runCatching { seedWork.reconcile(pack) }
+        return seedWork.states(pack, admission() != null).values.filter { it.active }
     }
+
+    override suspend fun cancelSeeds() { PlaceGraph.readyPack(app).areas().forEach { seedWork.cancel(it.blueZoneId) } }
+
+    private fun admission(): String? = seedAdmission(app)()
 
     override suspend fun summary(): String {
         val (n, bytes) = PlaceGraph.readyPack(app).size()
@@ -96,29 +104,52 @@ class AndroidPlaceGuideControl(
     override val history: com.rokid.context.phone.ui.settings.place.PlaceHistoryControl by lazy { AndroidPlaceHistoryControl(app) }
 }
 
-/** The seed's admission, asked before every cell and every request: null = go on, else the short reason to stop. Fails closed (an unreadable state stops the seed). */
+/** The app's seed admission as the pack asks it before every cell and request: null = go on, else the short reason to stop. */
+fun seedAdmission(app: Context): () -> String? {
+    val saver = com.rokid.context.ai.datasaver.DataSaverGraph.get(app)
+    return { SeedGate.check({ com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() }, saver::costNow, saver) }
+}
+
+/**
+ * The seed's admission, asked before every cell and every request: null = go on, else the short reason to stop. Fails closed (an unreadable state stops the seed).
+ * Network rule (S3, owner 26 Nov): any connected network is fine by default (home mobile data or Wi-Fi); the shared data saver decision for BULK_OTHER ("Photos and big uploads") is the one global rule, so with
+ * the user's "Wi-Fi only" ON only free (unmetered) Wi-Fi passes; roaming, unknown networks, Android Data Saver and the daily limit keep refusing as for every big job. No network at all = [NO_NETWORK]. Offline only stops everything.
+ */
 object SeedGate {
     const val OFFLINE_ONLY = "offline only"
     const val NOT_FREE_WIFI = "not on free Wi-Fi"
+    const val NO_NETWORK = "no network"
     const val DATA_SAVER = "data saver"
     const val UNREADABLE = "state unreadable"
 
     fun check(privacy: () -> com.rokid.context.core.net.ModelPrivacy, cost: () -> com.rokid.context.core.net.NetworkCost, gate: com.rokid.context.core.net.DataGate): String? = try {
         when {
             privacy() != com.rokid.context.core.net.ModelPrivacy.AUTO -> OFFLINE_ONLY
-            cost() != com.rokid.context.core.net.NetworkCost.FREE -> NOT_FREE_WIFI
-            !gate.decide(com.rokid.context.core.net.DataKind.BULK_OTHER).allowed -> DATA_SAVER
-            else -> null
+            cost() == com.rokid.context.core.net.NetworkCost.OFFLINE -> NO_NETWORK
+            else -> gate.decide(com.rokid.context.core.net.DataKind.BULK_OTHER).let { d ->
+                when {
+                    d.allowed -> null
+                    d.reason == com.rokid.context.core.net.DataPolicy.R_WIFI_ONLY -> NOT_FREE_WIFI // the global "Wi-Fi only" is ON and the network is mobile
+                    else -> DATA_SAVER
+                }
+            }
         }
     } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { UNREADABLE }
 }
 
 /** The zones map's view of Place Guide: the seeded areas and pins to draw, and the existing seed path ([guide].seed, with its Offline only and Wi-Fi refusals) for a drawn box. */
 class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGuideControl) : com.rokid.context.phone.ui.settings.privacy.zones.SeedMapControl {
-    override suspend fun areas() = PlaceGraph.readyPack(app).areas().map { com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, it.status, it.name) }
+    private val seedWork by lazy { SeedWork(app) }
+    override suspend fun areas(): List<com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo> {
+        val pack = PlaceGraph.readyPack(app)
+        runCatching { seedWork.reconcile(pack) } // an area marked seeding with no live work becomes partial
+        val states = runCatching { seedWork.states(pack, seedAdmission(app)() != null) }.getOrDefault(emptyMap())
+        return pack.areas().map { com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, it.status, it.name, states[it.blueZoneId]?.takeIf { s -> s.active }) }
+    }
+    override suspend fun cancelSeed(id: String) { seedWork.cancel(id) }
     override suspend fun pins() = guide.pinning?.pins().orEmpty().map { com.rokid.context.phone.ui.settings.privacy.zones.PinInfo(it.lat, it.lon, it.radiusM) }
     override suspend fun seed(box: GeoBox) = guide.seed(box)
-    override suspend fun remove(id: String) { PlaceGraph.readyPack(app).removeArea(id) }
+    override suspend fun remove(id: String) { seedWork.cancel(id); PlaceGraph.readyPack(app).removeArea(id) }
     override suspend fun cellStatuses(box: GeoBox) = PlaceGraph.readyPack(app).cellStatuses(box)
 }
 

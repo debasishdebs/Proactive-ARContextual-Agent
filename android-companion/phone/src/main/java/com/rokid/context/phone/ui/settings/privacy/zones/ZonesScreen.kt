@@ -148,7 +148,7 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
         val seedState by seedVm.state.collectAsStateWithLifecycle()
         LaunchedEffect(seedVm) { seedVm.refresh() }
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
-        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage)
+        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed)
     }
     if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back), null, online, seedPanel, networkOnline); return }
     val mapVm = viewModel(key = "offline_map") { OfflineMapViewModel(offline.files, offline.store) }
@@ -240,7 +240,17 @@ class SeedPanel(
     val confirmRemove: () -> Unit,
     val cancelRemove: () -> Unit,
     val dismiss: () -> Unit,
+    val cancelSeed: (String) -> Unit = {},
 )
+
+/** S3: one line per background seed still to finish ("Seeding places 42%") with its Cancel button. Never a name or a position. */
+@Composable
+internal fun SeedProgressRows(p: SeedPanel) {
+    p.ui.progress.forEachIndexed { i, r ->
+        NoticeText(r.text, tag = "seed_progress_$i")
+        SecondaryAction("Cancel seeding", { p.cancelSeed(r.id) }, tag = "seed_cancel_$i")
+    }
+}
 
 internal val LOCATION_PERMISSIONS = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
 
@@ -344,7 +354,8 @@ private fun SeedCard(state: ZonesUiState, p: SeedPanel) {
         NoticeText(SeedEstimate.line(box), error = SeedEstimate.level(cells) == SeedLevel.TOO_LARGE, tag = "seed_estimate")
         PrimaryAction("Seed places in this box", { p.seedBox(box) }, tag = "seed_box", enabled = !p.ui.seeding && box != null && SeedEstimate.level(cells) != SeedLevel.TOO_LARGE)
         p.ui.message?.let { m -> NoticeText(m, error = p.ui.messageIsError, tag = "seed_message"); SecondaryAction("Dismiss", p.dismiss, tag = "seed_message_dismiss") }
-        NoticeText("Only the 5 km cell keys leave the phone, never your position. Seeding needs free Wi-Fi and is refused under Offline only.", tag = "seed_note")
+        SeedProgressRows(p)
+        NoticeText("Only the 5 km cell keys leave the phone, never your position. Seeding runs in the background and needs a network (free Wi-Fi only when your Data saver says Wi-Fi only); it is refused under Offline only.", tag = "seed_note")
     }
 }
 

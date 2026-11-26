@@ -90,6 +90,8 @@
     <exclude domain="sharedpref" path="online_map.xml" />
     <!-- Place Guide switch: per-device, off again after a restore -->
     <exclude domain="sharedpref" path="place_guide.xml" />
+    <!-- Background place seeding (S3): cell counts per hashed area key; per-device work state, gone after a restore -->
+    <exclude domain="sharedpref" path="place_seed_progress.xml" />
     <!-- Roaming data saver: mode, "I'm abroad" and today's skipped counts are per-device (a restore onto another phone would be wrong there): back to the default (Wi-Fi and home mobile data) after a restore. -->
     <exclude domain="sharedpref" path="data_saver.xml" />
     <!-- Model privacy (slice 1.4.3): Automatic or Offline only is per-device (a restore onto another phone would be wrong there): back to Automatic after a restore. -->

@@ -126,7 +126,7 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
         LaunchedEffect(seedState?.seeding) { if (seedState?.seeding == true) mapVm.cancelDraw() } // the sheet closes once the seed has really started
     }
-    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage) else null
+    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed) else null
     val view = remember { MapViewState() }
     val zoneCb = ZonesCallbacks.of(zonesVm, back)
     val offlinePanel = offline?.let { o ->
@@ -214,6 +214,7 @@ fun MapZonesScreen(
             ui.message?.let { m -> NoticeText(m, error = ui.messageIsError, tag = "zone_message"); SecondaryAction("Dismiss", on.dismiss, tag = "zone_message_dismiss") }
             zones.message?.let { m -> NoticeText(m, error = zones.messageIsError, tag = "zone_message2"); SecondaryAction("Dismiss", zoneOn.dismissMessage, tag = "zone_message2_dismiss") }
             seed?.ui?.message?.let { m -> NoticeText(m, error = seed.ui.messageIsError, tag = "seed_message"); SecondaryAction("Dismiss", seed.dismiss, tag = "seed_message_dismiss") }
+            seed?.let { com.rokid.context.phone.ui.settings.privacy.zones.SeedProgressRows(it) }
             when {
                 ui.sheet == SheetMode.CHOOSE -> ChooseSheet(ui, zones, on)
                 ui.sheet == SheetMode.PAUSE -> PauseSheet(ui, zones.protectedMode, on, p23, ZoneOverlap.of(ui.box, items.filter { it.type == ItemType.PAUSE }, emptyList(), ui.editingId), zones.rows.firstOrNull { it.zone.id == ui.editingId }?.zone?.let { doubleArrayOf(it.south, it.west, it.north, it.east) })
@@ -330,7 +331,7 @@ private fun SeedSheet(ui: MapZonesUiState, seed: SeedPanel?, level: SeedLevel, o
     val box = SeedEstimate.boxOf(ui.box)
     Text("Seed places", style = MaterialTheme.typography.titleMedium)
     NoticeText(SeedEstimate.line(box), error = level == SeedLevel.TOO_LARGE, tag = "seed_estimate")
-    NoticeText("Only the 5 km cell keys leave the phone, never your position. Seeding needs free Wi-Fi and is refused under Offline only. The seed area has no name yet.", tag = "seed_note")
+    NoticeText("Only the 5 km cell keys leave the phone, never your position. Seeding runs in the background and needs a network (free Wi-Fi only when your Data saver says Wi-Fi only); it is refused under Offline only. The seed area has no name yet.", tag = "seed_note")
     overlapNote?.let { NoticeText(it, tag = "mapzones_seed_overlap_note") }
     if (seed == null) NoticeText("Place Guide is not available in this build.", error = true, tag = "mapzones_seed_unavailable")
     PrimaryAction("Seed now", on.seedNow, tag = "seed_box", enabled = seed != null && !seed.ui.seeding && box != null && level != SeedLevel.TOO_LARGE && level != SeedLevel.EMPTY)

@@ -241,6 +241,19 @@ class PlacePack(
         return result!!
     }
 
+    /** Background seeding (S3): records the area as [AREA_SEEDING] BEFORE the work is queued, so the worker can read its box from here (no coordinates travel in the work data). Keeps the owner's name. */
+    suspend fun beginArea(blueZoneId: String, bbox: GeoBox) = writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_SEEDING))
+
+    /**
+     * Reconcile (S3): an area still marked [AREA_SEEDING] whose work is gone (cancelled, process killed with the work cleared, Delete all) becomes [AREA_PARTIAL], so it never stays "(seeding)" forever.
+     * Only rows older than [graceMs] are touched (a row written a moment ago belongs to work that is just being queued). A seed running in this process is left alone. Returns how many rows changed.
+     */
+    suspend fun stallSeeding(blueZoneId: String, graceMs: Long = 30_000L): Boolean = fetchLock.withLock {
+        val a = dao.areas().firstOrNull { it.blueZoneId == blueZoneId } ?: return@withLock false
+        if (a.status != AREA_SEEDING || seeds.containsKey(blueZoneId) || now() - a.seededAt < graceMs) return@withLock false
+        dao.putArea(a.copy(status = AREA_PARTIAL)); true
+    }
+
     /** The area row, written under the fetch lock and only while this seed is still wanted: a removal cancels the seed first, so its last write cannot bring the area back. */
     private suspend fun writeArea(row: AreaEntity) = fetchLock.withLock { currentCoroutineContext().ensureActive(); dao.putArea(if (row.name == null) row.copy(name = dao.areaName(row.blueZoneId)) else row) } // a seed rewrite keeps the owner's name (v18 WP11b)
 

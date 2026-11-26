@@ -24,7 +24,9 @@ import kotlin.math.floor
 /** A seeded area as the map needs it: id, box and the pack's status text. Held on screen only; never logged. */
 data class SeedAreaInfo(val id: String, val south: Double, val west: Double, val north: Double, val east: Double, val status: String,
     /** v18 WP11b: the owner's name for the area, read only; null until a rename screen exists. Not shown yet. */
-    val name: String? = null) {
+    val name: String? = null,
+    /** S3: the background seed's derived state while it is active (queued, running NN%, waiting for a network); null = no live seed. */
+    val seed: com.rokid.context.phone.place.SeedAreaState? = null) {
     val box: DoubleArray get() = doubleArrayOf(south, west, north, east)
 }
 
@@ -39,6 +41,8 @@ interface SeedMapControl {
     suspend fun seed(box: GeoBox): Result<SeedOutcome>
     /** Removes the seeded-area record; its places stay as ordinary fetched places. */
     suspend fun remove(id: String)
+    /** Cancels the area's background seed (the area stays, partial). */
+    suspend fun cancelSeed(id: String) {}
     /** Map zones "Show cells" (read only): the stored status of each 5 km cell touching [box]; a missing cell is absent. The default is empty (nothing known). */
     suspend fun cellStatuses(box: GeoBox): Map<String, String> = emptyMap()
 }
@@ -111,7 +115,7 @@ object SeedOverlays {
 
     fun of(areas: List<SeedAreaInfo>): List<SeedOverlay> = areas.mapIndexed { i, a ->
         val look = look(a.status)
-        SeedOverlay(a.id, a.box, look, "Seeded area ${i + 1}" + when (look) { AreaLook.DONE -> ""; AreaLook.PARTIAL -> " (some cells failed, will retry)"; AreaLook.SEEDING -> " (seeding)" })
+        SeedOverlay(a.id, a.box, if (a.seed != null) AreaLook.SEEDING else look, "Seeded area ${i + 1}" + if (a.seed != null) " (${a.seed.text.replaceFirstChar { it.lowercase() }})" else when (look) { AreaLook.DONE -> ""; AreaLook.PARTIAL -> " (some cells failed, will retry)"; AreaLook.SEEDING -> " (seeding)" })
     }
 
     /** The legend: counts of what is drawn. Pause zones are counted by the caller's own list. */
@@ -146,7 +150,11 @@ data class SeedMapUiState(
     /** A seed waiting for the user's yes (above [SeedEstimate.CONFIRM_CELLS]): the cell count to show. */
     val confirmCells: Long? = null,
     val pendingRemoveId: String? = null,
+    /** S3: the background seeds still to finish (area id and the line to show: "Seeding places 42%"). */
+    val progress: List<SeedProgressRow> = emptyList(),
 )
+
+data class SeedProgressRow(val id: String, val text: String)
 
 /** The seed side of the zones map. It only reads areas and pins and calls the existing seed; it never writes a pause zone. */
 class SeedMapViewModel(private val control: SeedMapControl, private val work: CoroutineDispatcher = Dispatchers.IO) : ViewModel() {
@@ -163,9 +171,28 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             val a = runCatching { control.areas() }.getOrDefault(emptyList())
             val p = runCatching { control.pins() }.getOrDefault(emptyList())
             infos = a
-            _state.update { it.copy(areas = SeedOverlays.of(a), pins = p) }
+            _state.update { it.copy(areas = SeedOverlays.of(a), pins = p, progress = a.mapNotNull { x -> x.seed?.let { SeedProgressRow(x.id, it.text) } }) }
+            if (a.any { it.seed != null }) startPoll()
         }
     }
+
+    private var poll: kotlinx.coroutines.Job? = null
+    /** While a background seed is active the rows are re-read every few seconds; it stops when none is (and with the screen: viewModelScope). */
+    private fun startPoll() {
+        if (poll?.isActive == true) return
+        poll = viewModelScope.launch(work) {
+            while (true) {
+                kotlinx.coroutines.delay(POLL_MS)
+                val a = runCatching { control.areas() }.getOrDefault(emptyList())
+                infos = a
+                _state.update { it.copy(areas = SeedOverlays.of(a), progress = a.mapNotNull { x -> x.seed?.let { SeedProgressRow(x.id, it.text) } }) }
+                if (a.none { it.seed != null }) break
+            }
+        }
+    }
+
+    /** Cancel on a row or in the sheet: the work stops, the area stays (partial) and seeding it again resumes. */
+    fun cancelSeed(id: String) { viewModelScope.launch(work) { runCatching { control.cancelSeed(id) }; refresh() } }
 
     /** The user taps "Seed places in this box". Too large is refused here; above the confirm threshold it waits for a yes. */
     fun requestSeed(box: GeoBox?) {
@@ -191,7 +218,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
 
     private fun start(box: GeoBox) {
         if (_state.value.seeding) return
-        _state.update { it.copy(seeding = true, message = "Fetching places…", messageIsError = false) }
+        _state.update { it.copy(seeding = true, message = "Starting…", messageIsError = false) }
         viewModelScope.launch(work) {
             val r = control.seed(box)
             val byRemoval = (r.exceptionOrNull() as? com.rokid.context.memory.place.SeedStopped)?.reason == "area removed" // the removal's own message says it
@@ -214,4 +241,6 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
     }
 
     fun dismissMessage() = _state.update { it.copy(message = null) }
+
+    private companion object { const val POLL_MS = 2_000L }
 }

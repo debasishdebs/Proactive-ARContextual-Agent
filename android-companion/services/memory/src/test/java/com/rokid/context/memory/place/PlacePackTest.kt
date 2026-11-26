@@ -265,6 +265,37 @@ class PlacePackTest {
         assertEquals(0, pack(null).seedArea("z", box).fetched)
     }
 
+    // S3: a seed stopped half way (network lost) is resumed by seeding again: the finished cells are not fetched again, only the rest, and progress counts all cells
+    @Test fun aStoppedSeedResumesAndSkipsTheFinishedCells() = run {
+        val box = GeoBox(17.30, 78.40, 17.45, 78.55)
+        val cells = Geohash5.cellsCovering(box); assertTrue(cells.size >= 4)
+        val src = FakeSource { c -> CellFetch(listOf(fp("$c:p", lat = Geohash5.bounds(c)!!.south + 0.01, lon = Geohash5.bounds(c)!!.west + 0.01))) }
+        val p = pack(src)
+        val stop = runCatching { p.seedArea("a", box, admit = { if (src.asked.size >= 2) "no network" else null }) }.exceptionOrNull()
+        assertTrue(stop is SeedStopped); assertEquals("no network", (stop as SeedStopped).reason)
+        assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
+        val first = src.asked.size; assertEquals(2, first)
+        val progress = mutableListOf<Pair<Int, Int>>()
+        val r = p.seedArea("a", box, onProgress = { d, n -> progress += d to n })
+        assertEquals(cells.size - first, src.asked.size - first) // only the unfinished cells went to the source
+        assertEquals(first, r.skipped); assertEquals(cells.size to cells.size, progress.last())
+        assertEquals(AREA_DONE, db.dao().areas().single().status)
+    }
+
+    // S3: the area is recorded as seeding before the work is queued; reconcile turns a seeding row with no live work into partial (never forever "seeding"), after a grace
+    @Test fun anAreaMarkedSeedingWithNoLiveWorkBecomesPartialAfterTheGrace() = run {
+        val p = pack(FakeSource())
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        p.beginArea("b", box)
+        assertEquals(AREA_SEEDING, db.dao().areas().single().status)
+        assertFalse("just written: its work is being queued", p.stallSeeding("b", graceMs = 30_000L))
+        t += 31_000L
+        assertTrue(p.stallSeeding("b", graceMs = 30_000L))
+        assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
+        assertFalse("not seeding any more", p.stallSeeding("b", graceMs = 0L))
+        assertFalse("no such area", p.stallSeeding("zz", graceMs = 0L))
+    }
+
     private fun seedPlace(c: String) = fp("$c:p", lat = Geohash5.bounds(c)!!.south + 0.01, lon = Geohash5.bounds(c)!!.west + 0.01)
 
     @Test fun aCellThatFailsOnceIsRetriedAfterTheOthersAndRecovers() = run {

@@ -16,9 +16,9 @@ import org.junit.Test
 
 /** The seed's admission, asked before every cell and request: Offline only, free Wi-Fi and the BULK_OTHER data-saver decision, failing closed. */
 class SeedGateTest {
-    private class Gate(var allowed: Boolean = true, var boom: Boolean = false) : DataGate {
+    private class Gate(var allowed: Boolean = true, var boom: Boolean = false, val reason: String = "wifi_only") : DataGate {
         val asked = mutableListOf<DataKind>()
-        override fun decide(kind: DataKind, reach: EndpointReach): DataDecision { asked += kind; if (boom) error("x"); return if (allowed) DataDecision.ALLOW else DataDecision(false, "wifi_only") }
+        override fun decide(kind: DataKind, reach: EndpointReach): DataDecision { asked += kind; if (boom) error("x"); return if (allowed) DataDecision.ALLOW else DataDecision(false, reason) }
         override fun skipped(kind: DataKind, what: Skipped, d: DataDecision) {}
         override fun costlyNow() = false
     }
@@ -27,8 +27,15 @@ class SeedGateTest {
 
     @Test fun admittedOnAutoFreeWifiAndAnOpenSaver() { val g = Gate(); assertNull(check(g = g)); assertEquals(listOf(DataKind.BULK_OTHER), g.asked) }
     @Test fun offlineOnlyStops() = assertEquals(SeedGate.OFFLINE_ONLY, check(p = ModelPrivacy.OFFLINE_ONLY))
-    @Test fun anythingButFreeWifiStops() { for (c in NetworkCost.entries.filter { it != NetworkCost.FREE }) assertEquals(c.name, SeedGate.NOT_FREE_WIFI, check(c = c)) }
-    @Test fun theDataSaverBulkDecisionStops() = assertEquals(SeedGate.DATA_SAVER, check(g = Gate(allowed = false)))
+    // S3 network rule: any connected network passes while the shared BULK_OTHER decision allows it (the default mode allows home mobile data); the global "Wi-Fi only" is the saver's own refusal
+    @Test fun mobileDataPassesByDefault() { for (c in listOf(NetworkCost.FREE, NetworkCost.HOME_MOBILE)) assertNull(c.name, check(c = c)) }
+    @Test fun noNetworkWaits() = assertEquals(SeedGate.NO_NETWORK, check(c = NetworkCost.OFFLINE))
+    @Test fun theGlobalWifiOnlySettingRefusesMobile() = assertEquals(SeedGate.NOT_FREE_WIFI, check(g = Gate(allowed = false)))
+    @Test fun theGlobalWifiOnlySettingStillAllowsFreeWifi() = assertNull(check(c = NetworkCost.FREE, g = Gate(allowed = true)))
+    @Test fun otherSaverRefusalsStopAsTheDataSaver() = assertEquals(SeedGate.DATA_SAVER, check(g = Gate(allowed = false, reason = "roaming")))
+    @Test fun offlineOnlyBeatsEverythingEvenWithoutANetwork() = assertEquals(SeedGate.OFFLINE_ONLY, check(p = ModelPrivacy.OFFLINE_ONLY, c = NetworkCost.OFFLINE))
+    @Test fun theDataSaverBulkDecisionIsAsked() { val g = Gate(); check(g = g); assertEquals(listOf(DataKind.BULK_OTHER), g.asked) }
+
     @Test fun anUnreadableStateFailsClosed() {
         assertEquals(SeedGate.UNREADABLE, check(g = Gate(boom = true)))
         assertEquals(SeedGate.UNREADABLE, SeedGate.check({ error("x") }, { NetworkCost.FREE }, Gate()))
