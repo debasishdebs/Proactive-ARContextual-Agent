@@ -7,8 +7,10 @@
 Needs: Developer mode ON, the Settings > Diagnostics switch "Developer import API" ON, and a paired session (same as pull_dump: tools/m1-run.sh pair <host:port> <code> <fp8>;
 over USB: adb forward tcp:PORT tcp:PORT, host:port = 127.0.0.1:PORT). The token is read into memory only and is never written or printed.
 Reads  YYYY-MM-DD/<momentId>/moment.json  and  frames/<frameId>.(jpg|png|webp)  and sends each Moment with its photos as base64 in a `photos` map (at most 50 Moments and ~14 MB per request).
-The phone keeps the ORIGINAL ids, times and location, writes memory text as written (attribution "imported", no model call), rebuilds Scenes and vectors itself. Scenes, pins, standalone marks and
-place cards in the folder are NOT sent. Without --dedup a Moment that already exists is a per-item conflict (the run reports it and goes on); with --dedup it is skipped. --dry-run writes nothing on the phone.
+The phone keeps the ORIGINAL ids, times and location, writes memory text as written (attribution "imported", no model call), rebuilds vectors itself.
+Round 7b: after the Moments (which carry their marks and place cards) it also sends pins.json (pins, original ids, times and Moment links), marks.json (standalone marks with their real kind; a mark that names its
+Moment is restored by that Moment) and scenes/*.json (the phone REBUILDS each Scene from the imported Moments: same id when the members are the same, else mapped to a new one; exported summary text is written with
+attribution "imported" only for an identical Scene). Order is fixed: Moments, pins, marks, Scenes, each in its own requests. Without --dedup a Moment that already exists is a per-item conflict (the run reports it and goes on); with --dedup it is skipped. --dry-run writes nothing on the phone.
 The folder holds private data: this tool refuses a folder inside a git tree. It never prints an id, a text, a position or a path of a file. Stdlib only.
 """
 import argparse
@@ -69,6 +71,36 @@ def moments(folder, since=None, until=None):
                 yield day, md
 
 
+def load_list(path):
+    try:
+        v = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+
+
+def extras(folder, since=None, until=None):
+    """[(object_type, counter key, items)] for pins.json, marks.json and scenes/*.json (each item tagged with its object_type); days filter marks (local day of atMs) and scenes (file day)."""
+    def tag(t, items):
+        return [dict(x, object_type=t) for x in items]
+    pins = tag("pin", load_list(os.path.join(folder, "pins.json")))
+    marks = []
+    for m in load_list(os.path.join(folder, "marks.json")):
+        if isinstance(m.get("atMs"), int):
+            day = pd.local_day(m["atMs"])
+            if (since and day < since) or (until and day > until):
+                continue
+        marks.append(m)
+    scenes = []
+    sd = os.path.join(folder, "scenes")
+    if os.path.isdir(sd):
+        for f in sorted(os.listdir(sd)):
+            day = f[:-5]
+            if f.endswith(".json") and DAY.match(day) and not ((since and day < since) or (until and day > until)):
+                scenes += load_list(os.path.join(sd, f))
+    return [("pin", "pins_sent", pins), ("mark", "marks_sent", tag("mark", marks)), ("scene", "scenes_sent", tag("scene", scenes))]
+
+
 def build_item(md):
     """The Moment object with its photos attached, or None when the file cannot be read. Returns (item, photos_attached, photos_missing)."""
     try:
@@ -108,7 +140,8 @@ def batches(items, max_items=MAX_ITEMS, max_bytes=MAX_BYTES):
 
 
 def push(api, folder, dry_run, dedup, batch, since, until, say=print):
-    tot = dict(moments=0, photos=0, photos_missing=0, unreadable=0, requests=0, created=0, would_create=0, conflicts=0, failed=0, skipped=0, rejected_requests=0)
+    tot = dict(moments=0, photos=0, photos_missing=0, unreadable=0, requests=0, created=0, would_create=0, conflicts=0, failed=0, skipped=0, rejected_requests=0,
+               pins_sent=0, marks_sent=0, scenes_sent=0, pins=0, place_cards=0, scenes=0, scenes_remapped=0, scene_texts=0)
     pending = []
 
     def flush():
@@ -125,6 +158,8 @@ def push(api, folder, dry_run, dedup, batch, since, until, say=print):
                 for k in ("created", "would_create", "conflicts", "failed"):
                     tot[k] += int(j.get(k, 0))
                 tot["skipped"] += sum(int(v) for v in (j.get("skipped") or {}).values())
+                for k in ("pins", "place_cards", "scenes", "scenes_remapped", "scene_texts"):
+                    tot[k] += int((j.get("counts") or {}).get(k, 0))
             elif st == 409 and j.get("error") == "import_stopped":
                 raise pd.Fatal("stopped: Delete all ran on the phone during the import")
             elif st in (403, 401):
@@ -144,6 +179,14 @@ def push(api, folder, dry_run, dedup, batch, since, until, say=print):
         if len(pending) >= batch:
             flush()
     flush()
+    # then the rest, in this order (a pin may name a Moment, a Scene holds Moments): pins, standalone marks, Scenes
+    for kind, key, items in extras(folder, since, until):
+        tot[key] += len(items)
+        for it in items:
+            pending.append((it, len(json.dumps(it))))
+            if len(pending) >= batch:
+                flush()
+        flush()
     say("import %s: %s" % ("DRY RUN" if dry_run else "done", " ".join("%s=%d" % kv for kv in tot.items())))
     return tot
 
@@ -167,7 +210,10 @@ def selftest():
             os.makedirs(os.path.join(md, "frames"))
             json.dump({"id": mid, "startMs": 1, "frames": [{"id": fid, "hasPhoto": True}, {"id": fid + "x", "hasPhoto": False}], "memories": []}, open(os.path.join(md, "moment.json"), "w"))
             open(os.path.join(md, "frames", fid + ".jpg"), "wb").write(b"\xff\xd8\xff\x00")
-        os.makedirs(os.path.join(t, "scenes")); open(os.path.join(t, "marks.json"), "w").write("[]")
+        os.makedirs(os.path.join(t, "scenes"))
+        json.dump([{"id": "mk:e:1", "atMs": 1763640000000, "source": "voice", "momentId": None}], open(os.path.join(t, "marks.json"), "w"))
+        json.dump([{"id": "user:00000000-0000-0000-0000-00000000000a", "name": "Wall", "kind": "monument", "lat": 1.0, "lon": 2.0, "radiusM": 60}], open(os.path.join(t, "pins.json"), "w"))
+        json.dump([{"id": "S65000000", "startMs": 1, "momentIds": ["65000000"], "derived": []}], open(os.path.join(t, "scenes", "2026-11-20.json"), "w"))
         sent = []
 
         class Fake:
@@ -178,14 +224,18 @@ def selftest():
 
         lines = []
         tot = push(Fake(), t, False, True, 1, None, None, lines.append)
-        check(len(sent) == 2 and tot["moments"] == 2 and tot["photos"] == 2 and tot["created"] == 2, "two Moments, batch 1, two requests")
+        check(len(sent) == 5 and tot["moments"] == 2 and tot["photos"] == 2 and tot["created"] == 5, "two Moments (batch 1) then one pin, one mark, one Scene request")
+        check([x[1]["items"][0]["object_type"] for x in sent] == ["moment", "moment", "pin", "mark", "scene"], "order: Moments, pins, marks, Scenes")
+        check(tot["pins_sent"] == 1 and tot["marks_sent"] == 1 and tot["scenes_sent"] == 1, "extras counted")
         check(sent[0][0] == "/api/import" and sent[0][2] == {"dedup": "true"}, "path and dedup param")
         it = sent[0][1]["items"][0]
         check(it["object_type"] == "moment" and list(it["photos"]) == ["fa"] and base64.b64decode(it["photos"]["fa"]).startswith(b"\xff\xd8"), "photo attached by frame id")
         tot = push(Fake(), t, True, False, 50, "2026-11-21", None, lines.append)
         check(tot["moments"] == 0, "--since filters days")
         sent.clear(); push(Fake(), t, True, False, 50, None, None, lines.append)
-        check(len(sent) == 1 and sent[0][2] == {"dry_run": "true"} and len(sent[0][1]["items"]) == 2, "one dry-run request with both Moments")
+        check(len(sent) == 4 and sent[0][2] == {"dry_run": "true"} and len(sent[0][1]["items"]) == 2, "dry run: one request with both Moments, then pins, marks, Scenes")
+        sent.clear(); push(Fake(), t, True, False, 50, "2026-11-22", None, lines.append)
+        check(len(sent) == 1 and sent[0][1]["items"][0]["object_type"] == "pin", "--since keeps pins (configuration) but drops the older marks and Scenes")
         check(len(list(batches([(i, 10) for i in range(5)], 2, 100))) == 3 and len(list(batches([(1, 90), (2, 90)], 50, 100))) == 2, "batching by count and bytes")
         check(not any("65000000" in l or "fa" in l.split() for l in lines), "output holds no id")
 
