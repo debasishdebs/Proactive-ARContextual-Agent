@@ -359,25 +359,42 @@ class PlacePackTest {
         assertTrue("fresh cells are skipped, not timed", ms.isEmpty())
     }
 
-    @Test fun partialCellsAreCountedStoredWithTheMarkerAndRetriedByTheNextSeed() = run {
+    @Test fun partialCellsAreCountedDoneStoredWithTheMarkerAndNotRefetchedFor30Days() = run {
         val box = GeoBox(17.30, 78.40, 17.36, 78.46)
         val cells = Geohash5.cellsCovering(box)
-        var osmUp = false
-        val src = FakeSource { c -> CellFetch(listOf(seedPlace(c)), complete = osmUp || c != cells.first()) }
+        val src = FakeSource { c -> CellFetch(listOf(seedPlace(c)), complete = c != cells.first()) }
         val p = pack(src)
         val r = p.seedArea("z", box)
-        assertEquals(1, r.partial); assertEquals(cells.size - 1, r.ok); assertEquals(0, r.failed); assertEquals(cells.size, r.fetched); assertFalse(r.complete); assertEquals(1, r.retryCells) // a partial cell is not a seed success
-        assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
+        assertEquals(1, r.partial); assertEquals(cells.size - 1, r.ok); assertEquals(0, r.failed); assertEquals(cells.size, r.fetched); assertTrue(r.complete); assertEquals(0, r.retryCells); assertEquals(1, r.withoutOsm)
+        assertEquals(AREA_DONE, db.dao().areas().single().status) // owner ruling 27 Nov: no OSM extras does not keep the area failed
         assertEquals(0, r.retried); assertTrue(pauses.isEmpty())
         assertEquals(CELL_PARTIAL, db.dao().cell(cells.first())!!.status)
         assertEquals(CELL_OK, db.dao().cell(cells.last())!!.status)
         assertEquals(cells.size, db.dao().placeCount()) // Wikipedia/Wikidata places were stored
-        assertTrue(logs.any { it.startsWith("seed done cells=${cells.size} ok=${cells.size - 1} partial=1 skipped=0 failed=0") })
-        osmUp = true
-        val again = p.seedArea("z", box) // only the partial cell is asked again, at once (not only after a day)
-        assertEquals(cells + cells.first(), src.asked)
-        assertEquals(0, again.partial); assertEquals(cells.size - 1, again.skipped); assertEquals(1, again.ok)
-        assertEquals(CELL_OK, db.dao().cell(cells.first())!!.status)
+        assertTrue(logs.any { it.startsWith("seed done cells=${cells.size} ok=${cells.size - 1} partial=1 partialFresh=0 skipped=0 failed=0") })
+        val seen = ArrayList<SeedCounts>()
+        val again = p.seedArea("z", box, onCounts = { seen += it }) // a new seed, even right away: the partial cell is NOT asked again
+        assertEquals(cells, src.asked)
+        assertEquals(0, again.fetched); assertEquals(cells.size, again.skipped); assertEquals(1, again.partialFresh); assertEquals(1, again.withoutOsm)
+        assertEquals(1, seen.last().partial); assertEquals(0, seen.last().failed)
+        assertEquals(CELL_PARTIAL, db.dao().cell(cells.first())!!.status)
+        t += 31 * 24 * 3_600_000L // older than 30 days: fetched again
+        p.seedArea("z", box)
+        assertEquals(cells.size * 2, src.asked.size)
+    }
+
+    @Test fun retryFailedCellsFetchesOnlyTheCellsThatStoredNothingNeverThePartialOnes() = run {
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        val cells = Geohash5.cellsCovering(box)
+        var wikiUp = false
+        val src = FakeSource { c -> if (c == cells.first() && !wikiUp) throw IOException("x") else CellFetch(listOf(seedPlace(c)), complete = c != cells[1]) }
+        val p = pack(src)
+        val r = p.seedArea("z", box)
+        assertEquals(1, r.failed); assertEquals(1, r.partial); assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
+        src.asked.clear(); wikiUp = true
+        val again = p.seedArea("z", box) // what "Retry failed cells" queues: the same box
+        assertEquals(listOf(cells.first()), src.asked.toList())
+        assertEquals(0, again.failed); assertEquals(AREA_DONE, db.dao().areas().single().status)
     }
 
     @Test fun logsCarryCountsOnlyNeverCoordinatesOrNames() = run {
@@ -739,7 +756,7 @@ class PlacePackTest {
     @Test fun theTallyDefinitionOkAndFailedAreSharesOfProcessedAndPartialIsASubsetOfOk() {
         assertEquals("25% done (525 of 2100) \u00b7 38% ok (200) \u00b7 62% failed (325)", SeedTally.describe(525, 2100, 325, 0))
         assertEquals("0% done (0 of 40)", SeedTally.describe(0, 40, 0, 0))
-        assertEquals("50% done (20 of 40) \u00b7 100% ok (20) \u00b7 0% failed (0) \u00b7 12 partial", SeedTally.describe(20, 40, 0, 12))
+        assertEquals("50% done (20 of 40) \u00b7 100% ok (20) \u00b7 0% failed (0) \u00b7 12 without OSM extras", SeedTally.describe(20, 40, 0, 12))
         for (f in 0..9) assertEquals(100, SeedTally.okPct(9 - f + 1, f) + SeedTally.failedPct(9 - f + 1, f)) // always adds up to 100
     }
 }

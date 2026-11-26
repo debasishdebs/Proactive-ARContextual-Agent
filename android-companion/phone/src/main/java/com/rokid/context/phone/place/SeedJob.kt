@@ -11,7 +11,7 @@ import java.security.MessageDigest
 /** The state of one seed area's background seed, derived from the work state plus the persisted cell progress (S3). Never carries a name or a position. */
 enum class SeedPhase { QUEUED, RUNNING, WAITING_NETWORK, DONE, FAILED, CANCELLED }
 
-data class SeedAreaState(val phase: SeedPhase, val percent: Int = 0, /** FAILED only: cells that stored nothing (or no OSM extras) after the retries; the "Retry failed cells" button re-queues exactly these. */ val failedCells: Int = 0, /** The persisted cell tally (counts only); null = unknown, the text then shows the plain percent. */ val counts: SeedProgress? = null) {
+data class SeedAreaState(val phase: SeedPhase, val percent: Int = 0, /** FAILED only: cells that stored nothing after the retries (cells without OSM extras are done); the "Retry failed cells" button re-queues exactly these. */ val failedCells: Int = 0, /** The persisted cell tally (counts only); null = unknown, the text then shows the plain percent. */ val counts: SeedProgress? = null) {
     /** Still to finish (the row shows a progress line and a Cancel button). */
     val active: Boolean get() = phase == SeedPhase.QUEUED || phase == SeedPhase.RUNNING || phase == SeedPhase.WAITING_NETWORK
 
@@ -23,7 +23,7 @@ data class SeedAreaState(val phase: SeedPhase, val percent: Int = 0, /** FAILED 
         SeedPhase.QUEUED -> "Seeding queued"
         SeedPhase.RUNNING -> "Seeding places $detail"
         SeedPhase.WAITING_NETWORK -> "Seeding paused at $detail: waiting for a network"
-        SeedPhase.DONE -> "Seeding done"
+        SeedPhase.DONE -> "Seeding done" + (SeedTally.noOsmLine(counts?.noOsm ?: 0)?.let { " · $it" } ?: "")
         SeedPhase.FAILED -> if (failedCells > 0) "FAILED: $failedCells cell${if (failedCells == 1) "" else "s"} did not seed" + (counts?.takeIf { it.total > 0 }?.let { " (${it.detail()})" } ?: "") else "Seeding did not finish, seed again"
         SeedPhase.CANCELLED -> "Seeding cancelled at $detail"
     }
@@ -32,7 +32,9 @@ data class SeedAreaState(val phase: SeedPhase, val percent: Int = 0, /** FAILED 
 /** Persisted cell progress of one area (survives leaving the screen and process death). [total] 0 = nothing recorded yet. */
 data class SeedProgress(val done: Int = 0, val total: Int = 0, val waiting: Boolean = false, val cancelled: Boolean = false, val queued: Boolean = false, val failed: Int = 0,
                         /** Cells ok so far (fresh, fetched or partial), failed so far, and the partial ones among the ok (see [SeedTally]); done = okCells + failCells. */
-                        val okCells: Int = 0, val failCells: Int = 0, val partial: Int = 0) {
+                        val okCells: Int = 0, val failCells: Int = 0, val partial: Int = 0,
+                        /** A finished (Done) area: how many of its cells have no OSM extras (a count only). */
+                        val noOsm: Int = 0) {
     fun detail(): String = SeedTally.describe(done, total, failCells, partial)
     val percent: Int get() = if (total <= 0) 0 else (done.toLong().coerceIn(0, total.toLong()) * 100 / total).toInt()
 }
@@ -50,14 +52,14 @@ object SeedStates {
             WorkInfo.State.RUNNING -> if (progress.queued) SeedAreaState(SeedPhase.QUEUED, pct, counts = progress) else SeedAreaState(SeedPhase.RUNNING, pct, counts = progress) // queued = waiting for the seed before it (one area at a time)
             WorkInfo.State.SUCCEEDED -> when {
                 areaStatus == null -> SeedAreaState(SeedPhase.CANCELLED, pct, counts = progress) // the area was removed while it ran
-                areaStatus == AREA_DONE -> SeedAreaState(SeedPhase.DONE, 100)
+                areaStatus == AREA_DONE -> SeedAreaState(SeedPhase.DONE, 100, counts = progress.takeIf { it.noOsm > 0 })
                 else -> SeedAreaState(SeedPhase.FAILED, pct, progress.failed, progress)
             }
             WorkInfo.State.FAILED -> SeedAreaState(SeedPhase.FAILED, pct, progress.failed, progress)
             WorkInfo.State.CANCELLED -> SeedAreaState(SeedPhase.CANCELLED, pct, counts = progress)
             null -> when {
                 progress.cancelled -> SeedAreaState(SeedPhase.CANCELLED, pct, counts = progress)
-                areaStatus == AREA_DONE -> SeedAreaState(SeedPhase.DONE, 100)
+                areaStatus == AREA_DONE -> SeedAreaState(SeedPhase.DONE, 100, counts = progress.takeIf { it.noOsm > 0 })
                 else -> SeedAreaState(SeedPhase.FAILED, pct, progress.failed, progress) // a "seeding" row with no live work (reconcile turns it into partial)
             }
         }
@@ -84,10 +86,10 @@ class SeedProgressStore(app: Context) {
     private val p = app.getSharedPreferences("place_seed_progress", Context.MODE_PRIVATE)
 
     fun get(key: String) = SeedProgress(p.getInt("$key.done", 0), p.getInt("$key.total", 0), p.getBoolean("$key.wait", false), p.getBoolean("$key.cancel", false), p.getBoolean("$key.queued", false), p.getInt("$key.failed", 0),
-        p.getInt("$key.ok", 0), p.getInt("$key.failc", 0), p.getInt("$key.partial", 0))
+        p.getInt("$key.ok", 0), p.getInt("$key.failc", 0), p.getInt("$key.partial", 0), p.getInt("$key.noosm", 0))
 
     /** A new request for the area: counts are kept (the seed resumes), the flags are reset. The failed count at this moment is remembered as the base the retry converts failed -> ok from. */
-    fun begin(key: String) { p.edit().putBoolean("$key.wait", false).putBoolean("$key.cancel", false).putBoolean("$key.queued", false).putInt("$key.failed", 0).putInt("$key.failc0", p.getInt("$key.failc", 0)).apply() }
+    fun begin(key: String) { p.edit().putBoolean("$key.wait", false).putBoolean("$key.cancel", false).putBoolean("$key.queued", false).putInt("$key.failed", 0).remove("$key.noosm").putInt("$key.failc0", p.getInt("$key.failc", 0)).apply() }
 
     /**
      * [failed] = cells failed so far in this run, [partial] = ok cells stored without OSM extras, [fetched] = cells fetched (not fresh) so far in this run. Processed (done) never goes back; the
@@ -106,9 +108,11 @@ class SeedProgressStore(app: Context) {
     fun setWaiting(key: String, on: Boolean) { p.edit().putBoolean("$key.wait", on).apply() }
     fun setQueued(key: String, on: Boolean) { p.edit().putBoolean("$key.queued", on).apply() }
     /** Cells left failed (or without OSM extras) when the seed ended: a count only, never which cells or where. */
+    /** Cells without OSM extras when the area ended Done (a count only); reset by [begin]. */
+    fun setNoOsm(key: String, n: Int) { p.edit().putInt("$key.noosm", n.coerceAtLeast(0)).apply() }
     fun setFailed(key: String, n: Int) { p.edit().putInt("$key.failed", n.coerceAtLeast(0)).apply() }
     fun markCancelled(key: String) { p.edit().putBoolean("$key.cancel", true).putBoolean("$key.wait", false).apply() }
-    fun clear(key: String) { p.edit().remove("$key.done").remove("$key.total").remove("$key.wait").remove("$key.cancel").remove("$key.queued").remove("$key.failed").remove("$key.ok").remove("$key.failc").remove("$key.failc0").remove("$key.partial").apply() }
+    fun clear(key: String) { p.edit().remove("$key.done").remove("$key.total").remove("$key.wait").remove("$key.cancel").remove("$key.queued").remove("$key.failed").remove("$key.ok").remove("$key.failc").remove("$key.failc0").remove("$key.partial").remove("$key.noosm").apply() }
     fun clearAll() { p.edit().clear().apply() }
 }
 

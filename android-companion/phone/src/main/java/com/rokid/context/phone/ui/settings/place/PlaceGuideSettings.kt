@@ -200,15 +200,11 @@ object PlaceGuideModel {
     const val PIN_NOTE = "Pins use your position right now (it is not stored or logged apart from the pin itself) and are refused inside or near a pause zone. The name and note are yours: they stay on this phone (not in any backup or device transfer; only a settings export you make yourself contains them), and the note is the card text, labelled \"Your note\". Pins are kept by Delete all, are in the settings export, and are never evicted."
     const val CLEAR_NOTE = "Removes places that were fetched while you walked around. Seeded areas and your pins stay."
 
-    /** The seed's answer as the screen says it: cells ok, seeded without OSM extras (Overpass did not answer) and failed (after one retry), then the pack size. */
+    /** The seed's answer as the screen says it: cells ok, failed (after the retries) and cells without OSM extras (Overpass did not answer; they are done), then the pack size. */
     fun seedMessage(r: com.rokid.context.memory.place.SeedResult): String {
-        val counts = "Cells: ${r.ok + r.skipped} ok, ${r.partial} seeded without OSM extras, ${r.failed} failed" + if (r.retried > 0) " (${r.retried} retried once)." else "."
-        val tail = when { // a partial cell is not a success: it is refetched at a glance after a few minutes (up to an hour) and by the next seed
-            r.failed > 0 && r.partial > 0 -> " ${r.failed} of ${r.cells} areas failed and ${r.partial} lack OSM extras, will retry. Seed again when online to retry now."
-            r.failed > 0 -> " ${r.failed} of ${r.cells} areas failed, will retry. Seed again when online to retry now."
-            r.partial > 0 -> " ${r.partial} of ${r.cells} areas lack OSM extras, will retry. Seed again to retry now."
-            else -> ""
-        }
+        val ok = r.ok + r.skipped + r.partial // a cell without OSM extras counts as ok (Wikipedia and Wikidata answered)
+        val counts = "Cells: $ok ok, ${r.failed} failed" + (if (r.retried > 0) " (${r.retried} retried)" else "") + (com.rokid.context.memory.place.SeedTally.noOsmLine(r.withoutOsm)?.let { ", $it" } ?: "") + "."
+        val tail = if (r.failed > 0) " ${r.failed} of ${r.cells} areas failed, will retry. Seed again when online to retry now." else ""
         return "$counts ${r.places} places in the pack.$tail"
     }
 

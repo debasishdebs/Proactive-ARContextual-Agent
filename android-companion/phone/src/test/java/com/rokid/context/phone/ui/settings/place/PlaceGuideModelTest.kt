@@ -172,11 +172,11 @@ class PlaceGuideModelTest {
 
     @Test fun theSeedMessageSaysCellsOkPartialAndFailed() {
         val clean = com.rokid.context.memory.place.SeedResult(cells = 12, fetched = 12, skipped = 0, failed = 0, places = 40)
-        assertEquals("Cells: 12 ok, 0 seeded without OSM extras, 0 failed. 40 places in the pack.", PlaceGuideModel.seedMessage(clean))
+        assertEquals("Cells: 12 ok, 0 failed. 40 places in the pack.", PlaceGuideModel.seedMessage(clean))
         val osmDown = com.rokid.context.memory.place.SeedResult(cells = 12, fetched = 12, skipped = 0, failed = 0, places = 40, partial = 12)
-        assertEquals("Cells: 0 ok, 12 seeded without OSM extras, 0 failed. 40 places in the pack. 12 of 12 areas lack OSM extras, will retry. Seed again to retry now.", PlaceGuideModel.seedMessage(osmDown))
+        assertEquals("Cells: 12 ok, 0 failed, 12 cells without OSM extras. 40 places in the pack.", PlaceGuideModel.seedMessage(osmDown))
         val mixed = com.rokid.context.memory.place.SeedResult(cells = 12, fetched = 11, skipped = 0, failed = 1, places = 40, partial = 10, retried = 1)
-        assertEquals("Cells: 1 ok, 10 seeded without OSM extras, 1 failed (1 retried once). 40 places in the pack. 1 of 12 areas failed and 10 lack OSM extras, will retry. Seed again when online to retry now.", PlaceGuideModel.seedMessage(mixed))
+        assertEquals("Cells: 11 ok, 1 failed (1 retried), 10 cells without OSM extras. 40 places in the pack. 1 of 12 areas failed, will retry. Seed again when online to retry now.", PlaceGuideModel.seedMessage(mixed))
     }
 
     @Test fun aFailedSeedShowsAnErrorAndFreesTheButton() = runTest(d) {

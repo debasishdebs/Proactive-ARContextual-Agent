@@ -80,9 +80,12 @@ class SeedJobTest {
     @Test fun theTextShowsOverallOkAndFailedWithCountsAndPartialSeparately() {
         val p = SeedProgress(525, 2100, okCells = 200, failCells = 325)
         assertEquals("Seeding places 25% done (525 of 2100) \u00b7 38% ok (200) \u00b7 62% failed (325)", SeedStates.derive(WorkInfo.State.RUNNING, p, AREA_SEEDING, false).text)
-        assertTrue(SeedStates.derive(WorkInfo.State.ENQUEUED, p.copy(partial = 12), AREA_SEEDING, true).text.let { it.startsWith("Seeding paused at 25% done (525 of 2100)") && it.contains("\u00b7 12 partial") })
+        assertTrue(SeedStates.derive(WorkInfo.State.ENQUEUED, p.copy(partial = 12), AREA_SEEDING, true).text.let { it.startsWith("Seeding paused at 25% done (525 of 2100)") && it.contains("\u00b7 12 without OSM extras") })
         val failed = SeedStates.derive(WorkInfo.State.FAILED, SeedProgress(10, 10, failed = 3, okCells = 7, failCells = 3), AREA_PARTIAL, false)
         assertEquals("FAILED: 3 cells did not seed (100% done (10 of 10) \u00b7 70% ok (7) \u00b7 30% failed (3))", failed.text)
+        assertEquals("Seeding done", SeedStates.derive(WorkInfo.State.SUCCEEDED, SeedProgress(), AREA_DONE, false).text)
+        assertEquals("Seeding done \u00b7 12 cells without OSM extras", SeedStates.derive(WorkInfo.State.SUCCEEDED, SeedProgress(noOsm = 12), AREA_DONE, false).text) // partial cells do not make the area FAILED
+        assertEquals("Seeding done \u00b7 1 cell without OSM extras", SeedStates.derive(null, SeedProgress(noOsm = 1), AREA_DONE, false).text)
     }
 
     @Test fun retryConvertsFailedToOkWhileProcessedNeverGoesBack() {

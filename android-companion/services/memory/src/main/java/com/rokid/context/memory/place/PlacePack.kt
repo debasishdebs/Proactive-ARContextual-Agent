@@ -72,14 +72,17 @@ data class PlaceCandidates(
 data class SeedCounts(val done: Int, val total: Int, val failed: Int, val partial: Int, val fetched: Int)
 
 /**
- * What a seed did. [fetched] = [ok] + [partial] (cells stored); [partial] cells were stored without OSM extras (Overpass did not answer) and are fetched again by the next seed or
- * at a glance after their backoff (5 min up to 1 h); [failed] cells stored nothing even after the retries ([PlacePack.MAX_ATTEMPTS] tries with a growing wait); [skipped] were already fresh. [retried] counts the cells the retry pass took (whatever its outcome).
+ * What a seed did. [fetched] = [ok] + [partial] (cells stored); [partial] cells were stored without OSM extras (Overpass did not answer): they count as DONE for seeding (Wikipedia and Wikidata
+ * answered), a seed or "Retry failed cells" does not fetch them again for 30 days, and a glance on free Wi-Fi fills the OSM extras in after its backoff (5 min up to 1 h). [partialFresh] = cells that were
+ * already stored partial (younger than 30 days) and skipped by this seed; [withoutOsm] = both; [failed] cells stored nothing even after the retries ([PlacePack.MAX_ATTEMPTS] tries with a growing wait); [skipped] were already fresh. [retried] counts the cells the retry pass took (whatever its outcome).
  */
-data class SeedResult(val cells: Int, val fetched: Int, val skipped: Int, val failed: Int, val places: Int, val partial: Int = 0, val retried: Int = 0) {
+data class SeedResult(val cells: Int, val fetched: Int, val skipped: Int, val failed: Int, val places: Int, val partial: Int = 0, val retried: Int = 0, val partialFresh: Int = 0) {
     val ok: Int get() = fetched - partial
-    /** Cells that need another try: [failed] ones (nothing stored) plus [partial] ones (stored without OSM extras). A partial cell is NOT a seed success. */
-    val retryCells: Int get() = failed + partial
-    val complete: Boolean get() = failed == 0 && partial == 0
+    /** Cells stored without OSM extras (Overpass missing), fetched now or already stored. They count as ok. */
+    val withoutOsm: Int get() = partial + partialFresh
+    /** Cells that need another try: only the [failed] ones (nothing stored). A cell without OSM extras is done for seeding. */
+    val retryCells: Int get() = failed
+    val complete: Boolean get() = failed == 0
 }
 
 /**
@@ -274,15 +277,18 @@ class PlacePack(
 
     private suspend fun seedBody(blueZoneId: String, bbox: GeoBox, cells: List<String>, src: CellSource, onProgress: (Int, Int) -> Unit, onCellMs: (Long) -> Unit, onCounts: (SeedCounts) -> Unit): SeedResult {
         writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_SEEDING))
-        var fetched = 0; var skipped = 0; var partial = 0; var done = 0
+        var fetched = 0; var skipped = 0; var partial = 0; var done = 0; var partialFresh = 0
+        fun withoutOsm() = partial + partialFresh
         val failedCells = ArrayList<String>()
         net.reset()
         suspend fun seedOne(cell: String): CellOutcome {
             seedAdmitCheck() // before the cell's lock; each request asks again in the HTTP layer
             return fetchLock.withLock {
-                // A PARTIAL cell (stored without OSM extras) is not "fresh" for a seed: seeding again tries it again.
+                // A PARTIAL cell (Wikipedia and Wikidata answered, Overpass did not) is DONE for seeding: not fetched again while younger than 30 days.
                 val c = dao.cell(cell)
-                if (c?.status == CELL_OK && isFresh(c)) CellOutcome.FRESH else { seedAdmitCheck(); fetchAndStore(cell, src, seeded = true) }
+                if (c?.status == CELL_OK && isFresh(c)) CellOutcome.FRESH
+                else if (c?.status == CELL_PARTIAL && (now() - c.fetchedAt) in 0 until FRESH_MS) { partialFresh++; CellOutcome.FRESH }
+                else { seedAdmitCheck(); fetchAndStore(cell, src, seeded = true) }
             }
         }
         // how long a fetched cell took (fetch only, no retry wait): a duration alone, never which cell; the caller keeps sums and counts
@@ -299,8 +305,8 @@ class PlacePack(
             if (outcome == CellOutcome.FRESH) { skipped++; dao.markSeeded(box.south, box.north, box.west, box.east) }
             else if (!count(outcome)) failedCells += cell
             onProgress(++done, cells.size)
-            onCounts(SeedCounts(done, cells.size, failedCells.size, partial, fetched))
-            net.tick(done, failedCells.size, cells.size, partial)
+            onCounts(SeedCounts(done, cells.size, failedCells.size, withoutOsm(), fetched))
+            net.tick(done, failedCells.size, cells.size, withoutOsm())
         }
         // Failed cells (network blip, rate limit 429, server 5xx) are tried again after the others, with a growing wait, up to MAX_ATTEMPTS tries per cell in all; then they are given up on (the area
         // ends PARTIAL and the owner can "Retry failed cells"). A lost network is not a cell failure: the admission stops the seed and the worker waits for a network.
@@ -317,18 +323,18 @@ class PlacePack(
                 if (!count(timed(cell))) still += cell
                 n++
                 val failedNow = still.size + (remaining.size - n) // cells not yet retried this round still count as failed; a recovered one moves failed -> ok
-                onCounts(SeedCounts(cells.size, cells.size, failedNow, partial, fetched))
-                net.tick(cells.size, failedNow, cells.size, partial, gate = n)
+                onCounts(SeedCounts(cells.size, cells.size, failedNow, withoutOsm(), fetched))
+                net.tick(cells.size, failedNow, cells.size, withoutOsm(), gate = n)
             }
             log("seed retry round=$round cells=${remaining.size} recovered=${remaining.size - still.size}")
             remaining = still
         }
         val failed = remaining.size
-        net.finish(cells.size, failed, round, partial)
-        writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), if (failed == 0 && partial == 0) AREA_DONE else AREA_PARTIAL))
+        net.finish(cells.size, failed, round, withoutOsm())
+        writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), if (failed == 0) AREA_DONE else AREA_PARTIAL)) // cells without OSM extras do not keep the area from ending Done
         val n = dao.placeCount()
-        log("seed done cells=${cells.size} ok=${fetched - partial} partial=$partial skipped=$skipped failed=$failed fetched=$fetched places=$n")
-        return SeedResult(cells.size, fetched, skipped, failed, n, partial, retried)
+        log("seed done cells=${cells.size} ok=${fetched - partial} partial=$partial partialFresh=$partialFresh skipped=$skipped failed=$failed fetched=$fetched places=$n")
+        return SeedResult(cells.size, fetched, skipped, failed, n, partial, retried, partialFresh)
     }
 
     /**

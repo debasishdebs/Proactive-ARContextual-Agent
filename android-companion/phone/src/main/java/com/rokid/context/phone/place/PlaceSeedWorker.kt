@@ -80,9 +80,9 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
                 withContext(Dispatchers.IO) { pack.seedArea(id, box, admit = admit, onCounts = { c -> store.progress(key, c.done, c.total, c.failed, c.partial, c.fetched); updates.trySend(store.get(key)) }, onCellMs = { ms -> timing.add(ms) }) }
             } finally { updates.close(); reporter.join() }
         }
-        if (r.failed + r.partial > 0) PcLog.i(TAG, "seed work done with failed cells") else PcLog.i(TAG, "seed work done")
-        if (r.failed == 0 && r.partial == 0) store.clear(key) // resumed seeds that ended partial keep their counts for the next try
-        else store.setFailed(key, r.failed + r.partial) // the FAILED state shows this count and "Retry failed cells" re-queues exactly these
+        if (r.failed > 0) PcLog.i(TAG, "seed work done with failed cells") else PcLog.i(TAG, "seed work done")
+        if (r.failed == 0) { store.clear(key); if (r.withoutOsm > 0) store.setNoOsm(key, r.withoutOsm) } // Done; cells without OSM extras are only a line, not a failure
+        else store.setFailed(key, r.failed) // the FAILED state shows this count and "Retry failed cells" re-queues exactly these (cells that stored nothing)
         return Result.success()
     }
 
