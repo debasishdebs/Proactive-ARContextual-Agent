@@ -35,9 +35,8 @@ class AndroidPlaceGuideControl(
         get() = settings.budgetMb
         set(v) { settings.budgetMb = v }
 
-    override var includeMountains: Boolean
-        get() = settings.includeMountains
-        set(v) { settings.includeMountains = v }
+    override val extraTypes: Set<String> get() = settings.extraTypes
+    override fun setExtraType(key: String, on: Boolean) { settings.setExtraType(key, on) }
 
     override var offlineGuess: Boolean
         get() = settings.offlineGuess
@@ -63,7 +62,8 @@ class AndroidPlaceGuideControl(
             throw com.rokid.context.phone.ui.settings.place.SeedOfflineOnlyException()
         }
         val n = com.rokid.context.memory.place.Geohash5.cellsCovering(box).size
-        if (n == 0 || n > com.rokid.context.memory.place.PlacePack.MAX_SEED_CELLS) throw IllegalArgumentException("cells=$n") // counts only
+        val cap = if (com.rokid.context.orchestration.forget.DeveloperFlags.bulkSeed(app)) com.rokid.context.memory.place.PlacePack.MAX_SEED_CELLS_BULK else com.rokid.context.memory.place.PlacePack.MAX_SEED_CELLS
+        if (n == 0 || n > cap) throw IllegalArgumentException("cells=$n") // counts only
         val id = String.format(Locale.ROOT, "seed:%.3f,%.3f,%.3f,%.3f", box.south, box.west, box.north, box.east)
         PlaceGraph.readyPack(app).beginArea(id, box)
         seedWork.enqueue(id)

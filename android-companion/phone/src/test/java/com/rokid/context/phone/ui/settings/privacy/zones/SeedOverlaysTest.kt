@@ -20,6 +20,34 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
+/** 27 Nov: bulk mode changes the cap (30,000 cells), the time text (an ESTIMATE) and keeps the confirm above 2,000 cells; the per-cell numbers are unchanged with the flag OFF. */
+class SeedEstimateBulkTest {
+    @After fun reset() { SeedEstimate.bulkMode = { false } }
+    private val big = GeoBox(10.0, 70.0, 10.0 + 70 * Geohash5.LAT_STEP, 70.0 + 120 * Geohash5.LON_STEP) // 71 x 121 = 8,591 cells
+
+    @Test fun perCellModeKeepsTheOldCapAndText() {
+        SeedEstimate.bulkMode = { false }
+        assertEquals(4_000L, SeedEstimate.seedMaxCells())
+        assertEquals(SeedLevel.TOO_LARGE, SeedEstimate.level(SeedEstimate.cells(big)))
+        assertTrue(SeedEstimate.estimate(GeoBox(10.0, 70.0, 10.2, 70.2)).contains(SeedEstimate.TIME_FROM_LAPTOP))
+    }
+
+    @Test fun bulkModeRaisesTheCapTo30000AndSaysEstimate() {
+        SeedEstimate.bulkMode = { true }
+        assertEquals(30_000L, SeedEstimate.seedMaxCells())
+        assertTrue(SeedEstimate.cells(big) > 4_000)
+        assertEquals(SeedLevel.CONFIRM, SeedEstimate.level(SeedEstimate.cells(big)))
+        assertEquals(SeedLevel.TOO_LARGE, SeedEstimate.level(30_001))
+        assertTrue(SeedEstimate.line(GeoBox(10.0, 70.0, 10.0 + 400 * Geohash5.LAT_STEP, 70.0 + 100 * Geohash5.LON_STEP)).contains("at most 30000 cells"))
+        val text = SeedEstimate.estimate(big)
+        assertTrue(text, text.contains("estimate") && text.contains("bulk mode") && !text.contains(SeedEstimate.TIME_FROM_LAPTOP))
+        assertTrue(text, text.contains(SeedEstimate.LARGE_WARNING_BULK)) // above 2,000 cells the warning stays
+        assertTrue(SeedEstimate.confirmText(8_591).contains("estimate") && SeedEstimate.confirmText(8_591).contains(SeedEstimate.LARGE_WARNING_BULK))
+        assertFalse(SeedEstimate.confirmText(500).contains(SeedEstimate.LARGE_WARNING_BULK)) // not large: no warning
+        assertEquals("about 50 min", SeedEstimate.duration(30_000))
+    }
+}
+
 class SeedEstimateTest {
     @Test fun cellCountMatchesTheCoveringList() {
         for (b in listOf(PlaceGuideModel.HYDERABAD, PlaceGuideModel.RAMOJI, PlaceGuideModel.GANGTOK.boxes[0], GeoBox(-33.9, 18.3, -33.5, 18.9), GeoBox(0.01, -0.02, 0.2, 0.3))) {

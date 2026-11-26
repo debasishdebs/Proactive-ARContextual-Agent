@@ -12,9 +12,10 @@ class PlaceGuideOfflineGuessTest {
         assertFalse(s.offlineGuess); assertEquals(0.55f, s.maybeCutoff); assertEquals(150, s.candidateRadiusM)
     }
 
-    /** 27 Nov: "Include mountains and peaks" is OFF by default and the plain wording is in the label. */
-    @Test fun mountainsToggleDefaultsOffWithPlainWording() {
-        assertFalse(PlaceGuideUiState().includeMountains)
+    /** 27 Nov night: every "Extra place type" is ON by default, each is its own switch, and the mountains label keeps the owner's plain wording. */
+    @Test fun extraPlaceTypesDefaultOnWithPlainWording() {
+        assertEquals(com.rokid.context.connectors.place.ExtraPlaceTypes.DEFAULT_ON, PlaceGuideUiState().extraTypes)
+        assertTrue(PlaceGuideUiState().extraTypes.containsAll(com.rokid.context.connectors.place.ExtraPlaceTypes.SHOWN.map { it.key }))
         assertEquals("Include mountains and peaks (adds many places; good for a mountain trip)", PlaceGuideModel.MOUNTAINS_LABEL)
     }
 

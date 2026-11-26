@@ -77,7 +77,9 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
             // the notification and the work progress follow the cell progress; a conflated channel keeps the cell loop from ever waiting on them
             val reporter = launch { for (pr in updates) { try { setProgress(workDataOf(PROGRESS to pr.percent)); setForeground(info(pr)) } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e } } }
             try {
-                withContext(Dispatchers.IO) { pack.seedArea(id, box, admit = admit, onCounts = { c -> store.progress(key, c.done, c.total, c.failed, c.partial, c.fetched); updates.trySend(store.get(key)) }, onCellMs = { ms -> timing.add(ms) }) }
+                val bulk = com.rokid.context.orchestration.forget.DeveloperFlags.bulkSeed(applicationContext) // read when the seed starts: a change applies to the next seed
+                if (bulk) PcLog.i(TAG, "seed mode bulk=1") else PcLog.i(TAG, "seed mode bulk=0")
+                withContext(Dispatchers.IO) { pack.seedArea(id, box, admit = admit, bulk = bulk, onCounts = { c -> store.progress(key, c.done, c.total, c.failed, c.partial, c.fetched); updates.trySend(store.get(key)) }, onCellMs = { ms -> timing.add(ms) }) }
             } finally { updates.close(); reporter.join() }
         }
         if (r.failed > 0) PcLog.i(TAG, "seed work done with failed cells") else PcLog.i(TAG, "seed work done")

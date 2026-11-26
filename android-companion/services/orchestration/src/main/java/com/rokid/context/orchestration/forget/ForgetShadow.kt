@@ -127,6 +127,14 @@ object DeveloperFlags {
     fun placeTextMatch(context: Context) = flag(context, PLACE_TEXT_MATCH)
     fun setPlaceTextMatch(context: Context, on: Boolean) = setFlag(context, PLACE_TEXT_MATCH, on)
 
+    /**
+     * Bulk seeding (owner decision 27 Nov): a seed finds its places with a few Wikidata SPARQL box queries plus batched Wikipedia intros instead of Wikipedia geosearch cell by cell; any bulk failure falls back to the per-cell
+     * path for the affected cells, and the per-seed cell cap is 30,000 instead of 4,000. ON BY DEFAULT; a prefs read that fails counts as OFF (= the per-cell path, as before). Switch: Settings > Diagnostics > Developer.
+     */
+    const val BULK_SEED = "bulkSeed"
+    fun bulkSeed(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(BULK_SEED, true) }.getOrDefault(false)
+    fun setBulkSeed(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(BULK_SEED, on).apply() }
+
     /** Place card history on the phone (v18): a phone-only list in `context.db` (`place_card_log`). ON BY DEFAULT; a prefs read that fails counts as OFF (no row written, the UI hides the list). Every Forget / Delete all deletes its rows inside its own transaction whatever this says. */
     const val PLACE_CARD_HISTORY = "placeCardHistory"
     fun placeCardHistory(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_CARD_HISTORY, true) }.getOrDefault(false) // v18: ON by default; a read failure counts as OFF

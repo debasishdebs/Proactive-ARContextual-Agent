@@ -341,6 +341,9 @@ fun DiagnosticsScreen(
     /** 1.4.6 pack Moments (shadow only, counts in the log): Developer toggle plus one count line. Default OFF; shown only with [developerMode]. */
     devImport: Boolean = false,
     onDevImport: (Boolean) -> Unit = {},
+    /** Bulk seeding (27 Nov): a seed finds places with a few Wikidata box queries instead of cell by cell. Default ON; shown only with [developerMode]. */
+    bulkSeed: Boolean = true,
+    onBulkSeed: (Boolean) -> Unit = {},
     packMoments: Boolean = false,
     onPackMoments: (Boolean) -> Unit = {},
     packMomentsCount: String = "",
@@ -486,6 +489,13 @@ fun DiagnosticsScreen(
                             Text("Off (default). On: a paired laptop may send a pulled dump back to this phone (POST /api/import) to recreate Moments with their original time, photos, captions and location. Needs Developer mode. Nothing is sent anywhere.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
                         }
                         Switch(checked = devImport, onCheckedChange = onDevImport, modifier = Modifier.testTag("dev_import_switch"))
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Bulk place seeding", style = MaterialTheme.typography.titleSmall)
+                            Text("On (default): seeding an area finds its places with a few Wikidata and Wikipedia requests per large box instead of one request per 5 km cell, and allows areas of up to 30,000 cells. Anything that fails in bulk falls back to the per-cell way. Off: the per-cell way only (up to 4,000 cells). Applies to the next seed.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                        }
+                        Switch(checked = bulkSeed, onCheckedChange = onBulkSeed, modifier = Modifier.testTag("bulk_seed_switch"))
                     }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {

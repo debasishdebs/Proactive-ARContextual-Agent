@@ -15,6 +15,8 @@ class ContextApp : Application() {
             com.rokid.context.phone.log.PrefsWipePending(this),
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO),
         )?.let { com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.phone.log.LogWipeListener(it.wiper, it.ready)) }
+        // Seed estimates and the per-seed cell cap follow the Developer flag `bulkSeed` (default ON): bulk numbers and the 30,000-cell cap, else the per-cell ones.
+        com.rokid.context.phone.ui.settings.privacy.zones.SeedEstimate.bulkMode = { com.rokid.context.orchestration.forget.DeveloperFlags.bulkSeed(this) }
         // Model privacy (Offline only): the DNS guard of every model client reads the stored mode; the first load of the prefs files happens on IO, never here.
         com.rokid.context.ai.OfflineOnlyDns.globalMode = { com.rokid.context.ai.resolve.ModelPrivacyStore.get(this).current() }
         com.rokid.context.ai.OfflineOnlyNet.vpnProbe = com.rokid.context.ai.OfflineOnlyNet.androidVpnProbe(this) // Offline only refuses non-loopback private addresses while a VPN is up

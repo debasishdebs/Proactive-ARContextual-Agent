@@ -83,6 +83,22 @@ object SeedEstimate {
     const val LARGE_WARNING = "This is large: it runs in the background and may take hours."
     /** The pack's own hard cap; a box above it is refused here before any request. */
     const val MAX_CELLS: Long = PlacePack.MAX_SEED_CELLS.toLong()
+    /** The same cap for a BULK seed (owner decision 27 Nov): one query covers many cells. */
+    const val MAX_CELLS_BULK: Long = PlacePack.MAX_SEED_CELLS_BULK.toLong()
+    /** Whether the seed will run in bulk mode (the Developer `bulkSeed` flag, default ON; production sets it at app start, tests leave it OFF = the per-cell numbers). */
+    @Volatile var bulkMode: () -> Boolean = { false }
+    /** The cell cap a SEED is checked against now (the "Show cells" views keep [MAX_CELLS]). */
+    fun seedMaxCells(): Long = if (bulkMode()) MAX_CELLS_BULK else MAX_CELLS
+    /**
+     * ESTIMATE of seconds a cell takes in BULK mode: measured on a Mac 27 Nov (design 2026-11-27-large-area-seeding-design.md section 10): a 650-cell region in 15 requests, about 60 s, so about 0.1 s a cell;
+     * a dense city takes more (3 times slower per query), a sparse state much less. Not measured on the phone.
+     */
+    const val SECONDS_PER_CELL_BULK = 0.1
+    /** Bulk mode: the time is an estimate and usually minutes, but it still runs in the background and may take longer on a slow network or in a dense area. */
+    const val LARGE_WARNING_BULK = "This is large: it runs in the background. The time is an estimate and may be longer on a slow network or in a dense area."
+    private fun largeWarning() = if (bulkMode()) LARGE_WARNING_BULK else LARGE_WARNING
+    /** Seconds per cell used when none is given: the bulk ESTIMATE in bulk mode, else the laptop figure. */
+    private fun defaultSecondsPerCell(): Double = if (bulkMode()) SECONDS_PER_CELL_BULK else SECONDS_PER_CELL
     /**
      * Seconds a cell takes, MEASURED on a laptop on 26 Nov (tools/measure/measure_seed_cells.py, 25 cells of a busy tourist area, same requests as PlacePack.seedArea): median 3.0 s, p90 8.8 s,
      * MEAN 7.4 s. The estimate multiplies by the mean (a total is cells times the mean; the mean carries the slow cells, such as Overpass mirrors timing out). Replaced by the phone's own
@@ -105,16 +121,16 @@ object SeedEstimate {
 
     fun level(cells: Long): SeedLevel = when {
         cells <= 0 -> SeedLevel.EMPTY
-        cells > MAX_CELLS -> SeedLevel.TOO_LARGE
+        cells > seedMaxCells() -> SeedLevel.TOO_LARGE
         cells > CONFIRM_CELLS -> SeedLevel.CONFIRM
         else -> SeedLevel.OK
     }
 
-    fun seconds(cells: Long, secondsPerCell: Double = SECONDS_PER_CELL): Long = Math.round(cells * secondsPerCell)
+    fun seconds(cells: Long, secondsPerCell: Double = defaultSecondsPerCell()): Long = Math.round(cells * secondsPerCell)
 
-    fun duration(cells: Long, secondsPerCell: Double = SECONDS_PER_CELL): String {
+    fun duration(cells: Long, secondsPerCell: Double = defaultSecondsPerCell()): String {
         val s = seconds(cells, secondsPerCell)
-        return if (s < 90) "about $s s" else if (s < 5_400) "about ${ceil(s / 60.0).toLong()} min" else "about ${ceil(s / 3_600.0).toLong()} h"
+        return if (s < 10 && bulkMode()) "under 10 s" else if (s < 90) "about $s s" else if (s < 5_400) "about ${ceil(s / 60.0).toLong()} min" else "about ${ceil(s / 3_600.0).toLong()} h"
     }
 
     /** S4: the full estimate before seeding: cells (exact), places and text size (from [rates]), time (an ESTIMATE: the 10 s a cell is not measured). */
@@ -125,7 +141,7 @@ object SeedEstimate {
         val places = Math.round(n * rates.placesPerCell)
         val bytes = Math.round(places * rates.bytesPerPlace.toDouble())
         val rough = if (rates.rough) " (rough: not enough seeded cells on this phone yet)" else ""
-        return "About $n cell${if (n == 1L) "" else "s"} (5 km), about $places place${if (places == 1L) "" else "s"}, about ${sizeText(bytes)} of text, ${duration(n, rates.secondsPerCell ?: SECONDS_PER_CELL)} on Wi-Fi ${if (rates.secondsPerCell != null) TIME_FROM_PHONE else TIME_FROM_LAPTOP}.$rough" + (if (n > LARGE_CELLS) " $LARGE_WARNING" else "")
+        return "About $n cell${if (n == 1L) "" else "s"} (5 km), about $places place${if (places == 1L) "" else "s"}, about ${sizeText(bytes)} of text, ${if (bulkMode()) "${duration(n, SECONDS_PER_CELL_BULK)} (estimate, bulk mode: one query covers many cells) on Wi-Fi" else "${duration(n, rates.secondsPerCell ?: SECONDS_PER_CELL)} on Wi-Fi ${if (rates.secondsPerCell != null) TIME_FROM_PHONE else TIME_FROM_LAPTOP}"}.$rough" + (if (n > LARGE_CELLS) " ${largeWarning()}" else "")
     }
 
     fun sizeText(bytes: Long): String = if (bytes < 100_000) "${Math.max(1, (bytes + 512) / 1024)} KB" else String.format(java.util.Locale.US, "%.1f MB", bytes / 1_048_576.0)
@@ -136,12 +152,12 @@ object SeedEstimate {
         val n = cells(box)
         return when (level(n)) {
             SeedLevel.EMPTY -> "Draw a box to see how many 5 km cells it covers."
-            SeedLevel.TOO_LARGE -> "Too large: $n cells. Draw a smaller area (at most $MAX_CELLS cells)."
-            else -> "$n cell${if (n == 1L) "" else "s"} (5 km each), ${duration(n)}, runs in the background."
+            SeedLevel.TOO_LARGE -> "Too large: $n cells. Draw a smaller area (at most ${seedMaxCells()} cells)."
+            else -> "$n cell${if (n == 1L) "" else "s"} (5 km each), ${duration(n)}${if (bulkMode()) " (estimate)" else ""}, runs in the background."
         }
     }
 
-    fun confirmText(cells: Long): String = "This is a large area ($cells cells, ${duration(cells)})." + (if (cells > LARGE_CELLS) " $LARGE_WARNING" else "") + " Seed it? Only the 5 km cell keys are sent, never your position."
+    fun confirmText(cells: Long): String = "This is a large area ($cells cells, ${duration(cells)}${if (bulkMode()) ", estimate" else ""})." + (if (cells > LARGE_CELLS) " ${largeWarning()}" else "") + " Seed it? Only the 5 km cell keys are sent, never your position."
 
     private fun latIndex(lat: Double) = minOf(LAT_CELLS - 1, floor((lat + 90.0) / Geohash5.LAT_STEP).toInt())
     private fun lonIndex(lon: Double) = minOf(LON_CELLS - 1, floor((lon + 180.0) / Geohash5.LON_STEP).toInt())
