@@ -164,6 +164,21 @@ class DumpImporterTest {
         assertEquals("a second pass adds nothing", 0, run(body(), dedup = true).cards); assertEquals(1, cardRows())
     }
 
+    private fun cardOnly(momentId: String = id) = """{"items":[{"object_type":"moment","id":"$momentId","startMs":$start,"frames":[{"id":"f1","capturedAtMs":${start + 10},"hasPhoto":false}],"memories":[],"marks":[],"placeCards":[${card(frameId = "f1", at = start + 600)}]}]}""".toByteArray()
+
+    @Test fun aPhotolessCardOnlyResendThroughTheRealParserRestoresCardsOfAnExistingMoment() = runBlocking<Unit> {
+        run(body(cardsJson = ""))
+        val r = run(cardOnly(), dedup = true)
+        assertEquals(listOf("skipped" to "dedup"), r.items)
+        assertEquals(1, r.cards); assertEquals(1, cardRows())
+    }
+
+    @Test fun aCardOnlyResendOfAMomentThatIsNotHereCreatesNothing() = runBlocking<Unit> {
+        val r = run(cardOnly(), dedup = true)
+        assertEquals(listOf("skipped" to "empty"), r.items)
+        assertEquals(0, cardRows()); assertEquals(0, rows()[3])
+    }
+
     @Test fun locationSettingOffSavesNoLocation() {
         locOn = false
         run(body())

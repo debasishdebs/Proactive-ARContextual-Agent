@@ -247,7 +247,6 @@ object DumpImportParser {
             if (k.atMs !in range || marks.any { it.id == k.id }) throw Bad(i, "mark_atMs")
             marks += k
         }
-        if (frames.isEmpty() && marks.isEmpty()) throw Bad(i, "empty")
         val loc = (o["location"] as? JsonObject)?.let { l ->
             val lat = dbl(l, "lat", i) ?: throw Bad(i, "lat"); val lon = dbl(l, "lon", i) ?: throw Bad(i, "lon")
             if (lat !in -90.0..90.0 || lon !in -180.0..180.0) throw Bad(i, "lat")
@@ -272,6 +271,8 @@ object DumpImportParser {
             val fid = str(c, "frameId", i, 100)?.also { if (!FRAME_ID.matches(it)) throw Bad(i, "card_frameId") }
             cards += Card(cid, str(c, "cardId", i, 100)?.takeIf { it.isNotBlank() }, place, (str(c, "title", i, 300) ?: "").take(PlaceCardHistory.TITLE_MAX), kind, delivery, at, fid)
         }
+        // a photo-less, mark-less Moment is only valid as a card-only re-send (the importer restores its cards when the Moment is already here and skips it otherwise)
+        if (frames.isEmpty() && marks.isEmpty() && cards.isEmpty()) throw Bad(i, "empty")
         return MomentItem(id, start, frames, memories, marks, loc, cards, noPhoto, skippedMem)
     }
 }
@@ -404,6 +405,7 @@ class DumpImporter(
         val m = (e as DumpImportParser.Entry.Moment).item
         val verdict = verdict(m)
         if (verdict == "conflict" && dedup && m.cards.isNotEmpty()) t.dedupMoments += m // a Moment that is already here still gets its place cards (a pin they name may have arrived after the first pass); each card has its own exists/fence verdicts
+        if (verdict == null && m.frames.isEmpty() && m.marks.isEmpty()) return "skipped" to "empty" // a card-only re-send of a Moment that is not here: nothing to create
         if (verdict != null) return if (verdict == "conflict") (if (dedup) "skipped" to "dedup" else "conflict" to "exists") else "skipped" to verdict
         if (dryRun) { t.newMoments += m; t.f += m.frames.size; t.m += m.memories.size; t.k += m.marks.size; if (m.location != null) t.l++; return "would_create" to "ok" }
         check(gen0)
