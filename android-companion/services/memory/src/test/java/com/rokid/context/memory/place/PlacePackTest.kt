@@ -359,6 +359,26 @@ class PlacePackTest {
         assertTrue("fresh cells are skipped, not timed", ms.isEmpty())
     }
 
+    // 12ac: the two old-build shapes of "zero places". A Wikipedia/Wikidata FAILURE throws and stores NO cell row (so it can never become a PARTIAL cell); only "answered, Overpass did not" stores PARTIAL.
+    @Test fun failedWikipediaCellStoresNothingAndIsRefetchedWhileGenuineZeroPartialIsSkipped() = run {
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        val cells = Geohash5.cellsCovering(box)
+        var wikiUp = false
+        val src = FakeSource { c -> if (!wikiUp) throw IOException("HTTP 503") else CellFetch(emptyList(), complete = false) } // after: Wikipedia answered zero hits, Overpass failed
+        val p = pack(src)
+        val r1 = p.seedArea("z", box)
+        assertEquals(cells.size, r1.failed); assertEquals(0, r1.fetched)
+        cells.forEach { assertNull(db.dao().cell(it)) } // failed Wikipedia: no cell row at all
+        assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
+        wikiUp = true
+        val asked = src.asked.size
+        val r2 = p.seedArea("z", box) // Retry: every failed cell is fetched again
+        assertEquals(cells.size, r2.partial); assertEquals(0, r2.failed); assertEquals(asked + cells.size, src.asked.size)
+        cells.forEach { assertEquals(CELL_PARTIAL, db.dao().cell(it)!!.status) }
+        val r3 = p.seedArea("z", box) // genuine zero + Overpass-only failure: done, skipped
+        assertEquals(cells.size, r3.partialFresh); assertEquals(0, r3.fetched); assertEquals(asked + cells.size, src.asked.size)
+    }
+
     @Test fun partialCellsAreCountedDoneStoredWithTheMarkerAndNotRefetchedFor30Days() = run {
         val box = GeoBox(17.30, 78.40, 17.36, 78.46)
         val cells = Geohash5.cellsCovering(box)

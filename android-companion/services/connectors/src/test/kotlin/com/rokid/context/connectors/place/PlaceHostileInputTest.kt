@@ -149,6 +149,17 @@ class PlaceHostileInputTest {
         throw AssertionError("$name threw ${e.javaClass.name} for ${body.take(80)}...(${body.length} chars)", e)
     }
 
+    // 12ac: an HTTP 200 error object is a FAILED fetch (SerializationException), a genuine empty answer is an empty list.
+    @Test fun apiErrorBodyIsAFailureNotAnEmptyAnswer() {
+        val err = """{"error":{"code":"ratelimited","info":"slow down"}}"""
+        for (b in listOf(err, "{}", """{"batchcomplete":true}""")) {
+            assertFailsWith<SerializationException> { WikipediaHttpSource.parseGeosearch(b) }
+            assertFailsWith<SerializationException> { WikipediaHttpSource.parsePages(b) }
+        }
+        assertFailsWith<SerializationException> { WikidataHttpSource.parse(err) }
+        assertEquals(emptyList(), WikipediaHttpSource.parseGeosearch("""{"query":{"geosearch":[]}}"""))
+    }
+
     @Test fun everyTruncationAndGarbageBodyIsAValueOrASerializationException() {
         val docs = mapOf("geosearch" to baseGeo, "pages" to basePages, "wikidata" to baseWd, "overpass" to baseOp)
         for ((name, doc) in docs) for (n in doc.indices) contract(name, doc.substring(0, n))

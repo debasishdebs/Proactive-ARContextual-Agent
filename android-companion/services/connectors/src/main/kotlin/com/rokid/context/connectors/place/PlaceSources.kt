@@ -89,14 +89,23 @@ class WikipediaHttpSource(private val http: PlaceHttp, private val host: String 
         const val EXTRACT_BATCH = 20
         const val SENTENCES = 3
 
+        /**
+         * A MediaWiki API can answer HTTP 200 with an error object ({"error":{"code":"ratelimited"...}}, maxlag, readonly) and no "query": that is a FAILED fetch, never a genuine empty answer
+         * (a genuine zero is {"query":{"geosearch":[]}}). Without this a cell whose Wikipedia call failed would be stored as zero places and, when Overpass also failed, as a PARTIAL cell that seeding now counts done.
+         */
+        internal fun requireAnswer(o: JsonObject, what: String): JsonObject {
+            if (o["error"] != null || o["query"] == null) throw SerializationException("$what: API error body, no query")
+            return o
+        }
+
         fun parseGeosearch(body: String): List<WikiHit> =
-            parseBody(body).obj()?.get("query").obj()?.get("geosearch").arr().orEmpty().mapNotNull { e ->
+            requireAnswer(parseBody(body), "geosearch").obj()?.get("query").obj()?.get("geosearch").arr().orEmpty().mapNotNull { e ->
                 val o = e.obj() ?: return@mapNotNull null
                 WikiHit(o["pageid"].lng() ?: return@mapNotNull null, o["title"].str() ?: return@mapNotNull null, o["lat"].latOrNull() ?: return@mapNotNull null, o["lon"].lonOrNull() ?: return@mapNotNull null)
             }
 
         fun parsePages(body: String): List<WikiPage> =
-            parseBody(body).obj()?.get("query").obj()?.get("pages").arr().orEmpty().mapNotNull { e ->
+            requireAnswer(parseBody(body), "pages").obj()?.get("query").obj()?.get("pages").arr().orEmpty().mapNotNull { e ->
                 val o = e.obj() ?: return@mapNotNull null
                 if (o["missing"] != null) return@mapNotNull null
                 val c = o["coordinates"].arr()?.firstOrNull().obj()
@@ -131,7 +140,9 @@ class WikidataHttpSource(private val http: PlaceHttp, private val host: String =
         }
 
         fun parse(body: String): Map<String, WikidataEntity> {
-            val entities = parseBody(body).obj()?.get("entities").obj() ?: return emptyMap()
+            val root = parseBody(body)
+            if (root["error"] != null) throw SerializationException("wikidata: API error body")
+            val entities = root.obj()?.get("entities").obj() ?: return emptyMap()
             return entities.entries.mapNotNull { (qid, v) ->
                 val rawClaims = v.obj()?.get("claims")
                 // Wikidata sends an item with no claims as an empty ARRAY: that is absence, not damage. Any other non-object claims value is unreadable and drops the entity.
