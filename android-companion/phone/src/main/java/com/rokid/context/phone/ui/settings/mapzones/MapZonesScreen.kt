@@ -207,11 +207,13 @@ fun MapZonesScreen(
             TextButton({ view.zoom(1.6) }, Modifier.testTag("zone_zoom_in")) { Text("+") }
             TextButton({ view.zoom(1 / 1.6) }, Modifier.testTag("zone_zoom_out")) { Text("-") }
             TextButton({ view.fit() }, Modifier.testTag("zone_fit")) { Text("Fit") }
-            if (online?.canCentre == true) TextButton(online.centreOnMe, Modifier.testTag("zone_centre"), enabled = !online.centreBusy) { Text("Me") }
+            if (online?.canCentre == true) TextButton(online.centreOnMe, Modifier.testTag("zone_centre"), enabled = !online.centreBusy) { Text(if (online.centreBusy) com.rokid.context.phone.ui.settings.privacy.zones.tiles.CentreWords.FINDING else "Me") }
+            if (online?.centreBusy == true) TextButton(online.centreCancel, Modifier.testTag("zone_centre_cancel")) { Text("Cancel") }
         }
         if (!networkOnline) com.rokid.context.phone.ui.settings.privacy.zones.NoNetworkBanner(tag = "mapzones_no_network", modifier = Modifier.align(Alignment.TopStart).padding(top = 48.dp))
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().heightIn(max = 380.dp).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState()).padding(16.dp).testTag("mapzones_sheet"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (zones.protectedMode) NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.ZoneWords.PROTECTED_BANNER, error = true, tag = "zone_protected")
+            online?.note?.let { n -> NoticeText(n, tag = "zone_centre_note"); SecondaryAction("Dismiss", online.dismissNote, tag = "zone_centre_note_dismiss") }
             if (zones.deniedBanner) { NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.ZoneWords.DENIED_BANNER, error = true, tag = "zone_denied"); PrimaryAction("Allow location", zoneOn.requestLocation, tag = "zone_allow_location") }
             ui.message?.let { m -> NoticeText(m, error = ui.messageIsError, tag = "zone_message"); SecondaryAction("Dismiss", on.dismiss, tag = "zone_message_dismiss") }
             zones.message?.let { m -> NoticeText(m, error = zones.messageIsError, tag = "zone_message2"); SecondaryAction("Dismiss", zoneOn.dismissMessage, tag = "zone_message2_dismiss") }

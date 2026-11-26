@@ -61,18 +61,27 @@ class OnlineMapGraph private constructor(private val app: Context, private val k
     }
 }
 
+/** The one-fix settings: with a validated network the cheap balanced fix (12 s); without one GPS, up to 20 s (GPS needs no network; design S2). */
+object CentreTiming {
+    const val ONLINE_TIMEOUT_MS = 12_000L
+    const val OFFLINE_TIMEOUT_MS = 20_000L
+    fun timeoutMs(networkValidated: Boolean) = if (networkValidated) ONLINE_TIMEOUT_MS else OFFLINE_TIMEOUT_MS
+    fun priority(networkValidated: Boolean) = if (networkValidated) Priority.PRIORITY_BALANCED_POWER_ACCURACY else Priority.PRIORITY_HIGH_ACCURACY
+}
+
 /** ONE foreground fix on request with the existing location permission (no new permission). The result goes to the caller only: not stored, not logged. */
 class AndroidCentreFix(private val ctx: Context) : CentreFix {
     @SuppressLint("MissingPermission") // the screen calls this only after it checked the permission
     override suspend fun current(): LatLon? {
         val client = LocationServices.getFusedLocationProviderClient(ctx)
         val cts = CancellationTokenSource()
+        val online = networkValidated()
         return try {
-            withTimeoutOrNull(FIX_TIMEOUT_MS) {
+            withTimeoutOrNull(CentreTiming.timeoutMs(online)) {
                 suspendCancellableCoroutine<LatLon?> { cont ->
                     cont.invokeOnCancellation { cts.cancel() }
                     try {
-                        client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, cts.token)
+                        client.getCurrentLocation(CentreTiming.priority(online), cts.token)
                             .addOnSuccessListener { l -> cont.resume(l?.let { LatLon(it.latitude, it.longitude) }) }
                             .addOnFailureListener { cont.resume(null) }
                     } catch (e: SecurityException) { cont.resume(null) }
@@ -81,5 +90,8 @@ class AndroidCentreFix(private val ctx: Context) : CentreFix {
         } finally { cts.cancel() }
     }
 
-    private companion object { const val FIX_TIMEOUT_MS = 12_000L }
+    private fun networkValidated(): Boolean = try {
+        val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java)
+        cm?.getNetworkCapabilities(cm.activeNetwork)?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+    } catch (e: Exception) { false }
 }

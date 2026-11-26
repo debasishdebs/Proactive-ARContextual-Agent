@@ -43,6 +43,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberUpdatedState
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.CentreFlow
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -176,10 +178,9 @@ internal fun rememberOnlinePanel(d: OnlineMapDeps, granted: () -> Boolean, askPe
     val ui by d.model.ui.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var foreground by remember { mutableStateOf(false) }
-    var centre by remember { mutableStateOf<CentreRequest?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    var note by remember { mutableStateOf<String?>(null) }
-    var seq by remember { mutableStateOf(0) }
+    val grantedNow by rememberUpdatedState(granted); val askNow by rememberUpdatedState(askPermission)
+    val flow = remember(d.fix) { CentreFlow(scope, d.fix, { grantedNow() }, { askNow() }) }
+    val cu by flow.state.collectAsStateWithLifecycle()
     val owner = LocalLifecycleOwner.current
     DisposableEffect(d.source) { d.source?.newVisit(); onDispose {} } // entering the screen: the per-visit request cap starts again (a resume does not)
     DisposableEffect(owner, ui.enabled) {
@@ -193,16 +194,7 @@ internal fun rememberOnlinePanel(d: OnlineMapDeps, granted: () -> Boolean, askPe
         owner.lifecycle.addObserver(obs)
         onDispose { owner.lifecycle.removeObserver(obs); d.source?.stop() }
     }
-    val tap: () -> Unit = {
-        if (!granted()) { note = "Allow location to centre the map on you."; askPermission() }
-        else if (!busy) scope.launch {
-            busy = true; note = null
-            val p = d.fix?.current()
-            busy = false
-            if (p == null) note = OnlineMapWords.NO_FIX else centre = CentreRequest(++seq, p)
-        }
-    }
-    return OnlineMapPanel(ui, d.source.takeIf { ui.enabled && ui.available }, foreground, centre, busy, note, d.model::requestEnabled, d.model::confirmFirst, d.model::cancelFirst, tap, { note = null }, d.fix != null, d.keys, onKeyChanged)
+    return OnlineMapPanel(ui, d.source.takeIf { ui.enabled && ui.available }, foreground, cu.request, cu.finding, cu.note, d.model::requestEnabled, d.model::confirmFirst, d.model::cancelFirst, flow::tap, flow::dismissNote, d.fix != null, d.keys, onKeyChanged, flow::cancel)
 }
 
 /** A PMTiles file has no registered MIME type, so the picker is not narrowed. */
@@ -234,6 +226,8 @@ class OnlineMapPanel(
     val canCentre: Boolean = true,
     val keys: com.rokid.context.phone.ui.settings.privacy.zones.online.MapKeyControl? = null,
     val keyChanged: () -> Unit = {},
+    /** Cancel on the "Finding you..." line (the fix request is cancelled). */
+    val centreCancel: () -> Unit = {},
 )
 
 /** What the zones screen needs to show seeded areas and pins and to seed the drawn box (null where the build has no Place Guide). [seedMode] = opened from Place Guide "Pick on the map". */
@@ -299,7 +293,9 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     SecondaryAction(if (state.drawing) "Cancel drawing" else "Draw a box", { on.setDrawing(!state.drawing) }, tag = "zone_draw", enabled = networkOnline && (seedMode || !state.protectedMode))
                     if (online?.canCentre == true) SecondaryAction("Centre on me", online.centreOnMe, tag = "zone_centre", enabled = !online.centreBusy)
+                    if (online?.centreBusy == true) SecondaryAction("Cancel", online.centreCancel, tag = "zone_centre_cancel")
                 }
+                if (online?.centreBusy == true) NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.tiles.CentreWords.FINDING, tag = "zone_centre_finding")
                 online?.note?.let { n -> NoticeText(n, tag = "zone_centre_note"); SecondaryAction("Dismiss", online.dismissNote, tag = "zone_centre_note_dismiss") }
                 if (!networkOnline) NoticeText(ZoneWords.OFFLINE_NOTICE, tag = "zone_offline")
                 if (state.drawing) NoticeText("Drag on the map from one corner to the opposite corner.", tag = "zone_draw_hint")
