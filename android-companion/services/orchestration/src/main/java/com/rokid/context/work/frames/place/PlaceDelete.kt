@@ -80,7 +80,7 @@ object PlaceDelete {
         if (!outcome.committed) return Result(outcome, false)
         val stillThere = runCatching { PlaceGraph.pins(app).pins().any { it.id == preview.pinId } }.getOrDefault(true)
         val gone = if (!stillThere) true else try { deletePin(preview.pinId) } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) { false }
-        PcLog.i(TAG, "place delete cascade done pinDeleted=$gone")
+        if (gone) PcLog.i(TAG, "place delete cascade done pins removed=1") else PcLog.i(TAG, "place delete cascade done pins removed=0")
         return Result(outcome, gone)
     }
 }
