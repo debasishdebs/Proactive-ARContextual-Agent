@@ -37,7 +37,8 @@ class SceneInputExecutorTest {
     private val exec = SceneInputExecutor(db)
     private val forget = MomentForget(db, ForgetService(db, ProposalRepository(db.proposalDao(), db.actionDao(), db)) { 1_000 }) { 1_000 }
     private val hour = Math.floorDiv(MS, 3_600_000L) * 3_600_000L
-    @After fun close() = db.close()
+    @org.junit.Before fun legacy() { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = false } // v1 path pinned: the production default is ON since 26 Nov (owner 6b)
+    @After fun close() { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = null; db.close() }
 
     private fun t(sec: Long) = hour + sec * 1000
     private fun mid(sec: Long) = MomentId.ofMs(t(sec))

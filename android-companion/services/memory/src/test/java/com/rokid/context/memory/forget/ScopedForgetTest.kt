@@ -34,8 +34,8 @@ class ScopedForgetTest {
     private lateinit var s3: com.rokid.context.memory.db.CanvasSlice3Dao
     private lateinit var engine: ScopedForget
     private fun fresh() { if (this::db.isInitialized) db.close(); db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext()); fx = MomentForgetFixture(db); s3 = db.canvasSlice3Dao(); engine = ScopedForget(db, fx.service) { 1_000 } }
-    @org.junit.Before fun open() { ForgetScopeSetting.experimentalAllowed = { true }; fresh() } // Developer mode on (the gate has its own tests)
-    @After fun close() { ForgetScopeSetting.experimentalAllowed = { false }; ForgetRadius.provider = { ForgetRadius.DEFAULT_MS }; db.close() }
+    @org.junit.Before fun open() { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = false; ForgetScopeSetting.experimentalAllowed = { true }; fresh() } // Developer mode on (the gate has its own tests)
+    @After fun close() { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = null; ForgetScopeSetting.experimentalAllowed = { false }; ForgetRadius.provider = { ForgetRadius.DEFAULT_MS }; db.close() }
     private fun mid(sec: Long) = MomentId.format(SEC + sec)
 
     private suspend fun scene(id: String, vararg moments: Long) = db.sceneDao().replace(

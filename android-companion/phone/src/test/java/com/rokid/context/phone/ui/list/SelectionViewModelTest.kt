@@ -93,10 +93,18 @@ class SelectionViewModelTest {
         assertFalse(v.selection.available); assertTrue(v.selection.state.value.selection.refs.isEmpty()); assertNull(v.selection.state.value.message)
     }
 
-    @Test fun theGateIsOffByDefaultAndOnlyTheDeveloperFlagTurnsItOn() {
-        assertNull(SelectionGate.port(ctx))
-        com.rokid.context.orchestration.forget.DeveloperFlags.setForgetV2(ctx, true)
-        try { assertTrue(SelectionGate.port(ctx) != null) } finally { com.rokid.context.orchestration.forget.DeveloperFlags.setForgetV2(ctx, false) }
-        assertNull(SelectionGate.port(ctx))
+    @Test fun theGateIsOnByDefaultAndTheSettingsSwitchTurnsItOff() {
+        com.rokid.context.orchestration.forget.DeveloperFlags.setForgetV2(ctx, true) // the default (owner 6b, 26 Nov): ON; written so a stale value of another test cannot leak
+        assertTrue(SelectionGate.port(ctx) != null)
+        try {
+            com.rokid.context.orchestration.forget.DeveloperFlags.setForgetV2(ctx, false)
+            assertNull(SelectionGate.port(ctx))
+        } finally { com.rokid.context.orchestration.forget.DeveloperFlags.setForgetV2(ctx, true) }
+        assertTrue(SelectionGate.port(ctx) != null)
+    }
+
+    @Test fun withNoStoredPreferenceTheDefaultIsOn() {
+        ctx.getSharedPreferences("pc_dev", android.content.Context.MODE_PRIVATE).edit().clear().commit()
+        assertTrue(com.rokid.context.orchestration.forget.DeveloperFlags.forgetV2(ctx))
     }
 }

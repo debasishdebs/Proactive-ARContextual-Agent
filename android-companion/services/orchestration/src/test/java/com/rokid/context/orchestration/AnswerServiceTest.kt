@@ -44,12 +44,13 @@ class AnswerServiceTest {
     private var reply = """{"answer":"Added milk.","sources":["rokid_mem_1"],"proposedAction":{"type":"SHOPPING_ADD","items":[{"name":"milk"}]}}"""
 
     @Before fun setUp() {
+        com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = false
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         ai = TestAi.graph(ctx) { reply }
         TestAi.bindAll(ai)
     }
 
-    @After fun tearDown() { AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
+    @After fun tearDown() { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = null; AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
     /** G10 (MVP section 9.5): no match says so with an ETA and triggers a priority reprocess, once per no-match ask. */
     @Test fun noMatchSaysSoAndQueuesAPriorityReprocess() = runBlocking {

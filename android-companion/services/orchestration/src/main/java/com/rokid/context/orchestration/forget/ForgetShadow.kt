@@ -149,7 +149,8 @@ object DeveloperFlags {
     fun multilingualAsk(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MULTILINGUAL_ASK, false) }.getOrDefault(false)
     fun setMultilingualAsk(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(MULTILINGUAL_ASK, on).apply() }
     fun forgetShadow(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(FORGET_SHADOW, false) }.getOrDefault(false)
-    fun forgetV2(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(FORGET_V2, false) }.getOrDefault(false)
+    /** Forget v2 (multi-select Forget and the fuller Forget rules). ON BY DEFAULT since 26 Nov 2026 (owner 6b); Settings > Privacy has the switch. A prefs read that fails counts as OFF (the earlier behaviour). */
+    fun forgetV2(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(FORGET_V2, true) }.getOrDefault(false)
     fun setForgetV2(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(FORGET_V2, on).apply() }
     fun setForgetShadow(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(FORGET_SHADOW, on).apply() }
 }

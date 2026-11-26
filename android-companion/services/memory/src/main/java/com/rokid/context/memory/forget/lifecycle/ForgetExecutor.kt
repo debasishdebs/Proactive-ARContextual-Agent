@@ -19,7 +19,7 @@ import com.rokid.context.memory.forget.suspectStillEligible
 import com.rokid.context.memory.moment.MomentId
 
 /**
- * The process-wide switch of the destructive switch-over (Forget lifecycle M4, user ruling 2026-11-17): OFF by default, so every Forget runs the legacy code unchanged. The orchestration layer installs [provider]
+ * The process-wide switch of the destructive switch-over (Forget lifecycle M4, user ruling 2026-11-17): ON by default since 26 Nov 2026 (owner round 6b; Settings > Privacy has the switch to turn it off, which runs the legacy code unchanged); OFF before [install] and on any read failure. The orchestration layer installs [provider]
  * from `DeveloperFlags.forgetV2` (the backup-excluded `pc_dev` preferences); a test sets [testOverride]. It is read once at the start of each Forget.
  */
 object ForgetV2 {
@@ -33,7 +33,7 @@ object ForgetV2 {
         val a = context.applicationContext ?: return
         if (app === a) return
         app = a
-        provider = { a.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).getBoolean(KEY, false) }
+        provider = { a.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).getBoolean(KEY, true) }
     }
     @Volatile var testOverride: Boolean? = null
     val on: Boolean get() = testOverride ?: runCatching { provider() }.getOrDefault(false)

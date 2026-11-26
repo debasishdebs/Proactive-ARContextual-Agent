@@ -45,13 +45,14 @@ class FlowPublishTest {
     private var reply = """{"answer":"Milk is low.","sources":["rokid_mem_1"]}"""
 
     @Before fun setUp() {
+        com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = false;
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(app))
         dao = MemoryGraph.get(app).db.canvasDao()
         repo = CanvasRepository(dao, { "seed" }, { now++ }, { "p-${++ids}" })
         ai = TestAi.graph(app) { reply }.also { TestAi.bindAll(it) }
         runBlocking { repo.ensureBuiltIns() }
     }
-    @After fun tearDown() { AiGraph.resetForTests(null); MemoryGraph.get(app).db.close(); MemoryGraph.resetForTests(null) }
+    @After fun tearDown() { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = null; AiGraph.resetForTests(null); MemoryGraph.get(app).db.close(); MemoryGraph.resetForTests(null) }
 
     private val db get() = MemoryGraph.get(app).db
     private var caps = com.rokid.context.core.model.DeviceCapabilities.ALL

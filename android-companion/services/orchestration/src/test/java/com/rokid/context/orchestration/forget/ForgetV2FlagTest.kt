@@ -38,15 +38,15 @@ class ForgetV2FlagTest {
     @Before fun setUp() { WorkManagerTestInitHelper.initializeTestWorkManager(ctx); MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx)); ForgetV2.testOverride = null }
     @After fun tearDown() { DeveloperFlags.setForgetV2(ctx, false); ForgetV2.testOverride = null; Leases.shared.revokeAll(); graph.db.close(); MemoryGraph.resetForTests(null) }
 
-    @Test fun theFlagIsOffByDefaultAndLivesInTheBackupExcludedDeveloperPreferences() {
+    @Test fun theFlagIsOnByDefaultAndLivesInTheBackupExcludedDeveloperPreferences() {
         assertEquals("pc_dev", DeveloperFlags.PREFS); assertEquals(ForgetV2.PREFS, DeveloperFlags.PREFS); assertEquals(ForgetV2.KEY, DeveloperFlags.FORGET_V2)
-        assertFalse(DeveloperFlags.forgetV2(ctx))
+        assertTrue("ON by default since 26 Nov (owner 6b)", DeveloperFlags.forgetV2(ctx))
         graph // installs the reader
-        assertFalse(ForgetV2.on)
-        DeveloperFlags.setForgetV2(ctx, true)
         assertTrue(ForgetV2.on)
         DeveloperFlags.setForgetV2(ctx, false)
         assertFalse(ForgetV2.on)
+        DeveloperFlags.setForgetV2(ctx, true)
+        assertTrue(ForgetV2.on)
     }
 
     @Test fun aRealPhotoForgetWithTheFlagOnDeletesTheV1SetAndRevokesTheLeases() = runBlocking {

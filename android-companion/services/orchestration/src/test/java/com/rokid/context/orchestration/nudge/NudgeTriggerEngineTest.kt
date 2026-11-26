@@ -59,6 +59,7 @@ class NudgeTriggerEngineTest {
     private lateinit var ai: AiGraph
 
     @Before fun setUp() {
+        com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = false
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         // every reply is a different text, so only the gates under test can drop a run
         ai = TestAi.graph(ctx) { calls++; """{"shouldNudge":true,"text":"Milk is nearly out ${++n}","why":"w","sourceIds":["rokid_mem_1"],"priority":"normal"}""" }
@@ -66,7 +67,7 @@ class NudgeTriggerEngineTest {
         runBlocking { MemoryGraph.get(ctx).memories.add(LegacyImporter.toMemory("rokid_mem_1", "short_term", 0.9, now - 3_600_000L, "Milk carton nearly empty")) }
     }
 
-    @After fun tearDown() { AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
+    @After fun tearDown() { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = null; AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
     private fun planOf(trigger: String, target: String = "both", perHour: Int = 4, signal: FlowPlan.Signal? = null) =
         FlowPlan.BUILT_IN_NUDGE.copy(trigger = trigger, maxPerHour = perHour, target = target, signal = signal)

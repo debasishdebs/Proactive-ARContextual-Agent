@@ -62,6 +62,12 @@ interface MomentLocationControl {
     suspend fun deleteAll(): Int
 }
 
+/** The Forget v2 switch (multi-select Forget and the fuller Forget rules). Default ON; a failed read counts as off. */
+interface ForgetV2Control {
+    fun isOn(): Boolean
+    fun setOn(on: Boolean)
+}
+
 /** One line on screen; [ids] = every record it stands for (all are resumed by "Resume all shown"). */
 data class PauseRow(val id: String, val label: String, val ids: Set<String> = setOf(id))
 
@@ -72,6 +78,8 @@ data class PrivacyUiState(
     val toMinute: Int = PrivacyModel.DEFAULT_TO,
     /** Null where the Moment location setting is not wired (tests, previews): the card is then not shown. */
     val momentLocation: MomentLocationUi? = null,
+    /** Null where the switch is not wired: the card is not shown. */
+    val forgetV2: Boolean? = null,
 ) {
     val quietError: String? get() = if (quietEnabled && fromMinute == toMinute) PrivacyModel.EQUAL_BOUNDS else null
     val canSave: Boolean get() = quietEnabled && quietError == null
@@ -125,6 +133,7 @@ class PrivacyViewModel(
     private val clock: () -> Long = System::currentTimeMillis,
     private val work: CoroutineDispatcher = Dispatchers.Default,
     private val momentLoc: MomentLocationControl? = null,
+    private val forgetV2Control: ForgetV2Control? = null,
 ) : ViewModel() {
     private data class Draft(val enabled: Boolean, val from: Int, val to: Int)
 
@@ -139,11 +148,15 @@ class PrivacyViewModel(
 
     init { refreshLocationCount() }
 
-    val state: StateFlow<PrivacyUiState> = combine(control.activePauses, draft, loc) { pauses, d, l ->
-        PrivacyUiState(PrivacyModel.rows(pauses), d.enabled, d.from, d.to, l)
+    private val v2 = MutableStateFlow(forgetV2Control?.isOn())
+
+    fun setForgetV2(on: Boolean) { val c = forgetV2Control ?: return; c.setOn(on); v2.value = on }
+
+    val state: StateFlow<PrivacyUiState> = combine(control.activePauses, draft, loc, v2) { pauses, d, l, f ->
+        PrivacyUiState(PrivacyModel.rows(pauses), d.enabled, d.from, d.to, l, f)
     }.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5_000),
-        PrivacyUiState(quietEnabled = draft.value.enabled, fromMinute = draft.value.from, toMinute = draft.value.to, momentLocation = loc.value),
+        PrivacyUiState(quietEnabled = draft.value.enabled, fromMinute = draft.value.from, toMinute = draft.value.to, momentLocation = loc.value, forgetV2 = v2.value),
     )
 
     private fun refreshLocationCount() {
@@ -204,11 +217,12 @@ class PrivacyCallbacks(
     val momentLocation: (Boolean) -> Unit = {},
     val keepLocations: () -> Unit = {},
     val deleteLocations: () -> Unit = {},
+    val forgetV2: (Boolean) -> Unit = {},
 ) {
     companion object {
         fun of(vm: PrivacyViewModel, back: () -> Unit, openZones: () -> Unit = {}) = PrivacyCallbacks(
             back, vm::pauseFor, vm::resumeShown, vm::setQuietEnabled, vm::setQuietFrom, vm::setQuietTo, vm::saveQuietHours, openZones,
-            vm::setMomentLocation, vm::keepSavedLocations, vm::deleteSavedLocations,
+            vm::setMomentLocation, vm::keepSavedLocations, vm::deleteSavedLocations, vm::setForgetV2,
         )
     }
 }
@@ -216,7 +230,7 @@ class PrivacyCallbacks(
 /** Settings › Privacy route: the VM over the shared pause control ([SettingsDeps.pauses]) and the hub's HUD settings. */
 @Composable
 fun PrivacyRoute(deps: SettingsDeps, back: () -> Unit, openZones: () -> Unit = {}) {
-    val vm = viewModel { PrivacyViewModel(deps.pauses, deps.hud, momentLoc = deps.momentLocation) }
+    val vm = viewModel { PrivacyViewModel(deps.pauses, deps.hud, momentLoc = deps.momentLocation, forgetV2Control = deps.forgetV2) }
     val state by vm.state.collectAsStateWithLifecycle()
     PrivacyScreen(state, PrivacyCallbacks.of(vm, back, openZones))
 }
@@ -270,6 +284,13 @@ fun PrivacyScreen(state: PrivacyUiState, on: PrivacyCallbacks) {
                 }
             }
         }
+        state.forgetV2?.let { f ->
+            item {
+                SettingsCard {
+                    SwitchRow("Select several to Forget", "Long-press in the Activity lists to select items and Forget them together. Also applies the fuller Forget rules: answers, history and Scenes built from forgotten items are cleaned up too. Turn off to go back to the earlier behaviour.", f, on.forgetV2, tag = "forget_v2_switch")
+                }
+            }
+        }
         item {
             SettingsCard {
                 Text("Pause zones", style = MaterialTheme.typography.titleMedium)
@@ -292,4 +313,10 @@ class AppMomentLocation(private val app: android.content.Context) : MomentLocati
     override fun setOn(on: Boolean) = com.rokid.context.orchestration.forget.DeveloperFlags.setMomentLocation(app, on)
     override suspend fun count() = com.rokid.context.canvas.moment.MomentLocationGraph.count(app)
     override suspend fun deleteAll() = com.rokid.context.canvas.moment.MomentLocationGraph.deleteAll(app)
+}
+
+/** The production [ForgetV2Control]: the Developer flag file (`pc_dev`), the same preference the Forget executor reads on every Forget. */
+class AppForgetV2(private val app: android.content.Context) : ForgetV2Control {
+    override fun isOn() = com.rokid.context.orchestration.forget.DeveloperFlags.forgetV2(app)
+    override fun setOn(on: Boolean) = com.rokid.context.orchestration.forget.DeveloperFlags.setForgetV2(app, on)
 }

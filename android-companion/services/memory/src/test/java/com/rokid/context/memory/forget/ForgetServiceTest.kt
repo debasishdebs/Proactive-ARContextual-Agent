@@ -37,7 +37,8 @@ class ForgetServiceTest {
     private val proposals = ProposalRepository(db.proposalDao(), db.actionDao(), db)
     private val service = ForgetService(db, proposals) { 1_000 }
 
-    @After fun close() = db.close()
+    @org.junit.Before fun legacy() { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = false } // the v1 path; the production default is ON since 26 Nov
+    @After fun close() { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = null; db.close() }
 
     private suspend fun mem(id: String, frameId: String? = null, derived: Boolean = false, text: String = "text of $id", review: ReviewState = ReviewState.OK,
                             delivered: Boolean? = null, flaggedAt: Long? = null, createdAt: Long = 1) =

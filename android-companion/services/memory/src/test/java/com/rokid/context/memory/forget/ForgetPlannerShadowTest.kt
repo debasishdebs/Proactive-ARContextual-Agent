@@ -26,7 +26,9 @@ class ForgetPlannerShadowTest {
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
     private val w = GoldenWorld(db)
     private val planner = ForgetPlanner(db)
-    @After fun close() = db.close()
+    /** These tests pin the v1 (legacy) Forget: the production default is ON since 26 Nov (owner 6b), so the switch is set explicitly. */
+    @org.junit.Before fun legacy() { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = false }
+    @After fun close() { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = null; db.close() }
 
     /** Tables whose rows are control data, fences, counters or the edges and parts of a node that is itself compared: no ref of their own. */
     private val ignored = setOf(

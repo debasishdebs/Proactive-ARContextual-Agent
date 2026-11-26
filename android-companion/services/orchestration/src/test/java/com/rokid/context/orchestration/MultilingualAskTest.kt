@@ -73,7 +73,7 @@ class MultilingualAskTest {
         assertFalse(DeveloperFlags.multilingualAsk(ctx))
         DeveloperFlags.setMultilingualAsk(ctx, true); assertTrue(DeveloperFlags.multilingualAsk(ctx))
         DeveloperFlags.setMultilingualAsk(ctx, false); assertFalse(DeveloperFlags.multilingualAsk(ctx))
-        assertFalse("forgetV2 is untouched", DeveloperFlags.forgetV2(ctx))
+        assertTrue("forgetV2 is untouched (default ON since 26 Nov)", DeveloperFlags.forgetV2(ctx))
     }
 
     @Test fun flagOffTheBuiltInAskMakesNoCondenseCallAndNoLexiconHit() = runBlocking<Unit> {

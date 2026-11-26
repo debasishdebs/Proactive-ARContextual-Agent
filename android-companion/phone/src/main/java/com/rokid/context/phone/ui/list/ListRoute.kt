@@ -28,14 +28,14 @@ fun ListViewRoute(kind: ListKind, ids: List<String>, scope: ListScope?, deps: Ph
     val breakdown = vm.breakdown?.let { b ->
         BreakdownUi(b.tree, vm.view, vm::setView, BreakdownActions(vm::toggleDay, vm::toggleHour, vm::previousPage, vm::nextPage))
     }
-    // Multi-select Forget exists only while the Developer flag `forgetV2` is ON (default OFF): with it OFF the port is null and the list is exactly the unselectable one.
+    // Multi-select Forget exists only while the `forgetV2` setting is ON (default ON since 26 Nov, Settings > Privacy switch): with it OFF the port is null and the list is exactly the unselectable one.
     vm.forgetPort = SelectionGate.port(app)
     ListScreen(vm.source, onBack = back, onMessage = { Toast.makeText(app, it, Toast.LENGTH_SHORT).show() }, breakdown = breakdown, selection = vm.selection, filter = if (vm.canFilter) FilterUi(vm.filter, vm::applyFilter, vm::clearFilter) else null)
 }
 
-/** The one switch of the multi-select Forget (proxy ruling P2: flagged, default OFF, Developer only until the real user rules). */
+/** The one switch of the multi-select Forget (proxy ruling P2; default ON since owner round 6b, with a Settings > Privacy switch). */
 object SelectionGate {
-    /** The production Forget behind selection, or null while `DeveloperFlags.forgetV2` is OFF. Read on every composition (a cached preference), so the switch takes effect at once. */
+    /** The production Forget behind selection, or null while the `forgetV2` setting is OFF. Read on every composition (a cached preference), so the switch takes effect at once. */
     fun port(context: android.content.Context): SelectionForgetPort? = if (DeveloperFlags.forgetV2(context)) ProductionSelectionForget(context.applicationContext) else null
 }
 
