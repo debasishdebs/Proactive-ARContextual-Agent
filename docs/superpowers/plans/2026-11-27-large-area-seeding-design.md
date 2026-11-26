@@ -134,3 +134,27 @@ A fake `PlaceHttp` scripted per call kind (geosearch, intro, Wikidata, Overpass)
 6. Should seeds keep the OSM-only sites (no Wikipedia article) when Overpass answers? Today they are stored; the seed-data ruling does not mention them.
 7. Country scale: staged seeding only (no whole-country button), and whether a prebuilt region pack is worth designing later.
 8. Whether to build the small phone slice before 1 Dec at all (it needs its own install and device test), or only the Mac measurement.
+
+## 8. Measured 27 Nov (Mac, `tools/measure/measure_blocks.py`; aggregates only)
+
+Method: serial, one request every 2 s, descriptive User-Agent with the repository address, Retry-After honoured, stop on two 429s in a row, hard cap 400. About 195 requests in total over three runs; every Wikimedia/Wikidata answer was HTTP 200, no 429 at any point. A first run used 20.0 km boxes and was refused by the API as too big (areas just over 400 km2 after rounding), so the final sample uses 19.8 x 19.8 km blocks (this refines the "20 x 20 km" claim in section 2: 20.0 km exactly is over the limit).
+
+1. Geosearch over 60 blocks of 19.8 x 19.8 km, deterministic grid sample across a desert/semi-arid state (no failures):
+   - 35% of blocks empty (0 hits); 0% at the 500 cap; non-empty blocks: median 2, mean 3.5, p90 7 hits; mean over all blocks 2.3 hits.
+   - Median 620 ms per call (p90 700 ms).
+   - Consequence: the planning figure of about 15 hits per block (sections 3(7)) was far too high for this kind of area; the real figure is about 2 per block.
+2. Wikidata SPARQL (app rule: P31 in the 47 admitted classes or a curated id, plus an English Wikipedia article; no person check, no subclass walk):
+   - 100 km box: 1.4 s, 5 rows, 1.3 KB. 200 km box: 9.2 s, 19 rows, 4.7 KB. 300 km box (run for the intro sample): 10.4 s, 72 rows, 17 KB. No timeout, no 429, no row limit reached (all inside the 60 s limit; the time grows faster than the area but is far from the limit at 200 to 300 km).
+   - Same 100 km box through geosearch: 25 blocks (25 calls, plus 12 calls to read the classes of 259 hits) found 259 articles, of which 4 pass the class rule (1.5%). Overlap: 4 in both, 1 SPARQL only, 0 geosearch only. So SPARQL missed nothing the app's path finds; it found one more (a place whose Wikidata coordinate is inside the box, but whose article coordinate is not or is missing). The "house or building with heritage listing" count for a US tile was not measured (no US sample was run).
+3. Intro text, 2 calls of 20 titles (qualifying titles, `exsentences=3`): median 1,260 ms per call, median 289 characters per intro (mean 305; the app caps it at 400).
+4. Overpass, one try per mirror, one block-sized query each, no retry: first mirror HTTP 502 after 0.6 s; the other two gave no answer within the 30 s client timeout. All three failed, as expected, from this Mac too, so the failure is not only the phone's network path.
+5. Implied cost to seed (calls = geosearch + intro + class calls; time = calls x (measured call time + the app's 0.4 s gap), Overpass down; the class call is taken as 620 ms, not measured separately; hit counts from the sample above, so they are Rajasthan-like; a denser mountain area will cost more):
+
+| Area | Per-cell design (today) | 16-cell block design |
+|---|---|---|
+| Rajasthan, 13,700 cells, about 860 blocks | about 17,600 calls (13,700 geosearch + up to 3,900 for the at most 1,950 non-empty cells), about 5.3 h; with Overpass up add 13,700 calls (about 3.5 h more) | about 2,000 calls (860 geosearch + 2 per each of about 560 non-empty blocks), about 40 min |
+| Sikkim + Darjeeling, 2,100 cells, 131 blocks | about 2,700 calls, about 50 min | about 300 calls, about 6 min (if every block were non-empty: about 390 calls, 8 min) |
+
+Block design is about 9 times fewer calls and 8 times less time for Rajasthan. Not a 429 risk in this sample at 1 request per 2 s; the app's 0.4 s gap was not tested against throttling here.
+
+What this changes in the design: the 500-hit split is rarely needed in sparse areas (none of 60 blocks, none of 25 more); the saving comes from empty and near-empty blocks, which are the large majority. SPARQL is fast and complete enough at 100 to 300 km for a state, but gives only about 5 to 70 places per tile in this area, so for a state-sized area it would replace about 25 geosearch calls with one; it still needs the intro call. The estimate of time in section 3(7) for Rajasthan (1 to 2 h) was pessimistic: about 40 min is the measured-rate figure.
