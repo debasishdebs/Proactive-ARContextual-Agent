@@ -158,3 +158,101 @@ Method: serial, one request every 2 s, descriptive User-Agent with the repositor
 Block design is about 9 times fewer calls and 8 times less time for Rajasthan. Not a 429 risk in this sample at 1 request per 2 s; the app's 0.4 s gap was not tested against throttling here.
 
 What this changes in the design: the 500-hit split is rarely needed in sparse areas (none of 60 blocks, none of 25 more); the saving comes from empty and near-empty blocks, which are the large majority. SPARQL is fast and complete enough at 100 to 300 km for a state, but gives only about 5 to 70 places per tile in this area, so for a state-sized area it would replace about 25 geosearch calls with one; it still needs the intro call. The estimate of time in section 3(7) for Rajasthan (1 to 2 h) was pessimistic: about 40 min is the measured-rate figure.
+
+## 9. Sikkim coverage 27 Nov (Mac, `tools/measure/measure_region.py`; counts and landmark yes/no only)
+
+Method as section 8 (serial, 1 request per 2 s, the app's User-Agent, no 429, every answer HTTP 200). Box: the trip region, 27.0 to 28.2 N, 87.9 to 89.1 E (about 133 x 118 km), cut into 4 sub-boxes of about 67 x 59 km. The query shape that works is `SERVICE wikibase:box`, then the English-Wikipedia sitelink join, then `OPTIONAL { ?item wdt:P31 ?cls }`, `ORDER BY ?item`, no sub-select (a first draft with a sub-select timed out at 65 s with HTTP 504 on all four sub-boxes; the fixed shape needs 0.9 to 4.1 s).
+
+Counts (items with an English Wikipedia article and a Wikidata coordinate inside the box):
+
+| Measure | Count |
+|---|---|
+| Items with an article | 532 (9 have no P31 at all) |
+| Pass the APP rule (P31 in the 47 admitted classes, or one of the 19 curated ids, and no person class) | 53 (10%) |
+| Pass a LOOSER rule (app rule plus 26 extra class ids: monastery/gompa, viewpoint, lake, peak/summit/mountain, protected area, national park, wildlife refuge, hill station, bridge, museum, park, waterfall, mountain pass) | 142 (27%) |
+
+Landmarks (matched by article title in the SPARQL result; "app" = would the app's class rule admit it; the 1 km column is the app's Wikipedia-versus-Wikidata coordinate check, section 9.2):
+
+| Landmark | In SPARQL result | Passes app rule | Passes looser rule |
+|---|---|---|---|
+| Rumtek Monastery | yes | yes | yes |
+| Pemayangtse Monastery | yes | yes | yes |
+| Tsomgo (Changu) Lake | yes | yes | yes |
+| Nathu La | yes | no | yes (mountain pass) |
+| Tiger Hill (Darjeeling) | no (its Wikidata point is 27.0 N minus 0.005 degrees, just outside the box) | yes (curated id) | yes |
+| Batasia Loop | yes | yes (curated) | yes |
+| Himalayan Mountaineering Institute | yes | no (class school) | no |
+| Kangchenjunga (mountain, South summit, conservation area) | yes | no | yes |
+| Namchi Char Dham | no (no article found under the names tried) | no | no |
+| Ravangla Buddha Park | yes | no (colossal statue + park) | yes |
+| Yuksom | yes | no (human settlement) | no |
+| Kalimpong Durpin Dara | no (article "Durpin Hill" has no Wikipedia coordinate) | no | no |
+| Enchey Monastery | yes | yes | yes |
+| Ghum Monastery | yes | yes | yes |
+| Darjeeling Peace Pagoda | yes | yes | yes |
+| Khecheopalri Lake | yes | yes (curated) but dropped by the 1 km rule | yes, same drop |
+| Rabdentse ruins | yes | yes | yes |
+| Do-drul Chorten | yes | yes (curated) but dropped by the 1 km rule | yes, same drop |
+| Banjhakri Falls | yes | yes (curated) | yes |
+| Padmaja Naidu Himalayan Zoological Park | yes | no (zoo) | no |
+| Pelling | yes | no (human settlement) | no |
+| Gangtok | yes | no (city) | no |
+
+Of 20 landmarks: 14 in the SPARQL result and 1 more only just outside the box edge; 11 pass the app rule (9 after the 1 km rule... see 9.2); looser rule adds Nathu La, Kangchenjunga, Ravangla Buddha Park (3 of the 9 that the app misses; the other 6 are settlements, a school, a zoo or have no article/coordinate, which no class list should admit).
+
+### 9.1 What the 89 extra items are
+Looser rule adds 89 items: mountain 27, tea garden 20 (not in the looser list above, it matched "garden"), protected area 9, mountain pass 7, summit 4, lake 4 (+1 proglacial), waterfall 3, national park 3, gompa 3, wildlife refuge 3, sacred mountain 2, road bridge 2, and about 8 singles (museum, park, ridge, sanctuary, bird sanctuary, range, mountain railway).
+
+### 9.2 The 1 km coordinate rule
+For the 142 looser-passing titles one Wikipedia `prop=coordinates` call per 50 titles (3 calls): 16 disagree with Wikidata by more than 1 km (5 of them pass the app rule, 11 only the looser rule) and 12 have no Wikipedia coordinate at all. The app drops a place on disagreement, so a bulk seed that copies this rule drops those 16 (two of the headline sights, Khecheopalri Lake and Do-drul Chorten, are among them). This is a decision for the owner: the rule was built for geosearch, where the Wikipedia point is what finds the place; in a bulk seed, the Wikidata point is the one used and the check is optional (3 calls saved, 5 more app places kept).
+
+### 9.3 Per-cell geosearch path against SPARQL on 8 sample blocks of 19.8 km
+Blocks: the 6 densest app-rule areas plus 2 sparse corners. Totals: geosearch returned 255 articles, 34 pass the app rule; SPARQL in the same blocks found 40 passing the app rule. Both: 31; geosearch only: 3; SPARQL only: 9. So bulk finds about 18% more app-rule places than the geosearch path, and misses 3 (places whose Wikipedia coordinate is in the block but whose Wikidata coordinate is not, or none). Cost of the geosearch path in these blocks: 26 calls for 8 blocks (1 geosearch plus 2 class calls where there were hits); per-cell with 5 km cells it would be up to 16 times the geosearch calls.
+
+## 10. Bulk Wikidata end-to-end 27 Nov (Mac; counts only)
+
+53 requests in the run (plus about 14 in two earlier probes and one title check), all HTTP 200, no 429, no timeout, no row limit.
+
+SPARQL timing and size (one query each, all inside the 60 s limit by a large margin):
+
+| Query | Rows | Items | Time | Size |
+|---|---|---|---|---|
+| Trip region, 4 sub-boxes (67 x 59 km) | 322, 237, 42, 35 | 532 together | 2.9, 4.1, 0.9, 1.0 s | 206, 152, 27, 22 KB |
+| Same sub-box 1 with 200-row pages | 322 in 2 pages (200 + 122) | same | 2.2 + 1.3 s | 206 KB; equals the one-page result |
+| Whole trip region as one box (133 x 118 km) | 630 | 532 | 2.0 s | 403 KB |
+| 200 km box centred on the region | 1,201 | 1,022 | 3.8 s | 766 KB |
+| Dense: a very large metro area, 100 km box | 2,500 | 1,947 (109 app, 137 looser) | 6.0 s | 1.6 MB |
+| Semi-arid state sample, 200 km box A | 129 | 122 (3 app, 6 looser) | 2.1 s | 83 KB |
+| Same, 200 km box B | 293 | 258 (20 app, 28 looser) | 6.0 s | 187 KB |
+| Same, 300 km box | 762 | 697 (22 app, 32 looser) | 2.8 s | 486 KB |
+| Same, 400 km box (includes a large city) | 1,636 | 1,476 (78 app, 104 looser) | 6.7 s | 1.05 MB |
+
+- No row limit appears (largest page 2,500 rows with a 5,000 limit set by us); times are not monotone with area (cache, density), the worst was 6.7 s at 400 km, so the largest box that stays under 60 s was not reached: at least 400 km x 400 km is safe in this kind of area. A dense metro box is 3 times slower than a sparse one of the same size and 8 times larger in bytes. Plan with 100 km boxes in dense cities and 200 to 300 km elsewhere; paging works (ORDER BY ?item, LIMIT/OFFSET) but is not needed below about 5,000 rows.
+- Intro text for qualifying items only: 142 titles (looser rule) in 8 calls of 20, median 2.4 s per call, mean 254 characters (after the 400 cap). For the app rule alone: 53 titles, 3 calls.
+- 1 km coordinate check: 3 calls (see 9.2).
+- Class label call (only for this measurement, not needed in the app): 3 calls.
+
+### Trip region, whole seed simulated
+| | calls | wall time (measured, plus the app's 0.4 s gap) |
+|---|---|---|
+| Bulk Wikidata, app rule: 4 SPARQL + 3 intro + 2 coordinate | 9 | about 25 s |
+| Bulk Wikidata, looser rule: 4 SPARQL + 8 intro + 3 coordinate | 15 | about 60 s |
+| Stored size at 0.7 KB per place | 53 places: about 37 KB; 142 places: about 100 KB | |
+
+### Comparison table
+| | Per-cell (today) | 16-cell block geosearch | Bulk Wikidata |
+|---|---|---|---|
+| Trip region (about 650 cells of 5 km, 42 blocks of 19.8 km) calls | about 1,300 to 2,000 (2 per empty cell, 4 or more per busy one) | about 250 (42 geosearch + about 2 to 4 per non-empty block) | 9 (app rule) or 15 (looser) |
+| Time | about 25 to 35 min | about 5 min | under 1 min |
+| Places found, app rule | about 34 per 8 sample blocks (same hits as block design) | same as per-cell | 40 per the same 8 blocks (+18%); 53 in the whole region |
+| Places missed (landmarks, app rule, 20 tested) | Khecheopalri and Do-drul dropped by the 1 km rule in all three; Tiger Hill found by geosearch only if its Wikipedia point is in a cell (it is in the next cell south of the box edge) | same | same two dropped if the 1 km check is kept; none if it is dropped |
+| Large semi-arid state (13,700 cells, about 342,000 km2): calls | about 17,600 (13,700 geosearch + class calls), 5.3 h | about 2,000, 40 min | about 10 SPARQL (200 km boxes, 16 if the bounding box is used) + about 15 to 20 intro + 6 coordinate = about 30 to 45 calls, about 2 to 3 min |
+| Places found | about 100 to 300 (app rule, from the sample boxes: 3 to 22 per 200 to 300 km box, 78 in a box with a large city) | same | same set or 18% more |
+
+What bulk does NOT do: it finds only places that have a Wikidata coordinate (the geosearch path also finds articles with only a Wikipedia coordinate: the 3 geosearch-only), and it does not replace Overpass (OSM-only objects stay as today).
+
+### Recommendation
+1. Build bulk Wikidata first (one request replaces 25 to 400 geosearch calls; every query in this run was under 7 s); keep the per-cell/block geosearch only as the fallback and for the 3 geosearch-only places. The first slice: SPARQL in 100 km sub-boxes (200 to 300 km in sparse country, 100 km around a big city), the existing class rule, intro for qualifying items only, and an owner decision on the 1 km check (keep for parity, or drop since the Wikidata point is the one stored).
+2. Loosen the class rule modestly (below), and only for the bulk path where a missed class costs nothing but a larger result.
+
+Classes to add (expected size increase in the trip region, from the counts above): lake Q23397 and glacial/proglacial lake (+5), waterfall Q34038 (+3), mountain pass Q133056 (+7), gompa Q1559394 (+3), national park Q46169 and wildlife refuge Q1377575 and sanctuary/bird sanctuary (+8), protected area Q473972 (+9; these are large areas, give them a radius cap), road bridge Q537127 (+2), park Q22698 and Tibet museum Q1139682 (+2): about +39 places, 53 to about 92 (+74%). A second step, mountain Q8502 and summit Q207326 and sacred mountain Q1595289 (+33, includes Kangchenjunga and Nathu La's range), is worth it in a mountain trip but noisy elsewhere: make it a toggle. Do not add: tea garden Q1827414 (+20, tea estates are mostly not visitor sights), villages, human settlements, constituencies, schools (these are the 479 non-passing items and are what the class rule rightly excludes). Everything together is the 142 figure.
