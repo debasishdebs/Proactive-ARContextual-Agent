@@ -38,10 +38,16 @@ class ImportFrameStore(
     private val writeStamped: (File, ByteArray, Long) -> Unit,
     private val now: () -> Long = System::currentTimeMillis,
 ) : ImportFrameWriter {
-    override suspend fun store(frame: DumpImportParser.Frame): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun store(frame: DumpImportParser.Frame): Boolean = store(frame, MemoryWipe.generation.get())
+
+    /** [gen0] is the Delete all generation the IMPORT REQUEST started with (round 4): a wipe between the importer's check and this write is caught too. */
+    override suspend fun store(frame: DumpImportParser.Frame, gen0: Long): Boolean = withContext(Dispatchers.IO) {
         val ext = when (DumpReader.sniff(frame.photo)) { "image/png" -> "png"; "image/webp" -> "webp"; else -> "jpg" }
         val file = File(RokidFrameInbox.archiveDir(app).apply { mkdirs() }, "${frame.id}.$ext")
-        val gen = MemoryWipe.generation.get()
+        val gen = gen0
+        // a file with this frame id is already in the archive (a live capture committed it after the preflight): never overwrite it, never delete it
+        if (listOf("jpg", "png", "webp").any { File(file.parentFile, "${frame.id}.$it").exists() }) return@withContext false
+        if (MemoryWipe.generation.get() != gen) return@withContext false
         writeStamped(file, FrameImages.forDisk(frame.photo), frame.capturedAtMs)
         val receipt = ReceiptMeta(
             wireFrameId = frame.id, capturedAtMs = frame.capturedAtMs, motion = frame.motion, dwell = frame.dwell, blur = frame.blur, dhash = frame.dhash, phash = frame.phash,

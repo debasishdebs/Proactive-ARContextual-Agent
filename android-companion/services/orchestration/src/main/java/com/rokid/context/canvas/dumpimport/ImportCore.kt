@@ -277,7 +277,11 @@ object DumpImportParser {
 }
 
 /** What the importer writes through. The production implementations ([ImportFrameStore], [ImportMemoryStore]) call the app's normal ingest; tests pass fakes over the same intake. */
-fun interface ImportFrameWriter { suspend fun store(frame: DumpImportParser.Frame): Boolean }
+fun interface ImportFrameWriter {
+    suspend fun store(frame: DumpImportParser.Frame): Boolean
+    /** [gen0] = the Delete all generation the request began with; a writer that can must refuse when it moved. */
+    suspend fun store(frame: DumpImportParser.Frame, gen0: Long): Boolean = store(frame)
+}
 fun interface ImportCardWriter { suspend fun store(card: DumpImportParser.Card): String }
 /** What the importer needs from the Scene builder: a normal rebuild of the clock hours of a time span, and the guarded derived-text write with the attribution `imported`. */
 interface ImportSceneWriter {
@@ -472,7 +476,7 @@ class DumpImporter(
         }
         for (f in m.frames) {
             check(gen0)
-            if (frames.store(f)) { nf++; written += f.id } else ok = false
+            if (frames.store(f, gen0)) { nf++; written += f.id } else ok = false
         }
         for (x in m.memories) {
             check(gen0)
