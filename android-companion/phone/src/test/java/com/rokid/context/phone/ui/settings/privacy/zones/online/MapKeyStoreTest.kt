@@ -63,4 +63,19 @@ class MapKeyStoreTest {
         val logged = files.filter { f -> f.name in allowed && Regex("""PcLog\.\w+\([^)]*(key|Key)""").containsMatchIn(f.readText()) }.map { it.name }
         assertEquals("the key must never reach a log line: $logged", emptyList<String>(), logged)
     }
+
+    /** review2 #7: the control's Save and Clear never touch the encrypted vault on the calling (Main) thread. */
+    @Test fun saveAndClearCommitOffTheCallingThread() = kotlinx.coroutines.runBlocking {
+        val caller = Thread.currentThread(); val seen = mutableListOf<Thread>()
+        val inner = InMemoryKeyVault()
+        val vault = object : KeyVault {
+            override fun get(ref: String): String? { seen += Thread.currentThread(); return inner.get(ref) }
+            override fun put(ref: String, key: String) { seen += Thread.currentThread(); inner.put(ref, key) }
+            override fun remove(ref: String) { seen += Thread.currentThread(); inner.remove(ref) }
+        }
+        val control = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { MapKeyControls.read(MapKeyStore(vault)) } // the build itself is done off Main by rememberOnlineDeps
+        assertTrue(control.save("abc_DEF-123")); control.clear()
+        assertEquals("the vault was reached, and never on the caller", true, seen.isNotEmpty() && seen.none { it === caller })
+        assertNull(inner.get(MapKeyStore.REF))
+    }
 }

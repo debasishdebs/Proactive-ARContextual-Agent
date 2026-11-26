@@ -141,7 +141,8 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
     val networkOnline by remember(deps) { deps.networkOnline() }.collectAsStateWithLifecycle(true)
     val offline = deps.offlineMap?.let { make -> remember { make() } }
     var keyEpoch by remember { mutableStateOf(0) } // a saved or cleared map key rebuilds the street-map wiring
-    val online = deps.onlineMap?.let { make -> remember(keyEpoch) { make() } }?.let { d -> rememberOnlinePanel(d, ::granted, vm::requestLocation) { keyEpoch++ } }
+    val onlineDeps = com.rokid.context.phone.ui.settings.privacy.zones.online.rememberOnlineDeps(deps.onlineMap, keyEpoch) // built on IO
+    val online = onlineDeps.deps?.let { d -> rememberOnlinePanel(d, ::granted, vm::requestLocation) { keyEpoch++ } }
     val seedPanel = seed?.let { c ->
         val seedVm = viewModel(key = "seed_map") { SeedMapViewModel(c) }
         val seedState by seedVm.state.collectAsStateWithLifecycle()

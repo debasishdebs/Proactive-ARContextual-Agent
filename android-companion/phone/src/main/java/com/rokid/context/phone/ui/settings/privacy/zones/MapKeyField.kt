@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import kotlinx.coroutines.launch
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -36,6 +37,7 @@ internal fun MapKeyField(keys: MapKeyControl, onChanged: () -> Unit) {
     var text by remember { mutableStateOf("") }
     var shown by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     Column {
         OutlinedTextField(
             value = text, onValueChange = { text = it; error = null }, singleLine = true, isError = error != null,
@@ -48,9 +50,10 @@ internal fun MapKeyField(keys: MapKeyControl, onChanged: () -> Unit) {
         )
         PrimaryAction("Save map key", {
             if (!com.rokid.context.phone.ui.settings.privacy.zones.online.MapKeyStore.valid(text.trim())) error = MapKeyWords.INVALID
-            else if (keys.save(text)) { text = ""; shown = false; error = null; onChanged() }
-            else error = MapKeyWords.FAILED
+            else scope.launch { // review2 #7: the encrypted commit runs on IO (the control hops there), never on Main
+                if (keys.save(text)) { text = ""; shown = false; error = null; onChanged() } else error = MapKeyWords.FAILED
+            }
         }, tag = "map_key_save", enabled = text.isNotBlank())
-        if (keys.hasStoredKey) SecondaryAction("Clear map key", { keys.clear(); text = ""; error = null; onChanged() }, tag = "map_key_clear")
+        if (keys.hasStoredKey) SecondaryAction("Clear map key", { scope.launch { keys.clear(); text = ""; error = null; onChanged() } }, tag = "map_key_clear")
     }
 }

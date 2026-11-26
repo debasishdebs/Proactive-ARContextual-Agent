@@ -113,7 +113,8 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
     LaunchedEffect(ui.savedTick) { if (ui.savedTick > 0 && !granted()) zonesVm.requestLocation() } // a saved zone with location off: the same prompt the shipped screen shows
     val offline = deps.offlineMap?.let { m -> remember { m() } }
     var keyEpoch by remember { mutableStateOf(0) } // a saved or cleared map key rebuilds the street-map wiring
-    val online = deps.onlineMap?.let { m -> remember(keyEpoch) { m() } }?.let { d -> rememberOnlinePanel(d, ::granted, zonesVm::requestLocation) { keyEpoch++ } }
+    val onlineDeps = com.rokid.context.phone.ui.settings.privacy.zones.online.rememberOnlineDeps(deps.onlineMap, keyEpoch) // built on IO
+    val online = onlineDeps.deps?.let { d -> rememberOnlinePanel(d, ::granted, zonesVm::requestLocation) { keyEpoch++ } }
     // p23On is the nested Developer flag mapZonesP23 (default OFF), read by the destination; density is the production control.
     LaunchedEffect(p23On, zones.rows, zones.protectedMode) {
         mapVm.setEditGuard(if (p23On) zones.rows.associate { it.zone.id to ZoneEditPolicy.reshapeBlock(it.chip.level, it.inside, zones.protectedMode) } else null)

@@ -43,6 +43,19 @@ class MapKeyControl(
     val hasKey: Boolean,
     /** True when the key in use is the stored one (so "Clear" is offered); false for none or a debug-build fallback. */
     val hasStoredKey: Boolean,
-    val save: (String) -> Boolean,
-    val clear: () -> Unit,
+    /** review2 #7: both suspend and run on IO (the encrypted vault is never written on Main). */
+    val save: suspend (String) -> Boolean,
+    val clear: suspend () -> Unit,
 )
+
+object MapKeyControls {
+    /**
+     * Builds the control from the store as it is NOW: [MapKeyStore.hasKey] and [MapKeyStore.hasStoredKey] read the encrypted vault, so the CALLER must be off Main (`OnlineMapGraph.deps` is, see `rememberOnlineDeps`). Save and Clear
+     * hop to [io] themselves, so a click on Main never commits to the vault there.
+     */
+    fun read(store: MapKeyStore, io: kotlin.coroutines.CoroutineContext = kotlinx.coroutines.Dispatchers.IO): MapKeyControl = MapKeyControl(
+        store.hasKey(), store.hasStoredKey(),
+        { raw -> kotlinx.coroutines.withContext(io) { store.save(raw) } },
+        { kotlinx.coroutines.withContext(io) { store.clear(); Unit } },
+    )
+}

@@ -39,11 +39,11 @@ class OnlineMapGraph private constructor(private val app: Context, private val k
         val deps = OnlineMapDeps(model, source, AndroidCentreFix(app), keyControl())
     }
 
-    private fun keyControl() = MapKeyControl(keys.hasKey(), keys.hasStoredKey(), keys::save) { keys.clear() }
+    private fun keyControl() = MapKeyControls.read(keys)
 
     val provider: OnlineProvider? get() = current?.provider
 
-    /** A fresh wiring from the key as it is now; the previous one is stopped. */
+    /** A fresh wiring from the key as it is now; the previous one is stopped. Reads the encrypted vault: call it OFF Main (review2 #7: the screens use `rememberOnlineDeps`, which does). */
     @Synchronized fun deps(): OnlineMapDeps {
         current?.source?.stop()
         return Built(keys.key()).also { current = it }.deps
