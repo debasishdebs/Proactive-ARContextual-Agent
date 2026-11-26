@@ -1,6 +1,6 @@
 name: Release
 
-# DRAFT of the PCA release-signing pipeline (planned for after Sri Lanka, 1.3.0 lineage). Not yet exercised.
+# DRAFT of the PCA release-signing pipeline (planned for a later release, 1.3.0 lineage). Not yet exercised.
 # Two jobs with a protected signing boundary (release/README.md):
 #   build: NO secrets, contents: read. Builds the UNSIGNED release APKs from the checked-out ref, uploads them.
 #   sign:  environment "release" (required reviewers, deployment branch/tag rules, the secrets live THERE).

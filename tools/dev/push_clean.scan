@@ -1,0 +1,10 @@
+# Extended regexes that must match NOTHING in any file of a public branch, in any commit (checked by push_clean.sh after the strip).
+/Users/[A-Za-z0-9_.-]+
+Documents/pca-release-key[s]
+\.pca-signin[g]
+Desktop/rokid/backups/key[s]
+BEGIN (RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY
+AKIA[0-9A-Z]{16}
+gh[pousr]_[A-Za-z0-9]{30,}
+sk-[A-Za-z0-9_-]{32,}
+AIza[0-9A-Za-z_-]{35}

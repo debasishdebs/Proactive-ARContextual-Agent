@@ -114,9 +114,9 @@ The watch module has no DEBUG branches.
 **Lineage, once (done by the user, offline):**
 
 ```
-apksigner rotate --out ~/<signing dir>/pca.lineage \
+apksigner rotate --out <signing dir>/pca.lineage \
   --old-signer --ks ~/.android/debug.keystore --ks-key-alias androiddebugkey \
-  --new-signer --ks ~/<signing dir>/release.jks --ks-key-alias pca
+  --new-signer --ks <signing dir>/release.jks --ks-key-alias pca
 ```
 
 - The same lineage signs all three APKs.
@@ -126,19 +126,19 @@ apksigner rotate --out ~/<signing dir>/pca.lineage \
 **Sign** (after `assembleRelease`, which today produces unsigned APKs because no `signingConfig` is set):
 
 ```
-apksigner sign --ks ~/.android/debug.keystore --next-signer --ks ~/<signing dir>/release.jks \
-  --lineage ~/<signing dir>/pca.lineage --rotation-min-sdk-version 28 --ks-pass env:PCA_OLD_PASS ...
+apksigner sign --ks ~/.android/debug.keystore --next-signer --ks <signing dir>/release.jks \
+  --lineage <signing dir>/pca.lineage --rotation-min-sdk-version 28 --ks-pass env:PCA_OLD_PASS ...
 ```
 
 **Gradle:**
 
 - No release `signingConfig`. AGP has no DSL for a lineage (**UNVERIFIED** for the AGP version in use).
-- A new script, `tools/sign-release.sh`, reads paths and aliases from `~/<signing dir>/signing.properties` and passwords from the macOS Keychain (`security find-generic-password -w`) into env vars. It then runs `apksigner sign`, `apksigner verify -v --print-certs`, and writes SHA256SUMS.
+- A new script, `tools/sign-release.sh`, reads paths and aliases from `<signing dir>/signing.properties` and passwords from the macOS Keychain (`security find-generic-password -w`) into env vars. It then runs `apksigner sign`, `apksigner verify -v --print-certs`, and writes SHA256SUMS.
 - Nothing goes through `buildConfigField`. The existing secret regex in `phone/build.gradle.kts:27-46` stays as a backstop.
 
 **Where the keys live:**
 
-- `~/<signing dir>/` (mode 0700): `release.jks`, `pca.lineage`, `signing.properties`.
+- `<signing dir>/` (mode 0700): `release.jks`, `pca.lineage`, `signing.properties`.
 - Also `~/.android/debug.keystore`. It is now the **root of the lineage** and is irreplaceable: losing it before the switch means the phone app can never be updated without uninstalling it.
 - Add `*.lineage` to `.gitignore`. Lines 42-50 already cover `*.jks`, `*.keystore`, `keystore.properties` and `signing/`, but not a lineage file.
 

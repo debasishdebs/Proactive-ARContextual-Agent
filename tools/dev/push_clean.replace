@@ -1,0 +1,6 @@
+# Text rewrites applied to every file (and commit message) of a public branch by push_clean.sh (git filter-repo --replace-text).
+# Bracket tricks like [s] keep this file from matching its own scan patterns.
+regex:/Users/[A-Za-z0-9_.-]+==>/Users/<user>
+regex:Documents/pca-release-key[s]==>.pca
+regex:\.pca-signin[g]==><signing dir>
+regex:Desktop/rokid/backups/key[s]==><private backup dir>/keys

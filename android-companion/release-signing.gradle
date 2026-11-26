@@ -1,5 +1,5 @@
 // Release signing plumbing, applied by each shipped app module (phone, glasses, watch).
-// Secrets live OUTSIDE the repo: $PCA_KEYSTORE_PROPERTIES, else ~/.pca/keystore.properties.
+// Secrets live OUTSIDE the repo: $PCA_KEYSTORE_PROPERTIES, else ~/.pca/keystore.properties (no such file by default: the release stays unsigned).
 // Keys: storeFile, storePassword, keyAlias, keyPassword. If the file is absent the release build stays unsigned (no failure).
 def pcaKsFile = new File(System.getenv('PCA_KEYSTORE_PROPERTIES') ?: "${System.getProperty('user.home')}/.pca/keystore.properties")
 def pcaKs = new Properties()

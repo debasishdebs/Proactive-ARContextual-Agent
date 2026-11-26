@@ -1,6 +1,6 @@
 # PCA release signing
 
-Status: DRAFT. The signing form was rehearsed on an emulator with throwaway keys (2026-11-19); the real CI run has not happened. Planned for after Sri Lanka (1.3.0 lineage). Design: `docs/superpowers/specs/2026-11-16-privacy-and-release-design.md` (B2). Rehearsal evidence: `docs/superpowers/reviews/2026-11/key-rotation-rehearsal-2026-11-18.md`.
+Status: DRAFT. The signing form was rehearsed on an emulator with throwaway keys (2026-11-19); the real CI run has not happened. Planned for a later release (1.3.0 lineage). Design: `docs/superpowers/specs/2026-11-16-privacy-and-release-design.md` (B2). Rehearsal evidence: `docs/superpowers/reviews/2026-11/key-rotation-rehearsal-2026-11-18.md`.
 
 Rules: PKCS12 release key in the secrets of the GitHub Environment `release` (NOT repository secrets), signer SHA-256 pinned in `release/signer-sha256.txt`, CI builds a DRAFT release, publication is manual. No debug-signed APK ever goes on GitHub. Never commit key material (`.jks`, `.keystore`, `.p12`, `.pem`, lineage files are all kept out of the repo).
 
@@ -13,7 +13,7 @@ apksigner rotate --out pca.lineage \
   --new-signer --ks release.jks   --ks-key-alias pca             --ks-pass pass:...
 ```
 
-`debug.keystore` is a copy of `~/<private backup dir>/keys/debug.keystore`. Keep `release.jks`, its password and a second backup somewhere safe and offline: losing the key means no more updates for installed apps.
+`debug.keystore` is a copy of the maintainer's debug key (stored outside the repository). Keep `release.jks`, its password and a second backup somewhere safe and offline: losing the key means no more updates for installed apps.
 
 1. Put the new certificate SHA-256 (64 hex) in `release/signer-sha256.txt` and commit it.
 2. Create the GitHub Environment (repository owner, Settings > Environments) named `release`:
@@ -62,7 +62,7 @@ Phone (`com.rokid.context`, minSdk 29):
 
 Glasses (`com.rokid.context.glasses`, minSdk 28, below API 33): the APK must carry `--rotation-min-sdk-version 28`. Without it, API 24-32 sees a v3 block signed by the old key with no lineage, so no rotation happens (the emulator at API 34 hides this). Not tested on a real below-33 device: run `adb shell getprop ro.build.version.sdk`, `install -r`, then `dumpsys package` on the glasses. The phone may also be below 33; check it the same way.
 
-Do it after Sri Lanka, not during the trip (install freeze applies).
+Do it at a quiet time, not while travelling (no installs during a trip).
 
 ## Caveats
 

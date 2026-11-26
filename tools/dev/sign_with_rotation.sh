@@ -1,7 +1,7 @@
 #!/bin/bash
 # usage: tools/dev/sign_with_rotation.sh <in.apk> <out.apk> [lineage-file]
 # Signs a release APK with a v3/v3.1 rotation lineage: OLD = ~/.android/debug.keystore (the key of the installed builds),
-# NEW = the release key from ~/.pca/keystore.properties. Passwords are read, never printed. Needs no device.
+# NEW = the release key from $PCA_KEYSTORE_PROPERTIES (default ~/.pca/keystore.properties, outside the repo). Passwords are read, never printed. Needs no device.
 set -euo pipefail
 IN="$1"; OUT="$2"; LIN="${3:-${OUT%.apk}.lineage}"
 B=$(ls -d "$HOME/Desktop/rokid/android-sdk/build-tools"/* | sort -V | tail -1)

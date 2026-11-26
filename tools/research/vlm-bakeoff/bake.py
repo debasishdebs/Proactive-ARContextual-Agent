@@ -3,7 +3,7 @@
 import json, sys, base64, time, random, os, re, csv, subprocess, math, urllib.request
 D = os.path.dirname(os.path.abspath(__file__))
 label, port, pid = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-SEED = open('/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/services/ai/src/main/assets/prompts/seeds/place_match.txt').read()
+SEED = open(os.path.join(D, '../../../android-companion/services/ai/src/main/assets/prompts/seeds/place_match.txt')).read()
 # (key, true, kind, lookalike(kind), d1, d2, extra_for_absent)
 O = 'object'
 T = {

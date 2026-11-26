@@ -44,25 +44,23 @@ Tile licences: do not bulk-download from `tile.openstreetmap.org` (it breaks the
 
 Suggested regions: see the trip how-to below. All bboxes in this file are rough and UNVERIFIED; check them on the map.
 
-## Remaining trips: Sikkim/Darjeeling and Sri Lanka (UNVERIFIED: bboxes, sizes and commands are approximate, none were run or measured here)
+## Sizing a region (UNVERIFIED: bboxes, sizes and commands are approximate, none were run or measured here)
 
 Bbox order is `west,south,east,north` (longitude first).
 
-| Trip | Approx bbox (UNVERIFIED) | Suggested zoom | Rough size (UNVERIFIED) |
+| Region | Approx bbox (UNVERIFIED) | Suggested zoom | Rough size (UNVERIFIED) |
 | --- | --- | --- | --- |
-| Sikkim / Darjeeling | `88.0,26.9,88.9,28.2` (about 88.0-88.9 E, 26.9-28.2 N) | z8-15 (z16 only for a few town boxes) | tens of MB at z8-14; z15 can add a few hundred MB over an area this size (mountainous, but the bbox is about 100 x 145 km) |
-| Sri Lanka, whole island | `79.5,5.9,81.9,9.9` (about 79.5-81.9 E, 5.9-9.9 N) | z0-12 for the island | roughly 70 MB at z0-13 per the roadmap estimate below; not measured |
-| Sri Lanka, site clusters | one small bbox per site cluster | z10-16 | roughly 55 MB for the cultural-triangle and south-coast sites per the roadmap estimate; not measured |
+| Whole island or small country | one bbox | z0-12 | roughly 70 MB at z0-13 per the roadmap estimate below; not measured |
+| Clusters of sites | one small bbox per cluster | z10-16 | roughly 55 MB per set per the roadmap estimate; not measured |
 
 Guidance:
 - Tile count grows about 4x per zoom level, so size does too. If a file is too big, lower `--maxzoom` by one before shrinking the bbox. The reader accepts zoom up to 26, but z17+ is rarely worth it for pause zones.
 - A pause zone is a box plus a buffer ring, so z13-15 is enough to see which streets or compound a zone covers. Use a tight second extract at z16 only for the few places you really need.
-- Do not build one huge file for both trips. Make one `.pmtiles` per trip and pick the right one in Settings before travelling; this keeps each file small and well inside the reader caps.
+- Do not build one huge file for several regions. Make one `.pmtiles` per region and pick the right one in Settings before travelling; this keeps each file small and well inside the reader caps.
 - Extract commands follow the recipe above, for example (replace the source):
   ```
-  pmtiles extract <source-raster-archive>.pmtiles sikkim-darjeeling.pmtiles --bbox=88.0,26.9,88.9,28.2 --maxzoom=15
-  pmtiles extract <source-raster-archive>.pmtiles sri-lanka.pmtiles --bbox=79.5,5.9,81.9,9.9 --maxzoom=12
-  pmtiles show sikkim-darjeeling.pmtiles   # tile type must be png/jpeg/webp, compression gzip/none
+  pmtiles extract <source-raster-archive>.pmtiles region.pmtiles --bbox=<west>,<south>,<east>,<north> --maxzoom=15
+  pmtiles show region.pmtiles   # tile type must be png/jpeg/webp, compression gzip/none
   ```
 - Roadmap size basis (not measured): 256 px raster tiles are about 20 KB each; Andaman-sized areas (about 400 km2) at z10-16 are about 1,450 tiles (about 30 MB); z17 adds about 85 MB.
 
@@ -79,8 +77,7 @@ With no file selected, or a refused/damaged file, the map falls back to the plai
 
 ### Check locally (no legal claims made here)
 
-- Sri Lanka: check locally what the photography rules are at the sites you plan to visit (temples, archaeological sites, military or government areas) before using the glasses camera.
-- Sikkim/Darjeeling: check locally for border-area restrictions and any permit requirements near the border regions before the trip.
+- Wherever you travel: check locally what the photography rules are (religious and archaeological sites, military or government areas, border regions and any permit requirements) before using the glasses there.
 
 ## Hostile-file limits (fail closed)
 
