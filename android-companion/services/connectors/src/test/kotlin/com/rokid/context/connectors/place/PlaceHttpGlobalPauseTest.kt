@@ -89,6 +89,14 @@ class PlaceHttpGlobalPauseTest {
         assertEquals(5_000L, slept.sum())
     }
 
+    @Test fun aPauseSetWhileWaitingForTheHostGapStillHoldsTheRequest() {
+        val gapHttp = UrlConnectionPlaceHttp(minGapMs = 1_000, clock = { now }, guard = guard, pause = { w -> if (startedAt.size == 1) guard.failed("wiki_extract", 429, "http", 5, 0, 1); now += w },
+            open = { startedAt += now; Conn(it, script.removeFirst()) })
+        script += Script(200); script += Script(200)
+        runBlocking { gapHttp.get("https://en.wikipedia.org/w/api.php?action=query&prop=extracts"); gapHttp.get("https://en.wikipedia.org/w/api.php?action=query&prop=extracts") }
+        assertTrue(startedAt[1] - startedAt[0] >= 5_000L, startedAt.toString()) // the 5 s pause set during the 1 s gap wait is honoured before dispatch
+    }
+
     @Test fun userAgentCarriesThePublicRepositoryAsContact() {
         assertEquals("ProactiveContextAgent/1.1 (https://github.com/debasishdebs/Proactive-ARContextual-Agent; contact: see repository)", UrlConnectionPlaceHttp.DEFAULT_USER_AGENT)
     }

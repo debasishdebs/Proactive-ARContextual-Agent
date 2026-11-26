@@ -100,7 +100,7 @@ class UrlConnectionPlaceHttp(
         guard.await(svc) // a 429/503 pauses every request of the same server group (Wikimedia or Overpass), whichever cell asks
         val t0 = clock()
         try {
-            val r = sendNow(u, url, body)
+            val r = sendNow(u, url, body, svc)
             guard.ok(svc, clock() - t0)
             return r
         } catch (e: kotlinx.coroutines.CancellationException) { throw e
@@ -114,7 +114,7 @@ class UrlConnectionPlaceHttp(
     }
 
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class) // invokeOnCompletion(onCancelling = true): the only hook that runs when cancellation STARTS, while the blocking read is still stuck
-    private suspend fun sendNow(u: URL, url: String, body: String?): String {
+    private suspend fun sendNow(u: URL, url: String, body: String?, svc: String): String {
         privacyGate()
         val ticket = currentZoneTicket()
         ticket?.check()
@@ -123,6 +123,7 @@ class UrlConnectionPlaceHttp(
             if (wait > 0) pause(wait)
             lastByHost[u.host] = clock()
         }
+        guard.await(svc) // a 429/503 that another request recorded while this one waited for the host gap still pauses it (checked again right before dispatch)
         privacyGate() // asked again after any wait for the host gap: the mode may have changed while this request queued
         com.rokid.context.memory.place.seedAdmitCheck() // a seed's request: privacy, free Wi-Fi and the data saver are asked again before EVERY request (a no-op outside a seed)
         return withContext(io) {
