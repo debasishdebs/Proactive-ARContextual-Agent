@@ -41,7 +41,10 @@ object PipelineRecords {
     // --- frames -------------------------------------------------------------------------------------------------
 
     /** Only `rokid*` sources with a JPEG that exists; payload kept to one line (≤ 220 chars). False = rejected or duplicate id. */
-    suspend fun appendFrame(context: Context, frame: FrameEntity, rows: com.rokid.context.memory.FrameRows? = null, wiped: (() -> Boolean)? = null): Boolean {
+    suspend fun appendFrame(context: Context, frame: FrameEntity, rows: com.rokid.context.memory.FrameRows? = null): Boolean = appendFrameFenced(context, frame, rows, null)
+
+    /** [appendFrame] with the import's Delete all check inside the commit transaction. A separate name, not a default parameter: `PipelineRecords::appendFrame` is a FrameAppender default and a defaulted parameter breaks the from-scratch Kotlin IR lowering. */
+    suspend fun appendFrameFenced(context: Context, frame: FrameEntity, rows: com.rokid.context.memory.FrameRows?, wiped: (() -> Boolean)?): Boolean {
         if (!frame.source.startsWith("rokid", ignoreCase = true)) { PcLog.w(TAG, "append rejected non-rokid source"); return false }
         val file = frame.path.takeIf { it.isNotBlank() }?.let(::File)
         if (file == null || !withContext(Dispatchers.IO) { file.exists() }) { PcLog.w(TAG, "append rejected preview missing"); return false }

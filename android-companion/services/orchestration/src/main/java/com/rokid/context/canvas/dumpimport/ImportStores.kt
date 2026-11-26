@@ -47,7 +47,7 @@ class ImportFrameStore(
         // never replace an archive file this import did not create (a live capture may have committed or be committing the same id): publish by hard link (fails when the name exists), never by rename-over
         if (listOf("jpg", "png", "webp").any { File(file.parentFile, "${frame.id}.$it").exists() }) return@withContext false
         if (MemoryWipe.generation.get() != gen0) return@withContext false
-        val tmp = File(file.parentFile, ".imp-${frame.id}-${System.nanoTime()}.$ext")
+        val tmp = File(file.parentFile, ".imp-${frame.id}-${System.currentTimeMillis()}.$ext") // the creation wall time is in the name: the sweep reads it, not the mtime (writeStamped stamps the ORIGINAL capture time)
         try {
             writeStamped(tmp, FrameImages.forDisk(frame.photo), frame.capturedAtMs)
             try { java.nio.file.Files.createLink(file.toPath(), tmp.toPath()) }
@@ -61,7 +61,7 @@ class ImportFrameStore(
         )
         val t = now()
         val appender: com.rokid.context.data.frames.FrameAppender = { c, f, rows ->
-            PipelineRecords.appendFrame(c, f, rows?.let { it.copy(meta = it.meta.copy(routedAt = t), state = it.state.copy(state = "EXTRACTED", lastError = null)) }, wiped = { MemoryWipe.generation.get() != gen0 })
+            PipelineRecords.appendFrameFenced(c, f, rows?.let { it.copy(meta = it.meta.copy(routedAt = t), state = it.state.copy(state = "EXTRACTED", lastError = null)) }, wiped = { MemoryWipe.generation.get() != gen0 })
         }
         val r = RokidFrameInbox.ingestFile(app, file, frame.source, frame.placeLabel, appender, receipt, now, sceneActive = { false }, parkedForDataSaver = { false })
         if (r != InboxResult.STORED) { file.delete(); return@withContext false }
