@@ -45,6 +45,14 @@ class ZonesOfflineTest {
         assertFalse(ZoneWords.OFFLINE_NOTICE.contains('—'))
     }
 
+    @Test fun offlineShowsTheRedNoNetworkBannerAndOnlineDoesNot() {
+        online = false; show()
+        compose.onNodeWithTag("no_network_banner").assertExists()
+        assertEquals("No network: the map background is unavailable. Seeding and pause zones need a connection.", ZoneWords.NO_NETWORK_BANNER)
+        compose.runOnIdle { online = true }
+        compose.onNodeWithTag("no_network_banner").assertDoesNotExist()
+    }
+
     @Test fun offlineDisablesForm() {
         online = false; show()
         scrollTo("zone_save")

@@ -129,6 +129,7 @@ object MomentHeat {
     const val EMPTY = "No saved locations yet. Turn on Save location with Moments in Settings."
     const val NONE_IN_RANGE = "No Moments with a saved location in this period."
     const val CAPPED = "Showing the first 20,000 saved locations. Choose a shorter period to see the rest."
+    const val NO_NETWORK = "No network: plain grid. Your Moments are shown from the phone."
     const val NEEDS_CONSENT = "Turn on the street map under Pause zones to see streets here. The plain grid is used until then."
 
     /** The line under the map about its tiles: no key means the existing "Add a map key in Settings" notice, a key without the street-map switch asks for it; null when streets are shown. */

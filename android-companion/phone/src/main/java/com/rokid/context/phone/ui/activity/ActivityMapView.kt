@@ -68,25 +68,27 @@ private const val MAX_ROWS_SHOWN = 50
  * Pinch, drag and double-tap zoom like the zones map. Tapping a hot cell lists its Moments; a tap on a row opens the usual preview. Positions are drawn only; nothing is logged.
  */
 @Composable
-fun ActivityMapPanel(vm: ActivityMapViewModel, state: ActivityUiState, zone: java.time.ZoneId, onlineMap: (() -> OnlineMapDeps)?, onPreview: (List<String>) -> Unit) {
+fun ActivityMapPanel(vm: ActivityMapViewModel, state: ActivityUiState, zone: java.time.ZoneId, onlineMap: (() -> OnlineMapDeps)?, onPreview: (List<String>) -> Unit, network: kotlinx.coroutines.flow.Flow<Boolean>? = null) {
+    val networkOnline by remember(network) { network ?: kotlinx.coroutines.flow.flowOf(true) }.collectAsStateWithLifecycle(true)
     val map by vm.state.collectAsStateWithLifecycle()
     val range = MomentHeat.range(state, zone)
     LaunchedEffect(range, state.granularity) { vm.load(range, state.granularity) }
     val onlineDeps = com.rokid.context.phone.ui.settings.privacy.zones.online.rememberOnlineDeps(onlineMap) // built on IO (it reads the encrypted key vault)
     val online: OnlineMapPanel? = onlineDeps.deps?.let { d -> rememberOnlinePanel(d, { false }, {}) }
-    ActivityHeatMap(map, state.granularity, online, vm, zone, onlineLoading = onlineDeps.loading, onPreview = onPreview)
+    ActivityHeatMap(map, state.granularity, online, vm, zone, onlineLoading = onlineDeps.loading, onPreview = onPreview, networkOnline = networkOnline)
 }
 
 @Composable
-internal fun ActivityHeatMap(map: ActivityMapState, g: Granularity, online: OnlineMapPanel?, vm: ActivityMapViewModel?, zone: java.time.ZoneId, onlineLoading: Boolean = false, onPreview: (List<String>) -> Unit) {
+internal fun ActivityHeatMap(map: ActivityMapState, g: Granularity, online: OnlineMapPanel?, vm: ActivityMapViewModel?, zone: java.time.ZoneId, onlineLoading: Boolean = false, onPreview: (List<String>) -> Unit, networkOnline: Boolean = true) {
     val measurer = rememberTextMeasurer()
     var size by remember { mutableStateOf(Size.Zero) }
     var vp by remember { mutableStateOf<MapViewport?>(null) }
     var fitKey by remember { mutableStateOf(0) }
     var picked by remember { mutableStateOf<HeatCell?>(null) }
-    val notice = if (onlineLoading) null else MomentHeat.tileNotice(online?.ui?.available == true, online?.ui?.enabled == true) // no "add a key" notice while the key is still being read
+    val notice = if (!networkOnline) MomentHeat.NO_NETWORK else if (onlineLoading) null else MomentHeat.tileNotice(online?.ui?.available == true, online?.ui?.enabled == true) // no "add a key" notice while the key is still being read
     LaunchedEffect(map.points) { picked = null } // review2 #6: a new set of points (a reload after a deletion) never keeps a cell of the old one selected
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        if (!networkOnline) com.rokid.context.phone.ui.settings.privacy.zones.NoNetworkBanner(tag = "activity_map_no_network", modifier = Modifier.padding(bottom = 6.dp))
         if (map.loaded && map.points.isEmpty()) {
             Text(MomentHeat.EMPTY, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft, modifier = Modifier.padding(vertical = 12.dp).testTag("map_empty"))
             return@Column
@@ -114,7 +116,7 @@ internal fun ActivityHeatMap(map: ActivityMapState, g: Granularity, online: Onli
                 .semantics { contentDescription = "Map of $summary" }.testTag("activity_map"),
         ) {
             Canvas(
-                Modifier.fillMaxWidth().height(340.dp).background(MapBackground)
+                Modifier.fillMaxWidth().height(340.dp).background(if (networkOnline) MapBackground else Color.White)
                     .pointerInput(Unit) { detectTransformGestures { centroid, pan, zoomBy, _ -> vp = vp?.panned(pan.x, pan.y)?.zoomed(zoomBy.toDouble(), centroid.x, centroid.y) } }
                     .pointerInput(Unit) {
                         val touch = 48.dp.toPx()

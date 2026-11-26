@@ -123,6 +123,8 @@ fun MapCanvas(
     doubleTapZoom: Boolean = false,
     density: List<DensityBlob> = emptyList(),
     cells: Coverage? = null,
+    /** No network (owner 6e): the plain grid is drawn on white. */
+    blank: Boolean = false,
 ) {
     val measurer = rememberTextMeasurer()
     val fitSig = items.map { it.id }
@@ -188,7 +190,7 @@ fun MapCanvas(
         }
     }.testTag("mapzones_map")) {
         Canvas(
-            Modifier.fillMaxSize().background(MapBackground).pointerInput(Unit) {
+            Modifier.fillMaxSize().background(if (blank) Color.White else MapBackground).pointerInput(Unit) {
                 val touch = ShapeEdit.HANDLE_TOUCH_DP.dp.toPx()
                 val minShape = SeedOverlays.MIN_SHAPE_DP.dp.toPx()
                 awaitEachGesture {

@@ -57,6 +57,8 @@ data class ZoneChip(val text: String, val level: ChipLevel)
 
 object ZoneWords {
     const val DENIED_BANNER = "Location is not allowed. While any pause zone is on, capture is PAUSED, because the app cannot tell whether you are inside one. Allow location to let capture run outside the zones."
+    /** Owner round 6e: the red banner at the top of every map screen while there is no network. */
+    const val NO_NETWORK_BANNER = "No network: the map background is unavailable. Seeding and pause zones need a connection."
     const val OFFLINE_NOTICE = "You are offline. Go online to draw or change zones."
     const val PROTECTED_BANNER = "The saved zones cannot be read, so capture is paused everywhere until they are restored. Nothing can be changed here meanwhile."
     const val NOT_MONITORED = "Not monitored (hub stopped)"

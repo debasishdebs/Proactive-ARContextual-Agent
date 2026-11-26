@@ -102,6 +102,12 @@ import kotlin.math.min
 private val ZoneRed = Color(0xFFD32F2F)
 private val MapBackground = Color(0xFFF3F1EA)
 
+/** The red no-network banner of the map screens (owner 6e). The map area itself is a plain white grid meanwhile; nothing is stored. */
+@Composable
+fun NoNetworkBanner(tag: String = "no_network_banner", modifier: Modifier = Modifier) {
+    Text(ZoneWords.NO_NETWORK_BANNER, style = MaterialTheme.typography.bodyMedium, color = Color.White, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, modifier = modifier.fillMaxWidth().background(Color(0xFFC62828)).padding(horizontal = 12.dp, vertical = 8.dp).testTag(tag))
+}
+
 class ZonesCallbacks(
     val back: () -> Unit,
     val setDrawing: (Boolean) -> Unit,
@@ -288,7 +294,8 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
         item {
             SettingsCard {
                 Text((if (seedMode) "Draw a box, then seed places for it. Seeded areas are blue, your pins purple, pause zones red. " else "Capture pauses inside a red box and in the ring around it. ") + if (offline?.reader != null) "The map is drawn from your offline file." else if (online?.source != null) "The map is drawn from online street tiles; the grid shows where they are missing." else "The map has no tiles; the grid shows latitude and longitude.", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
-                ZoneMap(mapState, on, offline?.reader, online, seed?.ui)
+                if (!networkOnline) NoNetworkBanner()
+                ZoneMap(mapState, on, offline?.reader, online, seed?.ui, blank = !networkOnline)
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     SecondaryAction(if (state.drawing) "Cancel drawing" else "Draw a box", { on.setDrawing(!state.drawing) }, tag = "zone_draw", enabled = networkOnline && (seedMode || !state.protectedMode))
                     if (online?.canCentre == true) SecondaryAction("Centre on me", online.centreOnMe, tag = "zone_centre", enabled = !online.centreBusy)
@@ -474,7 +481,7 @@ internal fun StateChip(chip: ZoneChip, modifier: Modifier = Modifier) {
 
 /** The tile-less map: plain background, a latitude/longitude grid, red boxes with their buffer ring, the draft box and (only with a fresh fix) a blue dot for the user. */
 @Composable
-private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null, online: OnlineMapPanel? = null, seed: SeedMapUiState? = null) {
+private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null, online: OnlineMapPanel? = null, seed: SeedMapUiState? = null, blank: Boolean = false) {
     val measurer = rememberTextMeasurer()
     var size by remember { mutableStateOf(Size.Zero) }
     var vp by remember { mutableStateOf<MapViewport?>(null) }
@@ -521,7 +528,7 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
             .semantics { contentDescription = summary }.testTag("zone_map"),
     ) {
         Canvas(
-            Modifier.fillMaxWidth().height(300.dp).background(MapBackground)
+            Modifier.fillMaxWidth().height(300.dp).background(if (blank) Color.White else MapBackground)
                 .pointerInput(state.drawing) {
                     if (state.drawing) {
                         detectDragGestures(

@@ -2,6 +2,9 @@ package com.rokid.context.phone.ui.activity
 
 import android.app.Application
 import android.content.Context
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -97,12 +100,14 @@ class ActivityMapViewTest {
         assertTrue(src.scenes(t - 5_000..t - 1).isEmpty())
     }
 
+    private var networkOnline by mutableStateOf(true)
+
     private fun show(mode: ActivityViewMode, map: ActivityMapState, picks: MutableList<ActivityViewMode> = mutableListOf()) = compose.setContent {
         PcTheme {
             ActivityScreen(
                 ActivityUiState(today = TODAY, viewMode = mode), {}, {}, {}, {}, { _, _ -> }, {},
                 onSelectViewMode = { picks += it },
-                mapContent = { ActivityHeatMap(map, Granularity.MOMENTS, null, null, ZONE) {} },
+                mapContent = { ActivityHeatMap(map, Granularity.MOMENTS, null, null, ZONE, onPreview = {}, networkOnline = networkOnline) },
             )
         }
     }
@@ -114,6 +119,13 @@ class ActivityMapViewTest {
         compose.onNodeWithText("Map").performClick()
         assertEquals(listOf(ActivityViewMode.MAP), picks)
         compose.onNodeWithTag("activity_map").assertDoesNotExist()
+    }
+
+    @Test fun withNoNetworkTheMapShowsTheRedBannerAndTheOfflineNotice() {
+        networkOnline = false
+        show(ActivityViewMode.MAP, ActivityMapState(loaded = true, points = listOf(HeatPoint("a", 17.38, 78.48, 1))))
+        compose.onNodeWithTag("activity_map_no_network").assertExists()
+        compose.onNodeWithText(MomentHeat.NO_NETWORK).assertExists()
     }
 
     @Test fun anEmptyMapSaysHowToTurnLocationsOn() {

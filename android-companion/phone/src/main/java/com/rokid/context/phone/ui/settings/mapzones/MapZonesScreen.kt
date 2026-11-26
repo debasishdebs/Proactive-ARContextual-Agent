@@ -111,6 +111,7 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { zonesVm.setLocationGranted(granted()); mapVm.setLocationGranted(granted()) }
     LaunchedEffect(zones.requestPermission) { if (zones.requestPermission) { zonesVm.permissionPromptShown(); launcher.launch(LOCATION_PERMISSIONS) } }
     LaunchedEffect(ui.savedTick) { if (ui.savedTick > 0 && !granted()) zonesVm.requestLocation() } // a saved zone with location off: the same prompt the shipped screen shows
+    val networkOnline by remember(deps) { deps.networkOnline() }.collectAsStateWithLifecycle(true)
     val offline = deps.offlineMap?.let { m -> remember { m() } }
     var keyEpoch by remember { mutableStateOf(0) } // a saved or cleared map key rebuilds the street-map wiring
     val onlineDeps = com.rokid.context.phone.ui.settings.privacy.zones.online.rememberOnlineDeps(deps.onlineMap, keyEpoch) // built on IO
@@ -151,7 +152,7 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
         { seedPanel?.seedBox?.invoke(mapVm.seedBox()) }, { l -> mapVm.toggleLayer(l, zones.rows.any { it.chip.level == ChipLevel.PAUSED || it.chip.level == ChipLevel.WARN }) },
         { t -> onTap(t, view, zones, seedPanel, mapVm) }, mapVm::select, mapVm::editPause, mapVm::dismissMessage,
     )
-    MapZonesScreen(ui, zones, seedPanel, offlinePanel, online, cb, zoneCb, view, mapVm.seedLevel(), p23)
+    MapZonesScreen(ui, zones, seedPanel, offlinePanel, online, cb, zoneCb, view, mapVm.seedLevel(), p23, networkOnline)
 }
 
 private fun onTap(t: TapTarget, view: MapViewState, zones: ZonesUiState, seed: SeedPanel?, vm: MapZonesViewModel) {
@@ -168,7 +169,7 @@ private fun onTap(t: TapTarget, view: MapViewState, zones: ZonesUiState, seed: S
 @Composable
 fun MapZonesScreen(
     ui: MapZonesUiState, zones: ZonesUiState, seed: SeedPanel?, offline: OfflineMapPanel?, online: OnlineMapPanel?,
-    on: MapZonesCallbacks, zoneOn: ZonesCallbacks, view: MapViewState, seedLevel: SeedLevel, p23: MapP23? = null,
+    on: MapZonesCallbacks, zoneOn: ZonesCallbacks, view: MapViewState, seedLevel: SeedLevel, p23: MapP23? = null, networkOnline: Boolean = true,
 ) {
     val seedAreas = seed?.ui?.areas.orEmpty()
     val pins = seed?.ui?.pins.orEmpty()
@@ -190,7 +191,7 @@ fun MapZonesScreen(
     androidx.activity.compose.BackHandler(enabled = ui.saving) { }
     Box(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).testTag("mapzones_screen")) {
         MapCanvas(
-            view, zones.rows, seedAreas, pins, items, layers, ui.shape, ui.selected, zones.you, fitBoxes, ui.kind, canDraw = ui.sheet == SheetMode.NONE,
+            view, zones.rows, seedAreas, pins, items, layers, ui.shape, ui.selected, zones.you, fitBoxes, ui.kind, canDraw = ui.sheet == SheetMode.NONE && networkOnline, blank = !networkOnline,
             summary = MapSpeech.describe(MapOverview.summary(zones.rows.size, seedAreas.size, pins.size, inside), ui.shape, ShapeSteps.position(items, ui.selected, layers)), reader = reader, online = online,
             onNewShape = on.place, onReshape = on.reshape, onTap = on.tap, modifier = Modifier.fillMaxSize(),
             access = MapAccessActions(
@@ -208,6 +209,7 @@ fun MapZonesScreen(
             TextButton({ view.fit() }, Modifier.testTag("zone_fit")) { Text("Fit") }
             if (online?.canCentre == true) TextButton(online.centreOnMe, Modifier.testTag("zone_centre"), enabled = !online.centreBusy) { Text("Me") }
         }
+        if (!networkOnline) com.rokid.context.phone.ui.settings.privacy.zones.NoNetworkBanner(tag = "mapzones_no_network", modifier = Modifier.align(Alignment.TopStart).padding(top = 48.dp))
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().heightIn(max = 380.dp).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState()).padding(16.dp).testTag("mapzones_sheet"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (zones.protectedMode) NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.ZoneWords.PROTECTED_BANNER, error = true, tag = "zone_protected")
             if (zones.deniedBanner) { NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.ZoneWords.DENIED_BANNER, error = true, tag = "zone_denied"); PrimaryAction("Allow location", zoneOn.requestLocation, tag = "zone_allow_location") }
