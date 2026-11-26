@@ -96,8 +96,49 @@ class DumpReaderTest {
         assertEquals(listOf(id(6)), items.map { it.cursor })
         val m = items.single().json
         assertTrue("the forgotten photo is gone from the Moment", m["frames"]!!.jsonArray.isEmpty()); assertTrue("and its memory", m["memories"]!!.jsonArray.isEmpty())
-        assertNull(runBlocking { reader().photo("f6") }); assertNull(runBlocking { reader().photo("f5").let { null } })
+        assertNull(runBlocking { reader().photo("f6") }); // review2 #9: the old `photo("f5").let { null }` asserted nothing; the real Forget cascade is exercised by realForgetOperationsHide... below
         assertEquals(1, reader().manifest().getValue("counts").jsonObject["moments"]!!.jsonPrimitive.content.toInt())
+    }
+
+    /** review2 #2: a HIDDEN (stale) derived value and an INVALIDATED memory are never exported, whatever the forgetV2 flag. */
+    @Test fun staleDerivedValuesAndInvalidatedMemoriesAreNotExported() = runBlocking {
+        seed(1, 2)
+        db.openHelper.writableDatabase.execSQL("UPDATE memory SET text = 'INVALIDATED-SECRET', reviewState = 'INVALIDATED' WHERE id = 'm2'") // invalidated AFTER the Moment was built (a Forget with forgetV2 off keeps the text)
+        db.objectDao().upsertDerived(ObjectDerivedEntity("MOMENT", id(1), "CAPTION", "STALE-CAPTION-SECRET", null, 3, 50L, 9))
+        db.sceneDao().replace(SceneEntity("s1", 1, MS, MS + 1000, MS + 3000, "CAP_5_MIN", null, null, "WALKING", 1, 9), listOf(ScenePartEntity("s1", "MOMENT", id(1), "h", MS + 1000), ScenePartEntity("s1", "MOMENT", id(2), "h", MS + 2000)))
+        db.objectDao().upsertDerived(ObjectDerivedEntity("SCENE", "s1", "SUMMARY", "STALE-SCENE-SECRET", null, 3, 50L, 9))
+        val r = reader()
+        val text = all(r).joinToString { it.json.toString() } + r.scenes(0, Long.MAX_VALUE, null, 9).joinToString { it.json.toString() }
+        assertFalse(text, "STALE-SCENE-SECRET" in text || "STALE-CAPTION-SECRET" in text || "INVALIDATED-SECRET" in text)
+        assertEquals("a fresh memory is still exported", true, "memory text 1" in text)
+    }
+
+    /** review2 #9: REAL Forget operations (not hand-made tombstones), both flag states: nothing forgotten or hidden reaches any dump answer. */
+    @Test fun realForgetOperationsHideTheirContentFromEveryDumpAnswerWithBothFlagStates() {
+        try {
+            for (v2 in listOf(false, true)) {
+                com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = v2
+                val d = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
+                try {
+                    val f = MomentFixture(d)
+                    runBlocking {
+                        listOf(1, 2).forEach { s -> f.frame("f$s", MS + s * 1000L); f.memory("m$s", "f$s", text = "memory text $s", createdAt = MS + s * 1000L) }
+                        MomentBuilder(d).build(listOf(id(1), id(2)))
+                        d.sceneDao().replace(SceneEntity("s1", 1, MS, MS + 1000, MS + 3000, "CAP_5_MIN", null, null, "WALKING", 1, 9), listOf(ScenePartEntity("s1", "MOMENT", id(1), "h", MS + 1000), ScenePartEntity("s1", "MOMENT", id(2), "h", MS + 2000)))
+                        d.objectDao().upsertDerived(ObjectDerivedEntity("SCENE", "s1", "SUMMARY", "OLD-SCENE-SUMMARY", null, 3, null, 9))
+                        val before = DumpReader(d).moments(0, Long.MAX_VALUE, null, 200).size
+                        com.rokid.context.memory.forget.ForgetService(d, com.rokid.context.memory.ProposalRepository(d.proposalDao(), d.actionDao(), d)) { 5_000 }.forgetMoment("f1")
+                        MomentBuilder(d).build(listOf(id(1), id(2))) // the projection is rebuilt after a Forget, as the builder pass does
+                        val r = DumpReader(d, { pins }, "9.9.9", { 1234L }, { jpeg })
+                        val text = r.moments(0, Long.MAX_VALUE, null, 200).joinToString { it.json.toString() } + r.scenes(0, Long.MAX_VALUE, null, 9).joinToString { it.json.toString() }
+                        assertNull("v2=$v2: the forgotten photo is not served", r.photo("f1"))
+                        assertNotNull("v2=$v2: the surviving photo is served", r.photo("f2"))
+                        assertFalse("v2=$v2: forgotten text exported: $text", "memory text 1" in text || "OLD-SCENE-SUMMARY" in text)
+                        assertTrue("v2=$v2: the survivor stays: before=$before ${d.momentDao().allMoments().map { it.momentId }} $text", "memory text 2" in text)
+                    }
+                } finally { d.close() }
+            }
+        } finally { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = null }
     }
 
     @Test fun pagingByCursorAndTheDateWindow() = runBlocking {

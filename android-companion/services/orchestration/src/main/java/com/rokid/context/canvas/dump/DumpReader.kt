@@ -128,7 +128,7 @@ class DumpReader(
                     put("hasPhoto", f.path.isNotBlank())
                 }
             }))
-            put("memories", JsonArray(mems.map { e ->
+            put("memories", JsonArray(mems.filter { it.reviewState != ReviewState.INVALIDATED }.map { e -> // review2 #2: an invalidated memory's text is obsolete, only its state (above) is reported
                 buildJsonObject {
                     put("id", e.id); put("frameId", e.frameId); put("text", e.text); put("type", e.type); put("tags", e.tags); put("tier", e.tier.name); put("confidence", e.confidence)
                     put("reviewState", e.reviewState.name); put("reviewFlaggedAt", e.reviewFlaggedAt); put("imageDelivered", e.imageDelivered); put("derived", e.derived); put("createdAt", e.createdAt)
@@ -161,7 +161,7 @@ class DumpReader(
     /** A derived field with the build revision that wrote it, the model that wrote it (null when no attribution row exists) and whether it is stale; the EMBEDDING row names its space in [ref]. */
     private fun derivedJson(rows: List<ObjectDerivedEntity>, models: Map<String, ModelAttributionEntity>) = JsonArray(rows.map { d ->
         val a = models[AttributionKind.derivedRef(d.objectKind, d.objectId, d.field)]
-        buildJsonObject { put("field", d.field); put("value", d.value); put("embeddingSpace", if (d.field == "EMBEDDING") d.ref else null); put("builtRev", d.builtRev); put("atMs", d.atMs); put("stale", d.staleSince != null); put("model", a?.model); put("modelVersion", a?.modelVersion) }
+        buildJsonObject { put("field", d.field); put("value", if (d.staleSince != null) null else d.value) /* review2 #2: a hidden (stale) value is never exported, with forgetV2 off its text is still in the row */; put("embeddingSpace", if (d.field == "EMBEDDING") d.ref else null); put("builtRev", d.builtRev); put("atMs", d.atMs); put("stale", d.staleSince != null); put("model", a?.model); put("modelVersion", a?.modelVersion) }
     })
 
     override suspend fun scenes(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem> {
@@ -179,7 +179,7 @@ class DumpReader(
         val liveFrames = frameIds.chunked(CHUNK).flatMap { dump.framesByIds(it) }.map { it.id }.toSet()
         val clusterOfFrame = frameIds.chunked(CHUNK).flatMap { dump.frameMetaByIds(it) }.filter { it.frameId in liveFrames && it.clusterId != null }.associate { it.frameId to it.clusterId!! }
         val clusters = clusterOfFrame.values.distinct().chunked(CHUNK).flatMap { dump.clustersByIds(it) }.associateBy { it.clusterId }
-        val clusterMemories = clusters.values.mapNotNull { it.memoryId }.distinct().chunked(CHUNK).flatMap { dump.memoriesByIds(it) }.associateBy { it.id }
+        val clusterMemories = clusters.values.mapNotNull { it.memoryId }.distinct().chunked(CHUNK).flatMap { dump.memoriesByIds(it) }.filter { it.reviewState != ReviewState.INVALIDATED }.associateBy { it.id }
         val models = Models(modelsOf(AttributionKind.MEMORY, clusterMemories.keys.toList()), modelsOf(AttributionKind.DERIVED, derived.values.flatten().map { AttributionKind.derivedRef(it.objectKind, it.objectId, it.field) }))
         return rows.map { s ->
             val members = parts[s.sceneId].orEmpty().filter { it.kind == "MOMENT" }.map { it.refId }.filter { it !in dead }
