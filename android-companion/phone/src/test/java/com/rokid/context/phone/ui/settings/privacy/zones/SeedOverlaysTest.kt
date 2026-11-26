@@ -41,6 +41,18 @@ class SeedEstimateTest {
         assertEquals(SeedLevel.TOO_LARGE, SeedEstimate.level(4_001))
     }
 
+    @Test fun aBoxOver2000CellsGetsTheLargeWarningInTheEstimateAndTheConfirmText() {
+        val big = GeoBox(27.0, 87.0, 29.0, 89.8) // well over 2,000 cells, under the cap
+        val n = SeedEstimate.cells(big)
+        assertTrue(n.toString(), n > SeedEstimate.LARGE_CELLS && n <= SeedEstimate.MAX_CELLS)
+        assertEquals(SeedLevel.CONFIRM, SeedEstimate.level(n))
+        assertTrue(SeedEstimate.estimate(big).endsWith("it runs in the background and may take hours."))
+        assertTrue(SeedEstimate.confirmText(n).contains("may take hours"))
+        val small = SeedEstimate.confirmText(150)
+        assertTrue(small, !small.contains("may take hours"))
+        assertTrue(!SeedEstimate.estimate(GeoBox(27.0, 88.0, 27.6, 88.5)).contains("may take hours"))
+    }
+
     @Test fun durationWords() {
         assertEquals("about 7 s", SeedEstimate.duration(1)); assertEquals("about 89 s", SeedEstimate.duration(12)); assertEquals("about 13 min", SeedEstimate.duration(100)); assertEquals("about 9 h", SeedEstimate.duration(4_000))
         assertEquals("about 3 min", SeedEstimate.duration(100, 1.5)) // the phone's own figure replaces the laptop one
@@ -79,7 +91,7 @@ class SeedEstimateTest {
 
     @Test fun lineSaysCountTimeAndWifiOrWhyNot() {
         assertTrue(SeedEstimate.line(PlaceGuideModel.RAMOJI).contains("1 cell (5 km each)"))
-        assertTrue(SeedEstimate.line(PlaceGuideModel.RAMOJI).contains("Wi-Fi only"))
+        assertTrue(SeedEstimate.line(PlaceGuideModel.RAMOJI).contains("runs in the background"))
         assertTrue(SeedEstimate.line(GeoBox(-80.0, -170.0, 80.0, 170.0)).startsWith("Too large"))
         assertTrue(SeedEstimate.line(null).startsWith("Draw a box"))
     }
@@ -170,7 +182,7 @@ class SeedMapViewModelTest {
     @Test fun theProgressRowShowsOverallOkAndFailedCountsAndPartial() {
         val st = com.rokid.context.phone.place.SeedStates.derive(androidx.work.WorkInfo.State.RUNNING, com.rokid.context.phone.place.SeedProgress(525, 2100, okCells = 200, failCells = 325, partial = 12), com.rokid.context.memory.place.AREA_SEEDING, false)
         val rows = SeedAreaList.progress(listOf(SeedAreaInfo("seed:1", 1.0, 1.0, 1.1, 1.1, com.rokid.context.memory.place.AREA_SEEDING, seed = st)))
-        assertEquals("Seeding places 25% done (525 of 2100) \u00b7 38% ok (200) \u00b7 62% failed (325) \u00b7 12 partial", rows.single().text)
+        assertEquals("Seeding places 25% done (525 of 2100) \u00b7 38% ok (200) \u00b7 62% failed (325) \u00b7 12 without OSM extras", rows.single().text)
     }
 
     @Test fun smallBoxSeedsAtOnceAndShowsTheSeedMessage() = runTest {

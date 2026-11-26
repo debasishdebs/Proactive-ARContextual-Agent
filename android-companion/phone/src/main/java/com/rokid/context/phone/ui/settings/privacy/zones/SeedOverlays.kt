@@ -78,6 +78,9 @@ enum class SeedLevel { EMPTY, OK, CONFIRM, TOO_LARGE }
 object SeedEstimate {
     /** Above this many 5 km cells the app asks before seeding (design 3.2). */
     const val CONFIRM_CELLS = 100L
+    /** Above this many cells the estimate and the confirm step say "this is large; it runs in the background and may take hours" (owner ruling 27 Nov: the size of the trip box). */
+    const val LARGE_CELLS = 2_000L
+    const val LARGE_WARNING = "This is large: it runs in the background and may take hours."
     /** The pack's own hard cap; a box above it is refused here before any request. */
     const val MAX_CELLS: Long = PlacePack.MAX_SEED_CELLS.toLong()
     /**
@@ -122,7 +125,7 @@ object SeedEstimate {
         val places = Math.round(n * rates.placesPerCell)
         val bytes = Math.round(places * rates.bytesPerPlace.toDouble())
         val rough = if (rates.rough) " (rough: not enough seeded cells on this phone yet)" else ""
-        return "About $n cell${if (n == 1L) "" else "s"} (5 km), about $places place${if (places == 1L) "" else "s"}, about ${sizeText(bytes)} of text, ${duration(n, rates.secondsPerCell ?: SECONDS_PER_CELL)} on Wi-Fi ${if (rates.secondsPerCell != null) TIME_FROM_PHONE else TIME_FROM_LAPTOP}.$rough"
+        return "About $n cell${if (n == 1L) "" else "s"} (5 km), about $places place${if (places == 1L) "" else "s"}, about ${sizeText(bytes)} of text, ${duration(n, rates.secondsPerCell ?: SECONDS_PER_CELL)} on Wi-Fi ${if (rates.secondsPerCell != null) TIME_FROM_PHONE else TIME_FROM_LAPTOP}.$rough" + (if (n > LARGE_CELLS) " $LARGE_WARNING" else "")
     }
 
     fun sizeText(bytes: Long): String = if (bytes < 100_000) "${Math.max(1, (bytes + 512) / 1024)} KB" else String.format(java.util.Locale.US, "%.1f MB", bytes / 1_048_576.0)
@@ -134,11 +137,11 @@ object SeedEstimate {
         return when (level(n)) {
             SeedLevel.EMPTY -> "Draw a box to see how many 5 km cells it covers."
             SeedLevel.TOO_LARGE -> "Too large: $n cells. Draw a smaller area (at most $MAX_CELLS cells)."
-            else -> "$n cell${if (n == 1L) "" else "s"} (5 km each), ${duration(n)}, Wi-Fi only."
+            else -> "$n cell${if (n == 1L) "" else "s"} (5 km each), ${duration(n)}, runs in the background."
         }
     }
 
-    fun confirmText(cells: Long): String = "This is a large area ($cells cells, ${duration(cells)}). Seed it? Only the 5 km cell keys are sent, never your position."
+    fun confirmText(cells: Long): String = "This is a large area ($cells cells, ${duration(cells)})." + (if (cells > LARGE_CELLS) " $LARGE_WARNING" else "") + " Seed it? Only the 5 km cell keys are sent, never your position."
 
     private fun latIndex(lat: Double) = minOf(LAT_CELLS - 1, floor((lat + 90.0) / Geohash5.LAT_STEP).toInt())
     private fun lonIndex(lon: Double) = minOf(LON_CELLS - 1, floor((lon + 180.0) / Geohash5.LON_STEP).toInt())
