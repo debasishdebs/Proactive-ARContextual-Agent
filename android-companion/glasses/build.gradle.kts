@@ -74,3 +74,4 @@ tasks.matching { it.name.startsWith("compile") && it.name.contains("UnitTestKotl
 
 // Compose UI tests need ui-test-manifest's host activity, which is debug-only; release unit tests would have none.
 androidComponents { beforeVariants(selector().withBuildType("release")) { it.enableUnitTest = false } }
+apply(from = "../release-signing.gradle")

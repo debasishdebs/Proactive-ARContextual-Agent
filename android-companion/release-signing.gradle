@@ -1,0 +1,22 @@
+// Release signing plumbing, applied by each shipped app module (phone, glasses, watch).
+// Secrets live OUTSIDE the repo: $PCA_KEYSTORE_PROPERTIES, else ~/.pca/keystore.properties.
+// Keys: storeFile, storePassword, keyAlias, keyPassword. If the file is absent the release build stays unsigned (no failure).
+def pcaKsFile = new File(System.getenv('PCA_KEYSTORE_PROPERTIES') ?: "${System.getProperty('user.home')}/.pca/keystore.properties")
+def pcaKs = new Properties()
+if (pcaKsFile.isFile()) { pcaKsFile.withInputStream { pcaKs.load(it) } }
+def pcaKsOk = pcaKsFile.isFile() && ['storeFile', 'storePassword', 'keyAlias', 'keyPassword'].every { pcaKs.getProperty(it) } && new File(pcaKs.getProperty('storeFile') ?: '/nonexistent').isFile()
+if (pcaKsOk) {
+    android {
+        signingConfigs {
+            release {
+                storeFile = new File(pcaKs.getProperty('storeFile'))
+                storePassword = pcaKs.getProperty('storePassword')
+                keyAlias = pcaKs.getProperty('keyAlias')
+                keyPassword = pcaKs.getProperty('keyPassword')
+            }
+        }
+        buildTypes { release { signingConfig = signingConfigs.release } }
+    }
+} else {
+    logger.lifecycle("${project.path}: release signing: no usable keystore.properties, release APK will be UNSIGNED")
+}

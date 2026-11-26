@@ -167,3 +167,4 @@ val verifyNoReleaseMapKey = tasks.register("verifyNoReleaseMapKey") {
     }
 }
 tasks.configureEach { if (name == "assembleRelease" || name == "bundleRelease") dependsOn(verifyNoReleaseMapKey) }
+apply(from = "../release-signing.gradle")

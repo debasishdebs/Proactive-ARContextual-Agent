@@ -59,3 +59,9 @@ docs/superpowers/plans/handoffs/trip-analysis-*.md
 docs/superpowers/plans/handoffs/trip-gap-analysis-*.md
 docs/superpowers/plans/handoffs/retention-redaction-analysis-*.md
 local.properties
+
+# Release signing secrets (never tracked)
+keystore.properties
+*.jks
+*.keystore
+*.p12
