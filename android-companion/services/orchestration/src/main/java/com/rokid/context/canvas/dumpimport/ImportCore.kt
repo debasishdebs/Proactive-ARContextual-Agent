@@ -329,7 +329,7 @@ class DumpImporter(
 ) {
     private class Stopped : Exception(null, null, false, false)
 
-    private class Tally { var f = 0; var m = 0; var k = 0; var l = 0; var cards = 0; var notImported = 0; var pins = 0; var pinLinksDropped = 0; var cardsDone = 0; val cardsSkipped = java.util.TreeMap<String, Int>(); val newMoments = ArrayList<DumpImportParser.MomentItem>(); var scenes = 0; var scenesRemapped = 0; var sceneTexts = 0 }
+    private class Tally { var f = 0; var m = 0; var k = 0; var l = 0; var cards = 0; var notImported = 0; var pins = 0; var pinLinksDropped = 0; var cardsDone = 0; val cardsSkipped = java.util.TreeMap<String, Int>(); val newMoments = ArrayList<DumpImportParser.MomentItem>(); val dedupMoments = ArrayList<DumpImportParser.MomentItem>(); var scenes = 0; var scenesRemapped = 0; var sceneTexts = 0 }
 
     suspend fun run(entries: List<DumpImportParser.Entry>, dedup: Boolean, dryRun: Boolean): ImportReport {
         val out = arrayOfNulls<Pair<String, String>>(entries.size)
@@ -353,7 +353,7 @@ class DumpImporter(
         // order: Moments (and skips, standalone marks), pins (a pin may name a Moment of this request), place cards (they may name a pin, and their photo must be on the phone), Scenes (they hold Moments); results keep the request order
         phase { it !is DumpImportParser.Entry.Pin && it !is DumpImportParser.Entry.Scene }
         phase { it is DumpImportParser.Entry.Pin }
-        if (!stopped) for (m in t.newMoments) {
+        if (!stopped) for (m in t.newMoments + t.dedupMoments) {
             try { for (c in m.cards) { if (dryRun) t.cardsDone++ else { check(gen0); cardOne(c, t) } } } catch (s: Stopped) { stopped = true; break }
             catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (x: Exception) { t.cardsSkipped.merge("error", 1, Int::plus) }
         }
@@ -403,6 +403,7 @@ class DumpImporter(
         }
         val m = (e as DumpImportParser.Entry.Moment).item
         val verdict = verdict(m)
+        if (verdict == "conflict" && dedup && m.cards.isNotEmpty()) t.dedupMoments += m // a Moment that is already here still gets its place cards (a pin they name may have arrived after the first pass); each card has its own exists/fence verdicts
         if (verdict != null) return if (verdict == "conflict") (if (dedup) "skipped" to "dedup" else "conflict" to "exists") else "skipped" to verdict
         if (dryRun) { t.newMoments += m; t.f += m.frames.size; t.m += m.memories.size; t.k += m.marks.size; if (m.location != null) t.l++; return "would_create" to "ok" }
         check(gen0)

@@ -143,6 +143,7 @@ def push(api, folder, dry_run, dedup, batch, since, until, say=print):
     tot = dict(moments=0, photos=0, photos_missing=0, unreadable=0, requests=0, created=0, would_create=0, conflicts=0, failed=0, skipped=0, rejected_requests=0,
                pins_sent=0, marks_sent=0, scenes_sent=0, pins=0, place_cards=0, scenes=0, scenes_remapped=0, scene_texts=0)
     pending = []
+    card_items = []   # reduced copies (no photos, no memories/marks/location) of the Moments that carry place cards: re-sent with dedup after the pins exist
 
     def flush():
         for group in batches(pending, batch):
@@ -176,6 +177,9 @@ def push(api, folder, dry_run, dedup, batch, since, until, say=print):
             continue
         tot["moments"] += 1; tot["photos"] += n; tot["photos_missing"] += missing
         pending.append((item, len(json.dumps(item))))
+        if item.get("placeCards"):
+            card_items.append({"object_type": "moment", "id": item["id"], "startMs": item.get("startMs"), "placeCards": item["placeCards"],
+                               "frames": [dict(f, hasPhoto=False) for f in item.get("frames", [])], "memories": [], "marks": []})
         if len(pending) >= batch:
             flush()
     flush()
@@ -187,6 +191,17 @@ def push(api, folder, dry_run, dedup, batch, since, until, say=print):
             if len(pending) >= batch:
                 flush()
         flush()
+    # a place card may name a pin that was sent after its Moment: ask again, deduped, so the cards of existing Moments are restored now that the pins are there
+    if card_items and not dry_run:
+        saved = dedup
+        dedup = True
+        for it in card_items:
+            pending.append((it, len(json.dumps(it))))
+            if len(pending) >= batch:
+                flush()
+        flush()
+        dedup = saved
+        tot["card_passes"] = len(card_items)
     say("import %s: %s" % ("DRY RUN" if dry_run else "done", " ".join("%s=%d" % kv for kv in tot.items())))
     return tot
 
@@ -238,6 +253,14 @@ def selftest():
         check(len(sent) == 1 and sent[0][1]["items"][0]["object_type"] == "pin", "--since keeps pins (configuration) but drops the older marks and Scenes")
         check(len(list(batches([(i, 10) for i in range(5)], 2, 100))) == 3 and len(list(batches([(1, 90), (2, 90)], 50, 100))) == 2, "batching by count and bytes")
         check(not any("65000000" in l or "fa" in l.split() for l in lines), "output holds no id")
+
+        # place cards: the Moment is re-sent (deduped, no photos) AFTER the pins
+        md = os.path.join(t, "2026-11-20", "65000000")
+        json.dump({"id": "65000000", "startMs": 1, "frames": [{"id": "fa", "hasPhoto": True}], "memories": [], "placeCards": [{"id": "c1", "placeId": "user:x"}]}, open(os.path.join(md, "moment.json"), "w"))
+        sent.clear(); push(Fake(), t, False, False, 50, None, None, lines.append)
+        last = sent[-1]
+        check(last[1]["items"][0]["object_type"] == "moment" and last[2] == {"dedup": "true"} and "photos" not in last[1]["items"][0] and last[1]["items"][0]["frames"][0]["hasPhoto"] is False and last[1]["items"][0]["placeCards"], "cards pass after the extras, deduped, photo-less")
+        check(sent[-2][1]["items"][0]["object_type"] == "scene", "cards pass is last")
 
         class Refuse:
             def post(self, *a, **k):

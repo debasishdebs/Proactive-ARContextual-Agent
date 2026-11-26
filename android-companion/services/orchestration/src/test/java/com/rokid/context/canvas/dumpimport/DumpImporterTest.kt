@@ -155,6 +155,15 @@ class DumpImporterTest {
         assertEquals(0, r.locations); assertEquals(0, db.momentLocationDao().count()); assertEquals(1, r.frames)
     }
 
+    @Test fun aDedupedExistingMomentStillRestoresItsPlaceCards() = runBlocking<Unit> {
+        run(body(cardsJson = ""))
+        assertEquals(0, cardRows())
+        val r = run(body(), dedup = true)
+        assertEquals(listOf("skipped" to "dedup"), r.items)
+        assertEquals(1, r.cards); assertEquals(1, cardRows())
+        assertEquals("a second pass adds nothing", 0, run(body(), dedup = true).cards); assertEquals(1, cardRows())
+    }
+
     @Test fun locationSettingOffSavesNoLocation() {
         locOn = false
         run(body())
