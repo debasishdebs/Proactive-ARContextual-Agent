@@ -1,0 +1,13 @@
+Review ONLY the range `git log 79a74f70..HEAD` (everything after round 8; HEAD is the tip). Earlier rounds' findings are handled, do not re-report them.
+Read-only review of this checkout (branch feat/v101-ask-eval). Do not edit any file. No Gradle, adb, or device-touching scripts, no network (git show/diff/log, grep, python on local files are fine).
+Scope: seeding slice (per-server pause, partial-as-done, size warning, UA), progress display (SeedTally), HTTP/diagnostic logging, error-body fix, bulk Wikidata seeding path (PlaceBulkSource, PlacePack bulk path, bulkSeed flag, cell bookkeeping, cap 30,000), class-aware 1 km rule, class data (~167 classes, ExtraPlaceTypes toggles), Settings UI toggles, tools/measure scripts, large-area design docs.
+Ask specifically:
+(1) Bulk path correctness: can it store wrong or unsafe places (coordinate rule bypass, person exclusion bypass, curated/QID handling, class tolerance abuse, radius caps); mark cells done that were not actually covered; lose failed boxes; loop forever; exceed caps; ignore Wi-Fi-only / data-saver / offline-only; bypass zone guard or pause rules on seeding.
+(2) Request politeness: global and per-server pause, Retry-After, no parallel burst, User-Agent.
+(3) Privacy: logs content-free (no coordinates, names, ids, URLs); prefs excluded from backup; no place data in AI prompts.
+(4) Progress/tally correctness (ok/failed/partial, retry, resume); no stuck 'seeding' state.
+(5) Toggle/pref defaults and migration of old prefs.
+(6) tools/measure scripts: no secrets, outputs go outside the repo, no names/coordinates committed.
+(7) Forget / Delete all interplay with newly stored places.
+(8) Anything that could break the encrypted places.db v3 already on the owner's phone (no schema change expected: confirm).
+Severity: P1 = data loss, unrequested deletion, privacy leak, crash loop, unsafe place stored; P2 = wrong but rare/safe; P3 = cosmetic. Output: line 1 `VERDICT: READY` or `VERDICT: NOT READY`, numbered findings `[P1|P2|P3] path:line - scenario - one-line fix`. Under 40 lines.
