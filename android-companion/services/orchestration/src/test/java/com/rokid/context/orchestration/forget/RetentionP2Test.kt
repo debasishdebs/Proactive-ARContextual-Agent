@@ -123,6 +123,16 @@ class RetentionP2Test {
         assertEquals(listOf("lc", "lm", "lp", "lpin", "sc", "oc"), alive())
     }
 
+    /** review2 #5: a pin linked AFTER the selection (the photo was not exempt then) but before the expiry commits still protects the photo: the exemptions are re-read under the pin lock, right before the expiry. */
+    @Test fun aPinLinkedBetweenSelectionAndExpiryStillProtectsThePhoto() = bothModes { v2 ->
+        world()
+        var current = outside
+        val r = Retention(graph, ForgetService(graph.db, graph.proposals) { now }, beforeSkippedExpiry = { current = current + "sn" }, protectedFrames = { current }, exemptPhotos = true)
+        r.run(settings(), now) { x -> FrameSweep.delete(x.framesToDelete) }
+        assertNotNull("v2=$v2: the photo a pin linked meanwhile is kept", graph.db.forgetDao().frame("sn"))
+        assertNull("an unprotected one still expires", graph.db.forgetDao().frame("ln"))
+    }
+
     /** An exempt photo is still removed by an explicit user Forget (the exemption is retention only). */
     @Test fun aUserForgetStillRemovesAnExemptPhoto() = bothModes { v2 ->
         world(); run(exempt = true)

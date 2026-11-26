@@ -130,6 +130,25 @@ internal class Retention(
         }
     }
 
+    /**
+     * review2 #5: runs [expire] over the part of [ids] that is STILL not exempt, under the pin lock ([com.rokid.context.work.frames.place.PlacePinning.underPinLock], the one lock of every pin create / edit / Moment link). With the flag ON
+     * the exemptions are read again INSIDE that lock, right before the expiry commits (the outside set fresh, the in-database ones by `explicitlyKeptAmong`), so a pin linked, a card sent or a mark made after the selection protects the photo,
+     * and a pin cannot be linked between this re-read and the commit. Unreadable = nothing expires. With the flag OFF it is just [expire].
+     */
+    private suspend fun expireGuarded(ids: List<String>, expire: suspend (List<String>) -> ForgetService.Result): ForgetService.Result {
+        if (!exemptPhotos) return expire(ids)
+        return com.rokid.context.work.frames.place.PlacePinning.underPinLock {
+            val out = runCatching { protectedFrames() }.getOrNull()
+            if (out == null) { PcLog.milestone(LOG_TAG, "photo exemption unreadable: photo expiry skipped"); return@underPinLock ForgetService.Result.EMPTY }
+            val dao = graph.db.forgetDao()
+            val kept = HashSet<String>(); ids.filter { it in out }.forEach { kept += it }
+            ids.filter { it !in kept }.chunked(EXEMPT_BIND).forEach { kept += dao.explicitlyKeptAmong(it, ForgetRadius.ms()) }
+            exemptKnown += kept // so the selection never offers them again (no loop)
+            val safe = ids.filter { it !in kept }
+            if (safe.isEmpty()) ForgetService.Result.EMPTY else expire(safe)
+        }
+    }
+
     /** [deletedUndescribed] is 0 by construction (expiry requires a citing memory); it is kept as the Diagnostics counter that proves it. */
     data class Summary(val skippedDeleted: Int = 0, val deletedUndescribed: Int = 0, val demoted: Int = 0, val photosExpired: Int = 0)
 
@@ -202,7 +221,12 @@ internal class Retention(
             var covered = 0L
             val take = ArrayList<String>()
             for (id in ids) { take += id; covered += photoBytes(dao.frame(id)?.path); if (covered >= need) break }
-            val r = service.expirePhotos(take, requireLinked = true) // a photo no memory describes any more is skipped inside the transaction
+            // review2 #5: the protection set is read again under the pin lock, right before the expiry (a pin linked since the start of the pass protects its photos); unreadable = nothing evicted
+            val r = com.rokid.context.work.frames.place.PlacePinning.underPinLock {
+                val fresh = runCatching { protectedFrames() }.getOrNull()
+                val ok = fresh?.let { f -> take.filter { it !in f } }.orEmpty()
+                if (ok.isEmpty()) ForgetService.Result.EMPTY else service.expirePhotos(ok, requireLinked = true) // a photo no memory describes any more is skipped inside the transaction
+            }
             evicted += r.expiredFrames
             val freed = r.framesToDelete.sumOf { photoBytes(it) } // read before the caller deletes the files
             onChunk(r)
@@ -237,7 +261,7 @@ internal class Retention(
             val ids = dueNotExempt(CHUNK) { dao.skippedPhotosDue(since, s.skippedPhotoDays * DAY, nowMs, PROTECT_MS, it) }
             if (ids.isEmpty()) break
             beforeSkippedExpiry(ids)
-            val r = service.expirePhotos(ids, recheckSkipped = true) // S4: a photo described since the selection is kept
+            val r = expireGuarded(ids) { service.expirePhotos(it, recheckSkipped = true) } // S4: a photo described since the selection is kept
             skipped += r.expiredFrames
             onChunk(r)
         }
@@ -250,7 +274,7 @@ internal class Retention(
             for (round in 0 until MAX_ROUNDS) {
                 val ids = dueNotExempt(CHUNK) { dao.linkedPhotosDue(since, window, nowMs, PROTECT_MS, ready, GRACE_DAYS * DAY, it) }
                 if (ids.isEmpty()) break
-                onChunk(service.expirePhotos(ids, requireLinked = true))
+                onChunk(expireGuarded(ids) { service.expirePhotos(it, requireLinked = true) })
             }
         }
         // 6. Image vectors (all spaces); the photo stays. The marker keeps the backfill from re-embedding what was removed.
@@ -266,7 +290,7 @@ internal class Retention(
             if (s.photoDays == MemorySettings.FOREVER) break // legacy photos follow the Photos setting
             val frames = dueNotExempt(CHUNK) { dao.orphanFramesBefore(nowMs - s.photoDays * DAY, it) }
             if (frames.isEmpty()) break
-            onChunk(service.expireOrphanFrames(frames)) // its own path, no cascade of any kind; the expiry marker keeps it "expired", not "forgotten"
+            onChunk(expireGuarded(frames) { service.expireOrphanFrames(it) }) // its own path, no cascade of any kind; the expiry marker keeps it "expired", not "forgotten"
         }
         return Summary(skipped, 0, demoted)
     }
