@@ -472,3 +472,59 @@ Totals in the Rajasthan sample: these types add 75 items on top of the 537 (step
 | Q13409250, Q537127 | aerial lift (ropeway), road bridge | landmark | no | on | 0 / 1+2 |
 | Q288514 | fair | event | no | optional toggle | 2 / 0 |
 Not recommended: villages, human settlements, constituencies, districts, tehsils, universities, schools, colleges, hospitals, airports, metro stations, roads, border classes, battles and sieges, power stations (coal, gas, solar), princely states. Class ids marked TODO-verify: a "city gate" class, Digambara and Svetambara temple, bus stop (Q953806 was not checked) and the heritage-hotel class (none exists).
+
+## Class survey India 27 Nov (Mac, `tools/measure/measure_india_classes.py`; class ids, labels and counts only)
+
+One SPARQL aggregation (GROUP BY class, COUNT DISTINCT items) per 4 x 4 degree grid cell over items with an English Wikipedia article, a coordinate and country India. No place rows were downloaded; no names or coordinates are recorded here.
+
+- Items: 65,712 in 1,678 distinct P31 classes. Requests: 149 (76 cells answered, 4 splits, 0 given up), about 14 minutes (862 s). HTTP: 200 x 143, 502 x 5, 429 x 1.
+- Included vs skipped (the app class rule, final admitted set in `handoffs/final-class-ids-2026-11-27.txt`):
+  - Sikkim box: 183 of 532 admitted (34.4%).
+  - Rajasthan sample: 686 of 2,745 (25.0%).
+  - India-wide class-hit upper bound: 15,788 of 65,712 (24.0%). Railway station (4,258) plus station located on surface (1,782) is about 38% of that, so the railway-station switch dominates the India number.
+- So about three quarters of Indian Wikipedia places are skipped by design: they are villages, settlements, neighbourhoods, constituencies, schools and similar.
+
+Top 40 classes by count that are NOT in the final admitted set:
+
+| class | id | items |
+|---|---|---|
+| village in India | Q56436498 | 21,275 |
+| human settlement | Q486972 | 7,292 |
+| neighborhood | Q123705 | 926 |
+| metro station | Q928830 | 838 |
+| district of India | Q1149652 | 815 |
+| census town of India | Q16830604 | 799 |
+| (no label) | (none) | 783 |
+| school | Q3914 | 746 |
+| elevated station | Q11670533 | 679 |
+| academic institution | Q4671277 | 624 |
+| university | Q3918 | 622 |
+| Lok Sabha constituency | Q47481352 | 563 |
+| college | Q189004 | 547 |
+| engineering school | Q1663017 | 539 |
+| administrative territorial entity | Q56061 | 475 |
+| human-geographic territorial entity | Q15642541 | 421 |
+| state public university | Q7603893 | 395 |
+| hospital | Q16917 | 366 |
+| gram panchayat | Q2732840 | 358 |
+| mandal of Andhra Pradesh | Q122987710 | 348 |
+| community development block in West Bengal | Q122987743 | 342 |
+| constituency of the West Bengal Legislative Assembly | Q47490604 | 295 |
+| constituency of the Maharashtra Legislative Assembly | Q54375467 | 286 |
+| state private university | Q131389368 | 271 |
+| building | Q41176 | 264 |
+| constituency of the Uttar Pradesh Legislative Assembly | Q26685543 | 240 |
+| constituency of the Tamil Nadu Legislative Assembly | Q54375510 | 230 |
+| constituency of the Bihar Legislative Assembly | Q54375424 | 230 |
+| constituency of the Madhya Pradesh Legislative Assembly | Q54375465 | 228 |
+| constituency of the Karnataka Legislative Assembly | Q54375457 | 225 |
+| town in India | Q58339518 | 214 |
+| constituency of the Rajasthan Legislative Assembly | Q54375498 | 201 |
+| suburb | Q188509 | 198 |
+| higher secondary school | Q64062731 | 192 |
+| Community Development Block of Jharkhand | Q122987723 | 192 |
+| constituency of the Andhra Pradesh Legislative Assembly | Q54375413 | 190 |
+| underground station | Q22808403 | 187 |
+| constituency of the Gujarat Legislative Assembly | Q54375438 | 181 |
+| coal-fired power station | Q6558431 | 170 |
+| taluk of Tamil Nadu | Q122987736 | 165 |
