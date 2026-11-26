@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -34,6 +35,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -126,7 +128,9 @@ class ActivityMapViewTest {
         networkOnline = false
         show(ActivityViewMode.MAP, ActivityMapState(loaded = true, points = listOf(HeatPoint("a", 17.38, 78.48, 1))))
         compose.onNodeWithTag("activity_map_no_network").assertExists()
-        compose.onNodeWithText(MomentHeat.NO_NETWORK).assertExists()
+        compose.onNodeWithText(MomentHeat.NO_NETWORK).assertExists() // exactly one node: the banner says it, no second notice repeats it
+        compose.onNodeWithTag("activity_map_no_network").assertTextEquals(MomentHeat.NO_NETWORK)
+        assertFalse(MomentHeat.NO_NETWORK.contains("pause", true) || MomentHeat.NO_NETWORK.contains("seed", true))
     }
 
     @Test fun centreOnMeShowsNoteWithoutAFixAndNothingWithOne() {

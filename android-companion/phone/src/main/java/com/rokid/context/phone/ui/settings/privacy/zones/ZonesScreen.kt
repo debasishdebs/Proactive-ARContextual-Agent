@@ -104,8 +104,8 @@ private val MapBackground = Color(0xFFF3F1EA)
 
 /** The red no-network banner of the map screens (owner 6e). The map area itself is a plain white grid meanwhile; nothing is stored. */
 @Composable
-fun NoNetworkBanner(tag: String = "no_network_banner", modifier: Modifier = Modifier) {
-    Text(ZoneWords.NO_NETWORK_BANNER, style = MaterialTheme.typography.bodyMedium, color = Color.White, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, modifier = modifier.fillMaxWidth().background(Color(0xFFC62828)).padding(horizontal = 12.dp, vertical = 8.dp).testTag(tag))
+fun NoNetworkBanner(tag: String = "no_network_banner", modifier: Modifier = Modifier, text: String = ZoneWords.NO_NETWORK_BANNER) {
+    Text(text, style = MaterialTheme.typography.bodyMedium, color = Color.White, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, modifier = modifier.fillMaxWidth().background(Color(0xFFC62828)).padding(horizontal = 12.dp, vertical = 8.dp).testTag(tag))
 }
 
 class ZonesCallbacks(

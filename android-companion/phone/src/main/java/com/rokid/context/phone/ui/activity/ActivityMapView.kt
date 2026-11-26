@@ -87,10 +87,10 @@ internal fun ActivityHeatMap(map: ActivityMapState, g: Granularity, online: Onli
     var picked by remember { mutableStateOf<HeatCell?>(null) }
     var you by remember { mutableStateOf<com.rokid.context.phone.ui.settings.privacy.zones.LatLon?>(null) } // screen state only: never stored, logged or sent
     var fixNote by remember { mutableStateOf<String?>(null) }
-    val notice = if (!networkOnline) MomentHeat.NO_NETWORK else if (onlineLoading) null else MomentHeat.tileNotice(online?.ui?.available == true, online?.ui?.enabled == true) // no "add a key" notice while the key is still being read
+    val notice = if (!networkOnline) null /* the red banner below carries the offline wording: said once */ else if (onlineLoading) null else MomentHeat.tileNotice(online?.ui?.available == true, online?.ui?.enabled == true) // no "add a key" notice while the key is still being read
     LaunchedEffect(map.points) { picked = null } // review2 #6: a new set of points (a reload after a deletion) never keeps a cell of the old one selected
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-        if (!networkOnline) com.rokid.context.phone.ui.settings.privacy.zones.NoNetworkBanner(tag = "activity_map_no_network", modifier = Modifier.padding(bottom = 6.dp))
+        if (!networkOnline) com.rokid.context.phone.ui.settings.privacy.zones.NoNetworkBanner(tag = "activity_map_no_network", modifier = Modifier.padding(bottom = 6.dp), text = MomentHeat.NO_NETWORK) // this screen has no pause zones or seeding: only the plain grid and the phone-held Moments apply
         if (map.loaded && map.points.isEmpty()) {
             Text(MomentHeat.EMPTY, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft, modifier = Modifier.padding(vertical = 12.dp).testTag("map_empty"))
             return@Column
