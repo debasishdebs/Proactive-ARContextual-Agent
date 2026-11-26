@@ -10,6 +10,9 @@ import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.MomentLocationEntity
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.memory.moment.MomentId
+import com.rokid.context.memory.place.PlaceKinds
+import com.rokid.context.memory.place.UserPlace
+import com.rokid.context.work.frames.place.PlacePinning
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -62,6 +65,8 @@ object DumpImportParser {
         class Skip(val reason: String) : Entry()
         /** A standalone mark item; [momentId] is the Moment the dump says it belongs to (that Moment restores it). */
         class StandaloneMark(val mark: Mark, val momentId: String?) : Entry()
+        /** A pin item: already validated by [UserPlace.isValid] (id, name, kind, position, radius, parent, note, Moment link, time). */
+        class Pin(val pin: UserPlace) : Entry()
     }
 
     class Bad(val index: Int, val reason: String) : Exception(null, null, false, false)
@@ -76,7 +81,7 @@ object DumpImportParser {
             when (str(o, "object_type", i) ?: "moment") {
                 "moment" -> Entry.Moment(moment(o, i))
                 "scene" -> Entry.Skip("scene")
-                "pin" -> Entry.Skip("pin")
+                "pin" -> pinItem(o, i)
                 "mark" -> markItem(o, i)
                 else -> throw Bad(i, "object_type")
             }
@@ -127,6 +132,23 @@ object DumpImportParser {
         val created = long(m, "createdAt", i) ?: at
         if (created < 0) throw Bad(i, "mark_createdAt")
         return Mark(mid, source, at, photo, created)
+    }
+
+    private fun pinItem(o: JsonObject, i: Int): Entry.Pin {
+        val id = str(o, "id", i, 60)?.takeIf { UserPlace.isUserId(it) } ?: throw Bad(i, "pin_id")
+        val name = str(o, "name", i, 200)?.let(UserPlace::cleanName) ?: throw Bad(i, "pin_name")
+        val kind = str(o, "kind", i, 40)?.takeIf { it in PlaceKinds.ALL } ?: throw Bad(i, "pin_kind")
+        val lat = dbl(o, "lat", i)?.takeIf { it in -90.0..90.0 } ?: throw Bad(i, "pin_lat")
+        val lon = dbl(o, "lon", i)?.takeIf { it in -180.0..180.0 } ?: throw Bad(i, "pin_lon")
+        val r = long(o, "radiusM", i) ?: UserPlace.DEFAULT_RADIUS_M.toLong()
+        if (r !in UserPlace.MIN_RADIUS_M.toLong()..PlaceKinds.MAX_RADIUS_M.toLong()) throw Bad(i, "pin_radius")
+        val parent = str(o, "parentId", i, 100)?.takeIf { it.isNotBlank() }
+        val note = str(o, "note", i, 1000)?.let(UserPlace::cleanNote) ?: ""
+        val mo = str(o, "momentId", i, 20)?.also { if (MomentId.parse(it) == null) throw Bad(i, "pin_momentId") }
+        val at = long(o, "pinnedAt", i)?.takeIf { it > 0 }
+        val pin = UserPlace(id, name, kind, lat, lon, r.toInt(), parent, note, mo, at)
+        if (!pin.isValid) throw Bad(i, "pin")
+        return Entry.Pin(pin)
     }
 
     private fun markItem(o: JsonObject, i: Int): Entry.StandaloneMark {
@@ -214,7 +236,10 @@ fun interface ImportFrameWriter { suspend fun store(frame: DumpImportParser.Fram
 fun interface ImportMemoryWriter { suspend fun store(memory: DumpImportParser.Memory): Boolean }
 
 /** The counts of one request (never ids, text or coordinates). [status] per item in order: `created`, `would_create`, `skipped`, `conflict`, `failed`. */
-class ImportReport(val items: List<Pair<String, String>>, val frames: Int, val memories: Int, val marks: Int, val locations: Int, val skippedPlaceCards: Int, val skippedNotImported: Int, val stopped: Boolean) {
+class ImportReport(
+    val items: List<Pair<String, String>>, val frames: Int, val memories: Int, val marks: Int, val locations: Int, val skippedPlaceCards: Int, val skippedNotImported: Int, val stopped: Boolean,
+    val pins: Int = 0, val pinLinksDropped: Int = 0,
+) {
     fun count(status: String) = items.count { it.first == status }
 }
 
@@ -235,43 +260,63 @@ class DumpImporter(
     private val locationEnabled: () -> Boolean,
     private val generation: () -> Long,
     private val wall: () -> Long = System::currentTimeMillis,
+    /** The pin write path ([PlacePinning.importPin] in production). */
+    private val importPin: suspend (UserPlace) -> PlacePinning.ImportOutcome = { PlacePinning.ImportOutcome.INVALID },
+    /** The ids of the pins that exist now (for `dedup` / conflict and `dry_run`). */
+    private val pinIds: () -> Set<String> = { emptySet() },
 ) {
     private class Stopped : Exception(null, null, false, false)
 
+    private class Tally { var f = 0; var m = 0; var k = 0; var l = 0; var cards = 0; var notImported = 0; var pins = 0; var pinLinksDropped = 0 }
+
     suspend fun run(entries: List<DumpImportParser.Entry>, dedup: Boolean, dryRun: Boolean): ImportReport {
-        val out = ArrayList<Pair<String, String>>()
-        var nf = 0; var nm = 0; var nk = 0; var nl = 0; var cards = 0; var notImported = 0; var stopped = false
+        val out = arrayOfNulls<Pair<String, String>>(entries.size)
+        val t = Tally()
+        var stopped = false
         val gen0 = generation()
-        for (e in entries) {
-            if (stopped) { out += "failed" to "stopped"; continue }
-            if (e is DumpImportParser.Entry.Skip) { out += "skipped" to e.reason; notImported++; continue }
-            if (e is DumpImportParser.Entry.StandaloneMark) {
-                try {
-                    val r = standaloneMark(e, dedup, dryRun, gen0)
-                    out += r; if (r.first == "created" || r.first == "would_create") nk++
-                } catch (s: Stopped) { stopped = true; out += "failed" to "stopped"
-                } catch (c: kotlinx.coroutines.CancellationException) { throw c
-                } catch (x: Exception) { out += "failed" to "error" }
-                continue
-            }
-            val m = (e as DumpImportParser.Entry.Moment).item
-            cards += m.skippedPlaceCards
-            try {
-                val verdict = verdict(m)
-                if (verdict != null) {
-                    out += if (verdict == "conflict") (if (dedup) "skipped" to "dedup" else "conflict" to "exists") else "skipped" to verdict
-                    continue
-                }
-                if (dryRun) { out += "would_create" to "ok"; nf += m.frames.size; nm += m.memories.size; nk += m.marks.size; if (m.location != null) nl++; continue }
-                check(gen0)
-                val c = write(m, gen0)
-                nf += c[0]; nm += c[1]; nk += c[2]; nl += c[3]
-                out += if (c[4] == 1) "created" to "ok" else "failed" to "partial"
-            } catch (s: Stopped) { stopped = true; out += "failed" to "stopped"
+        // Moments (and skips, standalone marks) first, then pins (a pin may name a Moment of this request); results keep the request order
+        val order = entries.indices.sortedBy { if (entries[it] is DumpImportParser.Entry.Pin) 1 else 0 }
+        for (idx in order) {
+            if (stopped) { out[idx] = "failed" to "stopped"; continue }
+            out[idx] = try { one(entries[idx], dedup, dryRun, gen0, t)
+            } catch (s: Stopped) { stopped = true; "failed" to "stopped"
             } catch (c: kotlinx.coroutines.CancellationException) { throw c
-            } catch (x: Exception) { out += "failed" to "error" }
+            } catch (x: Exception) { "failed" to "error" }
         }
-        return ImportReport(out, nf, nm, nk, nl, cards, notImported, stopped)
+        return ImportReport(out.map { it!! }, t.f, t.m, t.k, t.l, t.cards, t.notImported, stopped, pins = t.pins, pinLinksDropped = t.pinLinksDropped)
+    }
+
+    private suspend fun one(e: DumpImportParser.Entry, dedup: Boolean, dryRun: Boolean, gen0: Long, t: Tally): Pair<String, String> {
+        when (e) {
+            is DumpImportParser.Entry.Skip -> { t.notImported++; return "skipped" to e.reason }
+            is DumpImportParser.Entry.StandaloneMark -> return standaloneMark(e, dedup, dryRun, gen0).also { if (it.first == "created" || it.first == "would_create") t.k++ }
+            is DumpImportParser.Entry.Pin -> return pin(e.pin, dedup, dryRun, gen0, t)
+            is DumpImportParser.Entry.Moment -> {}
+        }
+        val m = (e as DumpImportParser.Entry.Moment).item
+        t.cards += m.skippedPlaceCards
+        val verdict = verdict(m)
+        if (verdict != null) return if (verdict == "conflict") (if (dedup) "skipped" to "dedup" else "conflict" to "exists") else "skipped" to verdict
+        if (dryRun) { t.f += m.frames.size; t.m += m.memories.size; t.k += m.marks.size; if (m.location != null) t.l++; return "would_create" to "ok" }
+        check(gen0)
+        val c = write(m, gen0)
+        t.f += c[0]; t.m += c[1]; t.k += c[2]; t.l += c[3]
+        return if (c[4] == 1) "created" to "ok" else "failed" to "partial"
+    }
+
+    /** A pin item: through [importPin] (the pin save path: same validation, same zone refusal, original id, time and Moment link). `exists` = the id is taken; a refusal is a fixed reason token. */
+    private suspend fun pin(p: UserPlace, dedup: Boolean, dryRun: Boolean, gen0: Long, t: Tally): Pair<String, String> {
+        if (p.id in pinIds()) return if (dedup) "skipped" to "dedup" else "conflict" to "exists"
+        if (dryRun) { t.pins++; return "would_create" to "ok" }
+        check(gen0)
+        return when (importPin(p)) {
+            PlacePinning.ImportOutcome.SAVED -> { t.pins++; "created" to "ok" }
+            PlacePinning.ImportOutcome.SAVED_LINK_DROPPED -> { t.pins++; t.pinLinksDropped++; "created" to "link_dropped" }
+            PlacePinning.ImportOutcome.EXISTS -> if (dedup) "skipped" to "dedup" else "conflict" to "exists"
+            PlacePinning.ImportOutcome.ZONE -> "skipped" to "zone"
+            PlacePinning.ImportOutcome.INVALID -> "failed" to "invalid"
+            PlacePinning.ImportOutcome.NOT_STORED -> "failed" to "not_stored"
+        }
     }
 
     /** The photo state a restored mark gets: `pending` only when a photo of this very mark comes with the import (the frame commit links it), else the fixed token `no_frame` or the original reason. */

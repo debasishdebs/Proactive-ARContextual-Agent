@@ -280,7 +280,8 @@ object RokidFrameInbox {
         appendFrame: FrameAppender = PipelineRecords::appendFrame,
         receipt: ReceiptMeta? = null,
         nowMs: () -> Long = System::currentTimeMillis,
-        sceneActive: suspend () -> Boolean = { com.rokid.context.work.frames.KeyframeGraph.sceneActive(context) },
+        /** null = the pipeline's own scene state (written so the Kotlin IR lowering of a from-scratch build accepts it; a suspend lambda as a default value crashes the compiler). */
+        sceneActive: (suspend () -> Boolean)? = null,
         /** Roaming data saver: true while photo uploads are blocked. The new frame is then inserted already parked (`lastError = 'data_saver'`), so it is never shed, whatever happens to the process before the next drain. */
         parkedForDataSaver: () -> Boolean = { dataSaverBlockedNow(context) },
     ): InboxResult {
@@ -288,7 +289,7 @@ object RokidFrameInbox {
         val payload = "rokid_file=${file.name} bytes=${file.length()}"
         PcLog.i(TAG, "ingestFile exists=${file.exists()} size=${file.length()}")
         val now = nowMs()
-        val routeFirst = try { sceneActive() } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
+        val routeFirst = try { if (sceneActive != null) sceneActive() else com.rokid.context.work.frames.KeyframeGraph.sceneActive(context) } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
         val rows = FrameRows(
             // routedAt stays NULL only when the scene indexer is active (an IMAGE-capable embedder is bound, vectors available, Ruling 2):
             // the router, not the per-photo path, sees the frame first. Otherwise routedAt = now: wave-1 behaviour (claimable at once).

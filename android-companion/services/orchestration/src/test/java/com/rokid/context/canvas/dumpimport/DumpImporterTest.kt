@@ -24,6 +24,11 @@ import com.rokid.context.memory.forget.MomentForget
 import com.rokid.context.memory.moment.MomentId
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Before
+import com.rokid.context.memory.place.UserPinStore
+import com.rokid.context.memory.place.UserPlace
+import com.rokid.context.work.frames.place.PinMomentLinks
+import com.rokid.context.work.frames.place.PlacePinning
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -62,8 +67,18 @@ class DumpImporterTest {
             .also { db.modelAttributionDao().record(AttributionKind.MEMORY, m.id, ModelAttribution("imported"), 42L); db.frameSourceDao().insertAll(listOf(FrameSourceEntity(m.id, m.frameId, null, "FACT"))) }
     }
     private val recorder = MarkRecorder(db.canvasSlice3Dao(), { DaoFence(0, epoch, { gen }, { epoch }) }, { 5 })
+    private val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+    private val rawPrefs get() = ctx.getSharedPreferences(UserPinStore.PREFS, android.content.Context.MODE_PRIVATE)
+    private val pinStore get() = UserPinStore(rawPrefs)
+    private var zoneOn = false
+    private val pinning = PlacePinning(
+        fix = { null }, zoneBlocked = { zoneOn }, zones = { emptyList() }, nearby = { _, _ -> emptyList() }, load = { pinStore.pins() }, save = { pinStore.write(it) },
+        elapsed = { 0L }, momentAlive = { m -> db.momentDao().photoMomentsOf(listOf(m)).isNotEmpty() },
+    )
+    @Before fun clearPins() { rawPrefs.edit().clear().commit() }
     private fun importer() = DumpImporter(
         db, frameWriter, memoryWriter, { k, photo -> recorder.importMark(k.id, k.source, k.atMs, photo, k.createdAt) }, { ids -> MomentBuilder(db).build(ids) }, { locOn }, { gen }, { 777L },
+        importPin = { pinning.importPin(it) }, pinIds = { pinStore.pins().map { it.id }.toSet() },
     )
 
     private fun body(frameId: String = "f1", memId: String = "mem1", withLoc: Boolean = true, markId: String? = "mk:ep1:3", momentId: String = id, st: Long = start) = """
@@ -166,10 +181,65 @@ class DumpImporterTest {
         bad(good.replace("\"photos\":{\"f1\"", "\"photos\":{\"zz\""))                  // photo for no frame
     }
 
-    @Test fun scenesAndPinsAreStillSkipped() {
-        val e = DumpImportParser.parse("""{"items":[{"object_type":"scene","id":"s"},{"object_type":"pin","id":"p"}]}""".toByteArray())
-        val r = runBlocking { importer().run(e, false, false) }
-        assertEquals(listOf("skipped" to "scene", "skipped" to "pin"), r.items)
+    @Test fun scenesAreStillSkipped() {
+        val e = DumpImportParser.parse("""{"items":[{"object_type":"scene","id":"s"}]}""".toByteArray())
+        assertEquals(listOf("skipped" to "scene"), runBlocking { importer().run(e, false, false) }.items)
+    }
+
+    // ---- pins ----
+    private val pinA = "user:00000000-0000-0000-0000-00000000000a"
+    private val pinB = "user:00000000-0000-0000-0000-00000000000b"
+    private fun pinJson(pid: String = pinA, moment: String? = null, kind: String = "monument", lat: Double = 7.957, r: Int = 60, parent: String? = null) =
+        """{"object_type":"pin","id":"$pid","name":"Mirror Wall","kind":"$kind","lat":$lat,"lon":80.759,"radiusM":$r,"parentId":${parent?.let { "\u0022$it\u0022" } ?: "null"},"note":"old graffiti","momentId":${moment?.let { "\u0022$it\u0022" } ?: "null"},"pinnedAt":1700000000123}"""
+    private fun pins(vararg j: String) = """{"items":[${j.joinToString(",")}]}""".toByteArray()
+
+    @Test fun pinKeepsOriginalIdTimePositionAndNoteAndIsNotAChildOfAMoment() {
+        val r = run(pins(pinJson()))
+        assertEquals(listOf("created" to "ok"), r.items); assertEquals(1, r.pins)
+        val p = pinStore.pins().single()
+        assertEquals(pinA, p.id); assertEquals(1700000000123L, p.pinnedAt); assertEquals(7.957, p.lat, 0.0); assertEquals("old graffiti", p.note); assertNull(p.momentId)
+    }
+
+    @Test fun pinKeepsItsReferenceMomentWhenTheMomentIsImportedInTheSameRequestElseDropsTheLink() {
+        val both = String(body()).trimEnd().removeSuffix("]}")
+        val r = run((both + "," + pinJson(moment = id) + "," + pinJson(pinB, moment = "00000001") + "]}").toByteArray())
+        assertEquals(listOf("created" to "ok", "created" to "ok", "created" to "link_dropped"), r.items); assertEquals(1, r.pinLinksDropped)
+        assertEquals(id, pinStore.pins().first { it.id == pinA }.momentId); assertNull(pinStore.pins().first { it.id == pinB }.momentId)
+    }
+
+    @Test fun pinDedupConflictDryRunAndZone() {
+        assertEquals(listOf("would_create" to "ok"), run(pins(pinJson()), dry = true).items); assertEquals(0, pinStore.pins().size)
+        zoneOn = true
+        assertEquals(listOf("skipped" to "zone"), run(pins(pinJson())).items); assertEquals(0, pinStore.pins().size)
+        zoneOn = false
+        run(pins(pinJson()))
+        assertEquals(listOf("conflict" to "exists"), run(pins(pinJson())).items)
+        assertEquals(listOf("skipped" to "dedup"), run(pins(pinJson()), dedup = true).items)
+        assertEquals(1, pinStore.pins().size)
+    }
+
+    @Test fun badPinsAre400() {
+        fun bad(j: String) { try { DumpImportParser.parse(pins(j)); fail(j) } catch (e: DumpImportParser.Bad) { assertEquals(0, e.index) } }
+        bad(pinJson(pid = "wd:Q1")); bad(pinJson(kind = "person")); bad(pinJson(lat = 91.0)); bad(pinJson(r = 5)); bad(pinJson(moment = "zz")); bad(pinJson(parent = "user:00000000-0000-0000-0000-00000000000c"))
+        bad(pinJson().replace("\"lon\":80.759,", "")); bad(pinJson().replace("\"name\":\"Mirror Wall\"", "\"name\":\"  \""))
+    }
+
+    @Test fun forgetOfTheReferenceMomentAndDeleteAllRemoveTheLinkedImportedPin() = runBlocking<Unit> {
+        val both = String(body()).trimEnd().removeSuffix("]}")
+        run((both + "," + pinJson(moment = id) + "," + pinJson(pinB) + "]}").toByteArray())
+        assertEquals(2, pinStore.pins().size)
+        val alive: suspend (List<String>) -> Set<String> = { l -> db.momentDao().momentsAliveOrExpired(l) }
+        val save: suspend (List<UserPlace>) -> Boolean = { pinStore.write(it) }
+        val svc = ForgetService(db, ProposalRepository(db.proposalDao(), db.actionDao(), db)) { 99L }
+        PinMomentLinks.explicitStore(pinStore, alive, save, { it.toSet() }, { true }, {}, { MomentForget(db, svc) { 99L }.forgetMoments(listOf(id)) })
+        assertEquals("Forget of the Moment deletes the pin that referenced it; the unlinked pin is user configuration", listOf(pinB), pinStore.pins().map { it.id })
+        // Delete all: a linked pin goes with it, an unlinked pin is kept by the owner's rule (pins are user configuration)
+        run(String(body(frameId = "f2", memId = "mem2", markId = null, momentId = MomentId.format(sec + 50), st = (sec + 50) * 1000)).let { (it.trimEnd().removeSuffix("]}") + "," + pinJson(moment = MomentId.format(sec + 50)) + "]}") }.toByteArray())
+        assertNotNull(pinStore.pins().first { it.id == pinA }.momentId)
+        val op = PinMomentLinks.beginWipeStore(pinStore, alive, save, resume = false)
+        PinMomentLinks.wipeCommittedStore(pinStore, op); db.wipeDao().wipeMemory(99L)
+        PlacePinning.underPinLock { PinMomentLinks.resolveStore(pinStore, alive, save, op) }; PinMomentLinks.endWipe(op)
+        assertTrue(pinStore.pins().none { it.momentId != null }); assertEquals(listOf(pinB), pinStore.pins().map { it.id })
     }
 
     // ---- standalone marks and the real mark kind ----

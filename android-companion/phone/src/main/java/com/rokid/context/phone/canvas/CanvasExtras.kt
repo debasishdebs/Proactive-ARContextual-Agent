@@ -1,5 +1,6 @@
 package com.rokid.context.phone.canvas
 
+import com.rokid.context.work.frames.place.PlaceGraph
 import android.content.Context
 import com.rokid.context.canvas.plan.ReplayService
 import com.rokid.context.canvas.plan.SweepService
@@ -94,6 +95,16 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
          */
         internal fun importRoutes(app: Context, devMode: StateFlow<Boolean>): com.rokid.context.phone.canvas.api.ImportRoutes {
             val db = MemoryGraph.get(app).db
+            val pinning = com.rokid.context.work.frames.place.PlacePinning(
+                fix = { null },
+                zoneBlocked = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } || PlaceGraph.fence.blocked() ||
+                    com.rokid.context.phone.hub.HubPauses(db.pauseDao()).zoneRecords().isNotEmpty() },
+                zones = { com.rokid.context.phone.zone.ZoneGraph.get(app).zonesForCheck() },
+                nearby = { _, _ -> emptyList() },
+                load = { PlaceGraph.pins(app).pins() }, save = { PlaceGraph.savePins(app, it) },
+                elapsed = android.os.SystemClock::elapsedRealtime, log = { com.rokid.context.core.log.PcLog.i("PcPlace", it) },
+                momentAlive = { id -> db.momentDao().photoMomentsOf(listOf(id)).isNotEmpty() },
+            )
             val importer = com.rokid.context.canvas.dumpimport.DumpImporter(
                 db,
                 frames = com.rokid.context.canvas.dumpimport.ImportFrameStore(app, { f, b, t -> com.rokid.context.phone.hub.AtomicJpegWriter.writeStamped(f, b, t) }),
@@ -102,6 +113,9 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 build = { ids -> com.rokid.context.canvas.moment.MomentTriggers.builder(app).build(ids) },
                 locationEnabled = { com.rokid.context.orchestration.forget.DeveloperFlags.momentLocation(app) },
                 generation = { MemoryWipe.generation.get() },
+                // pins: the pin save path (PlacePinning.importPin over PlaceGraph.savePins), judged against the same pause zones as a new pin
+                importPin = { pin -> pinning.importPin(pin) },
+                pinIds = { PlaceGraph.pins(app).pins().map { it.id }.toSet() },
             )
             return com.rokid.context.phone.canvas.api.ImportRoutes(devMode::value, { com.rokid.context.orchestration.forget.DeveloperFlags.devImport(app) }, importer::run)
         }

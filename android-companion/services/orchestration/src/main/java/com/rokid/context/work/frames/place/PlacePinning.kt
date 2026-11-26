@@ -120,6 +120,30 @@ class PlacePinning(
         return store(pin)
     }
 
+    /** How a pin of the Developer import ended ([importPin]). */
+    enum class ImportOutcome { SAVED, SAVED_LINK_DROPPED, EXISTS, ZONE, INVALID, NOT_STORED }
+
+    /**
+     * Developer IMPORT: stores a pin exactly as exported (original `user:<uuid>` id, position, radius, parent, note, `pinnedAt`) with NO fix, under the same lock, the same validation ([UserPlace.isValid], the pin list cap) and the
+     * same zone refusal as [createAt] (the point itself with accuracy 0 and the controller's state). The reference Moment is kept only when it is still alive ([momentAlive]); otherwise the pin is stored WITHOUT the link
+     * ([ImportOutcome.SAVED_LINK_DROPPED]: a pin is never a child of a Moment). An existing id is [ImportOutcome.EXISTS] (nothing changes). Never emits [onCreated] (an import is not a new-pin event).
+     */
+    suspend fun importPin(pin: UserPlace): ImportOutcome {
+        if (!pin.isValid) return ImportOutcome.INVALID
+        if (zoneRefuses(pin.lat, pin.lon, 0f)) { log("pin refused zone"); return ImportOutcome.ZONE }
+        val live = liveMoment(pin.momentId)
+        val stored = if (live == pin.momentId) pin else pin.copy(momentId = null)
+        return writeLock.withLock {
+            val now = load()
+            if (now.any { it.id == pin.id }) return@withLock ImportOutcome.EXISTS
+            if (now.size >= com.rokid.context.memory.place.UserPinStore.MAX_PINS) return@withLock ImportOutcome.INVALID
+            if (!save(now + stored)) return@withLock ImportOutcome.NOT_STORED
+            log("pin imported count=${now.size + 1}")
+            if (stored.momentId != null) log("pin moment linked")
+            if (stored.momentId == pin.momentId) ImportOutcome.SAVED else ImportOutcome.SAVED_LINK_DROPPED
+        }
+    }
+
     private suspend fun store(pin: UserPlace): PinResult {
         return writeLock.withLock {
             val now = load()
