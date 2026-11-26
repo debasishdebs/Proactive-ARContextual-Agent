@@ -42,7 +42,7 @@ class PlaceBulkSourceTest {
 
     @Test fun queryHasTheMeasuredShape() {
         val q = WikidataBulkSource.query(box, 2500, 5000)
-        for (part in listOf("SERVICE wikibase:box", "schema:isPartOf <https://en.wikipedia.org/>", "OPTIONAL { ?item wdt:P31 ?cls }", "ORDER BY ?item LIMIT 2500 OFFSET 5000", "Point(88.00000 27.00000)", "Point(88.50000 27.50000)")) assertTrue(part in q, part)
+        for (part in listOf("SERVICE wikibase:box", "schema:isPartOf <https://en.wikipedia.org/>", "OPTIONAL { ?item wdt:P31 ?cls }", "ORDER BY ?item ?cls ?lat ?lon LIMIT 2500 OFFSET 5000", "Point(88.00000 27.00000)", "Point(88.50000 27.50000)")) assertTrue(part in q, part)
         assertFalse("SELECT ?x WHERE { SELECT" in q) // no sub-select
     }
 

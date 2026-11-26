@@ -131,7 +131,7 @@ class WikidataBulkSource(
             "SELECT ?item ?title ?cls ?lat ?lon WHERE { SERVICE wikibase:box { ?item wdt:P625 ?loc . bd:serviceParam wikibase:cornerSouthWest \"Point(${f(b.west)} ${f(b.south)})\"^^geo:wktLiteral . " +
                 "bd:serviceParam wikibase:cornerNorthEast \"Point(${f(b.east)} ${f(b.north)})\"^^geo:wktLiteral } " +
                 "?art schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?title . OPTIONAL { ?item wdt:P31 ?cls } " +
-                "BIND(geof:latitude(?loc) AS ?lat) BIND(geof:longitude(?loc) AS ?lon) } ORDER BY ?item LIMIT $limit OFFSET $offset"
+                "BIND(geof:latitude(?loc) AS ?lat) BIND(geof:longitude(?loc) AS ?lon) } ORDER BY ?item ?cls ?lat ?lon LIMIT $limit OFFSET $offset"
 
         private fun titles(t: List<String>) = t.joinToString("%7C") { enc(it) }
 
