@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 18,
-    "identityHash": "37137458efb01a3f3edb7eb73241cb8b",
+    "identityHash": "6dd7d23e0c20c4c07c73bb79c962593f",
     "entities": [
       {
         "tableName": "frame",
@@ -4249,12 +4249,91 @@
         },
         "indices": [],
         "foreignKeys": []
+      },
+      {
+        "tableName": "place_link",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`placeId` TEXT NOT NULL, `momentId` TEXT NOT NULL, `atMs` INTEGER NOT NULL, `anchorId` TEXT NOT NULL, `role` TEXT NOT NULL, `linkedAt` INTEGER NOT NULL, PRIMARY KEY(`placeId`, `momentId`))",
+        "fields": [
+          {
+            "fieldPath": "placeId",
+            "columnName": "placeId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "momentId",
+            "columnName": "momentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "atMs",
+            "columnName": "atMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "anchorId",
+            "columnName": "anchorId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "role",
+            "columnName": "role",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "linkedAt",
+            "columnName": "linkedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "placeId",
+            "momentId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_place_link_momentId",
+            "unique": false,
+            "columnNames": [
+              "momentId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_place_link_momentId` ON `${TABLE_NAME}` (`momentId`)"
+          },
+          {
+            "name": "index_place_link_atMs",
+            "unique": false,
+            "columnNames": [
+              "atMs"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_place_link_atMs` ON `${TABLE_NAME}` (`atMs`)"
+          },
+          {
+            "name": "index_place_link_anchorId",
+            "unique": false,
+            "columnNames": [
+              "anchorId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_place_link_anchorId` ON `${TABLE_NAME}` (`anchorId`)"
+          }
+        ],
+        "foreignKeys": []
       }
     ],
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '37137458efb01a3f3edb7eb73241cb8b')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '6dd7d23e0c20c4c07c73bb79c962593f')"
     ]
   }
 }

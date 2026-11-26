@@ -20,7 +20,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ObjectAuditEntity::class, ObjectDerivedEntity::class,
         SceneEntity::class, ScenePartEntity::class,
         MomentSensorEntity::class,
-        PlaceCardLogEntity::class, MomentLocationEntity::class, SceneCentroidEntity::class, ModelAttributionEntity::class,
+        PlaceCardLogEntity::class, MomentLocationEntity::class, SceneCentroidEntity::class, ModelAttributionEntity::class, PlaceLinkEntity::class,
     ],
     version = 18,
     exportSchema = true,
@@ -61,6 +61,7 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun sceneDao(): SceneDao
     abstract fun placeCardLogDao(): PlaceCardLogDao
     abstract fun momentLocationDao(): MomentLocationDao
+    abstract fun placeLinkDao(): PlaceLinkDao
     abstract fun sceneCentroidDao(): SceneCentroidDao
     abstract fun modelAttributionDao(): ModelAttributionDao
     /** Developer dump API: read-only SELECTs only. */
@@ -364,7 +365,7 @@ val MIGRATION_16_17: Migration = object : Migration(16, 17) {
 }
 
 /**
- * v17 -> v18 (v18 build spec WP1, WP10, WP11a): four new tables and four indexes, nothing else. `place_card_log` moves the phone-only card history into context.db (its SQL is byte-identical to `MIGRATION_PLACES_1_2`);
+ * v17 -> v18 (v18 build spec WP1, WP10, WP11a): five new tables and seven indexes, nothing else. `place_card_log` moves the phone-only card history into context.db (its SQL is byte-identical to `MIGRATION_PLACES_1_2`);
  * `moment_location` is the optional saved location of a Moment; `scene_centroid` (WP10) is the centroid of a Scene's member embeddings per space; `model_attribution` (WP11a) records which model wrote a caption, summary, description, extract or answer. No existing table changes, no row is touched; the SQL equals the exported `18.json`.
  */
 val MIGRATION_17_18: Migration = object : Migration(17, 18) {
@@ -377,5 +378,10 @@ val MIGRATION_17_18: Migration = object : Migration(17, 18) {
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_moment_location_anchorId` ON `moment_location` (`anchorId`)")
         db.execSQL("CREATE TABLE IF NOT EXISTS `scene_centroid` (`sceneId` TEXT NOT NULL, `space` TEXT NOT NULL, `membershipRev` INTEGER NOT NULL, `dim` INTEGER NOT NULL, `vector` BLOB NOT NULL, `memberCount` INTEGER NOT NULL, `builtAt` INTEGER NOT NULL, PRIMARY KEY(`sceneId`, `space`))")
         db.execSQL("CREATE TABLE IF NOT EXISTS `model_attribution` (`kind` TEXT NOT NULL, `refId` TEXT NOT NULL, `model` TEXT NOT NULL, `modelVersion` TEXT, `promptRev` TEXT, `recordedAt` INTEGER NOT NULL, PRIMARY KEY(`kind`, `refId`))")
+        // place object S1: the pointers from a user place to the Moments of its cards (no coordinates, no text); deleted by the Forget choke points
+        db.execSQL("CREATE TABLE IF NOT EXISTS `place_link` (`placeId` TEXT NOT NULL, `momentId` TEXT NOT NULL, `atMs` INTEGER NOT NULL, `anchorId` TEXT NOT NULL, `role` TEXT NOT NULL, `linkedAt` INTEGER NOT NULL, PRIMARY KEY(`placeId`, `momentId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_place_link_momentId` ON `place_link` (`momentId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_place_link_atMs` ON `place_link` (`atMs`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_place_link_anchorId` ON `place_link` (`anchorId`)")
     }
 }

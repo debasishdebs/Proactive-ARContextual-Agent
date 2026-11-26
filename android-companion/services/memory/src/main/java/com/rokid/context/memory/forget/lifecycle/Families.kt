@@ -21,7 +21,7 @@ internal object SideEffectRefs {
 object Families {
     val ALL: List<ForgetFamily> = listOf(
         PhotoFamily, MemoryFamily, MomentFamily, SceneFamily, DerivedFieldFamily, MarkFamily, TraceFamily, RunResultFamily,
-        AnswerFamily, NudgeFamily, ProposalFamily, AudioFamily, PersonFamily, ObjectFamily, MomentLocationFamily, SceneCentroidFamily, ModelAttributionFamily, PlaceHistoryFamily, PlacePackFamily, PlaceCardFamily, ConfigFamily, ControlFamily,
+        AnswerFamily, NudgeFamily, ProposalFamily, AudioFamily, PersonFamily, ObjectFamily, MomentLocationFamily, PlaceLinkFamily, SceneCentroidFamily, ModelAttributionFamily, PlaceHistoryFamily, PlacePackFamily, PlaceCardFamily, ConfigFamily, ControlFamily,
     )
 
     fun of(f: Family): ForgetFamily = ALL.first { it.family == f }
@@ -178,6 +178,17 @@ internal object DerivedFieldFamily : ForgetFamily {
 internal object MomentLocationFamily : ForgetFamily {
     override val family = Family.MOMENT_LOCATION
     override val tables = listOf("moment_location")
+    override val selfDeletes = false
+}
+
+/**
+ * The pointers from a user place to the Moments of its cards (place object S1): a leaf, never a [MomentFamily] table (a rebuild keeps it). Not enumerated by the planner ([DesignDivergence]
+ * PLACE_LINK_NOT_PLANNED): the user-Forget step code deletes it by photo anchor, by second and by time inside the transaction that already deletes the source; Delete all deletes it; a removed pin takes its rows.
+ * Expiry, the sweep, the invalid-Moment purge and the rebuilds keep it (readers filter tombstoned Moments).
+ */
+internal object PlaceLinkFamily : ForgetFamily {
+    override val family = Family.PLACE_LINK
+    override val tables = listOf("place_link")
     override val selfDeletes = false
 }
 

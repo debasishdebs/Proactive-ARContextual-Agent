@@ -22,6 +22,13 @@ class WipeDaoTest {
         assertEquals(0, rowCount(db.openHelper.writableDatabase, "moment_location"))
     }
 
+    @Test fun placeLinkEmptyAfterWipe() = runBlocking {
+        db.placeLinkDao().insertIfAbsent(com.rokid.context.memory.db.PlaceLinkEntity("user:p", "68f6baa4", 1000, "f1", "CARD", 1))
+        assertEquals(1, db.placeLinkDao().count())
+        db.wipeDao().wipeMemory()
+        assertEquals(0, rowCount(db.openHelper.writableDatabase, "place_link"))
+    }
+
     @Test fun modelAttributionEmptyAfterWipe() = runBlocking {
         db.modelAttributionDao().upsert(ModelAttributionEntity("MEMORY", "m1", "model-x", null, null, 1))
         assertEquals(1, db.modelAttributionDao().count())

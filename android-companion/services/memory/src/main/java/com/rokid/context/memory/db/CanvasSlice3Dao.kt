@@ -76,6 +76,7 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
      */
     @Volatile internal var testFaultAfterFenceMove: (() -> Unit)? = null
 
+    @Query("DELETE FROM place_link WHERE atMs BETWEEN :from AND :to") protected abstract suspend fun deletePlaceLinksBetween(from: Long, to: Long): Int
     @Query("DELETE FROM moment_location WHERE atMs BETWEEN :from AND :to") protected abstract suspend fun deleteMomentLocationsBetween(from: Long, to: Long): Int
 
     @Query("DELETE FROM place_card_log WHERE `at` BETWEEN :from AND :to") protected abstract suspend fun deletePlaceHistoryBetween(from: Long, to: Long): Int
@@ -95,6 +96,7 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         purgeSensorBetween(fromMs, toMs, now, "forget") // the sensor rows of the range go whichever trace they came from
         val labels = deleteLabelsBetween(fromMs, toMs)
         deleteMomentLocationsBetween(fromMs, toMs) // v18 WP2: the saved locations of the range go with it
+        deletePlaceLinksBetween(fromMs, toMs) // place object S1: the place pointers of the span
         deletePlaceHistoryBetween(fromMs, toMs) // v18 WP3: so do the place card history rows of the span (user Forget only)
         val invalid = invalidateBySources(ids, fromMs, toMs, labelRevChanged = labels > 0)
         return ForgetOutcome(ids, labels, invalid, jobs)

@@ -16,7 +16,7 @@ import org.robolectric.annotation.Config
 import java.io.File
 
 /**
- * v17 -> v18 (v18 build spec WP1, WP10, WP11a): four new tables (`place_card_log`, `moment_location`, `scene_centroid`, `model_attribution`) and four indexes, nothing else. Started from the REAL exported v17 schema (plain SQLite, Robolectric).
+ * v17 -> v18 (v18 build spec WP1, WP10, WP11a): five new tables (`place_card_log`, `moment_location`, `scene_centroid`, `model_attribution`, `place_link`) and seven indexes, nothing else. Started from the REAL exported v17 schema (plain SQLite, Robolectric).
  * The encrypted run is NOT covered here (EncryptedMigrationV17to18DeviceTest, androidTest, runs on the emulator).
  */
 @RunWith(AndroidJUnit4::class)
@@ -39,9 +39,9 @@ class MigrationV17to18Test {
         assertTrue(v17.isNotEmpty())
         v17.keys.forEach { t -> assertEquals("v17 table $t", 1, V1Fixture.count(db, t)) }
         val v18 = V1Fixture.tables(18)
-        assertEquals(v17.keys + setOf("place_card_log", "moment_location", "scene_centroid", "model_attribution"), v18.keys)
+        assertEquals(v17.keys + setOf("place_card_log", "moment_location", "scene_centroid", "model_attribution", "place_link"), v18.keys)
         v17.forEach { (t, cols) -> assertEquals("table $t unchanged", cols, v18.getValue(t)) }
-        assertEquals(0, V1Fixture.count(db, "place_card_log")); assertEquals(0, V1Fixture.count(db, "moment_location")); assertEquals(0, V1Fixture.count(db, "scene_centroid")); assertEquals(0, V1Fixture.count(db, "model_attribution"))
+        assertEquals(0, V1Fixture.count(db, "place_card_log")); assertEquals(0, V1Fixture.count(db, "moment_location")); assertEquals(0, V1Fixture.count(db, "scene_centroid")); assertEquals(0, V1Fixture.count(db, "model_attribution")); assertEquals(0, V1Fixture.count(db, "place_link"))
         db.close()
     }
 
@@ -67,6 +67,18 @@ class MigrationV17to18Test {
         db.close()
     }
 
+    @Test fun placeLinkTableTakesOneRowPerPlaceAndMomentAndHasItsIndexes() {
+        v17()
+        val db = migrate()
+        db.execSQL("INSERT INTO place_link (placeId, momentId, atMs, anchorId, role, linkedAt) VALUES ('user:p', '68f6baa4', 1000, 'f', 'CARD', 2)")
+        try { db.execSQL("INSERT INTO place_link (placeId, momentId, atMs, anchorId, role, linkedAt) VALUES ('user:p', '68f6baa4', 1000, 'g', 'CARD', 3)"); fail("one link per (place, Moment)") } catch (e: android.database.SQLException) { /* expected */ }
+        db.execSQL("INSERT INTO place_link (placeId, momentId, atMs, anchorId, role, linkedAt) VALUES ('user:p', '68f6baa5', 2000, 'g', 'CARD', 3)")
+        assertEquals(2, V1Fixture.count(db, "place_link"))
+        val idx = db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'place_link'").use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
+        assertTrue(idx.toString(), idx.containsAll(setOf("index_place_link_momentId", "index_place_link_atMs", "index_place_link_anchorId")))
+        db.close()
+    }
+
     @Test fun modelAttributionTableTakesOneRowPerItemAndAllowsNullVersion() {
         v17(); val db = migrate()
         db.execSQL("INSERT INTO model_attribution (kind, refId, model, modelVersion, promptRev, recordedAt) VALUES ('MEMORY', 'm1', 'gpt-x', NULL, '3', 4)")
@@ -75,15 +87,15 @@ class MigrationV17to18Test {
         try { db.execSQL("INSERT INTO model_attribution (kind, refId, model, recordedAt) VALUES ('ANSWER', 'a1', NULL, 5)"); fail("a model name is required") } catch (e: android.database.SQLException) { /* expected */ }
     }
 
-    /** Four CREATE TABLE and four CREATE INDEX, all IF NOT EXISTS; no DROP, ALTER, RENAME, DELETE, UPDATE, INSERT. */
-    @Test fun migrationBodyIsFourTablesFourIndexes() {
+    /** Five CREATE TABLE and seven CREATE INDEX, all IF NOT EXISTS; no DROP, ALTER, RENAME, DELETE, UPDATE, INSERT. */
+    @Test fun migrationBodyIsFiveTablesSevenIndexes() {
         var d: File? = File(System.getProperty("user.dir")).absoluteFile
         while (d != null && !File(d, "src/main/java/com/rokid/context/memory/db/ContextDatabase.kt").isFile) d = d.parentFile
         val src = File(requireNotNull(d), "src/main/java/com/rokid/context/memory/db/ContextDatabase.kt").readText()
         val sql = Regex("execSQL\\(\"([^\"]*)\"\\)").findAll(src.substring(src.indexOf("val MIGRATION_17_18"))).map { it.groupValues[1] }.toList()
-        assertEquals(8, sql.size)
-        assertEquals(4, sql.count { it.startsWith("CREATE TABLE IF NOT EXISTS `") })
-        assertEquals(4, sql.count { it.startsWith("CREATE INDEX IF NOT EXISTS `") })
+        assertEquals(12, sql.size)
+        assertEquals(5, sql.count { it.startsWith("CREATE TABLE IF NOT EXISTS `") })
+        assertEquals(7, sql.count { it.startsWith("CREATE INDEX IF NOT EXISTS `") })
         sql.forEach { s -> listOf("DROP", "ALTER", "RENAME", "DELETE", "UPDATE", "INSERT").forEach { w -> assertFalse("$w in $s", Regex("\\b$w\\b", RegexOption.IGNORE_CASE).containsMatchIn(s)) } }
     }
 
@@ -115,7 +127,7 @@ class MigrationV17to18Test {
         try {
             assertEquals(17, raw.version)
             val tables = raw.rawQuery("SELECT name FROM sqlite_master WHERE type='table'", null).use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
-            assertFalse(tables.toString(), tables.contains("place_card_log")); assertFalse(tables.contains("moment_location")); assertFalse(tables.contains("scene_centroid")); assertFalse(tables.contains("model_attribution"))
+            assertFalse(tables.toString(), tables.contains("place_card_log")); assertFalse(tables.contains("moment_location")); assertFalse(tables.contains("scene_centroid")); assertFalse(tables.contains("model_attribution")); assertFalse(tables.contains("place_link"))
             V1Fixture.tables(17).keys.forEach { t -> assertEquals("v17 table $t", 1, raw.rawQuery("SELECT COUNT(*) FROM `$t`", null).use { it.moveToFirst(); it.getInt(0) }) }
         } finally { raw.close() }
     }

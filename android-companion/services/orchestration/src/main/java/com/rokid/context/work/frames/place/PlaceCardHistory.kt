@@ -3,6 +3,7 @@ package com.rokid.context.work.frames.place
 import androidx.room.withTransaction
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.PlaceCardLogEntity
+import com.rokid.context.memory.db.PlaceLinkEntity
 import com.rokid.context.provenance.ProvenanceGate
 import com.rokid.context.memory.place.CardDelivery
 import com.rokid.context.memory.place.UserPlace
@@ -59,6 +60,7 @@ class PlaceCardHistory(
     private val fenceEpoch: () -> Long = { 0L },
 ) {
     private val dao = db.placeCardLogDao()
+    private val links = db.placeLinkDao()
     private val gate = ProvenanceGate(db)
     private val lastPruneDay = AtomicLong(-1)
     @Volatile private var opened = false
@@ -104,6 +106,7 @@ class PlaceCardHistory(
                     cardId = e.cardId, delivery = delivery, photoGone = photoGone,
                 )
                 dao.put(row)
+                linkMoment(e, photoGone)
                 count = dao.cardLogCount()
                 pruneNow(onlyOncePerDay = true)
                 log("place history add kind=${e.kind.name} delivery=$delivery rows=$count")
@@ -115,11 +118,24 @@ class PlaceCardHistory(
     }
 
     /**
+     * Place object S1: a single-place card for a user pin links the pin to the Moment of its photo (`place_link`, INSERT OR IGNORE, role CARD), in the caller's transaction and so behind every fence the card row
+     * passed. No link for a cluster card, a `wd:` or `osm:` place, a card with no photo, an expired photo or a Moment a Forget already tombstoned. Never throws for a bad time: no link is written then.
+     */
+    private suspend fun linkMoment(e: PlaceHistoryEvent, photoGone: Int) {
+        val frame = e.frameId ?: return
+        if (photoGone != 0 || e.members.isNotEmpty() || !UserPlace.isUserId(e.placeId)) return
+        val at = links.capturedAtOf(frame) ?: return
+        val moment = try { com.rokid.context.memory.moment.MomentId.ofMs(at) } catch (_: IllegalArgumentException) { return }
+        if (links.momentTombstoned(moment) != 0) return
+        links.insertIfAbsent(PlaceLinkEntity(e.placeId, moment, Math.floorDiv(at, 1000L) * 1000L, frame, "CARD", clock()))
+    }
+
+    /**
      * The rows of removed pins and the cluster rows that list them: ONE transaction, run by [PlaceGraph.savePins] BEFORE the pin store is written. Throws when it fails (the caller then refuses the pin removal).
      */
     suspend fun deletePins(pinIds: Collection<String>): Int {
         if (pinIds.isEmpty()) return 0
-        val n = db.withTransaction { dao.deleteCardLogForPins(pinIds.distinct()) }
+        val n = db.withTransaction { links.deleteLinksForPlaces(pinIds.distinct()); dao.deleteCardLogForPins(pinIds.distinct()) }
         log("place history pin removed=$n"); bump()
         return n
     }

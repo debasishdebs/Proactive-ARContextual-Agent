@@ -246,6 +246,7 @@ class MomentForget(
             val md = db.momentDao(); val s3 = db.canvasSlice3Dao(); val now = clock()
             // 1. Fences first: the durable range, then a tombstone per requested second.
             spans.forEach { s3.addMomentForgetRange(it.first, it.last) }
+            db.placeLinkDao().deleteForMoments(requestedSeconds.map(MomentId::format)) // place object S1: the place pointers of every requested second
             db.momentLocationDao().deleteForMoments(requestedSeconds.map(MomentId::format)) // v18 WP2: user Forget only: the saved location of every requested second
             md.insertTombstones((requestedSeconds + spans.map { it.first / 1000 }).distinct().map { MomentTombstoneEntity(MomentId.format(it), now) }) // + the start of every span: the recency marker of a long range
             // 2. Independent discovery, unioned with the projection.

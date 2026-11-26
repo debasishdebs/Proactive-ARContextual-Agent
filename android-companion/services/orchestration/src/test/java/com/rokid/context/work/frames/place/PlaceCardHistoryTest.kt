@@ -169,4 +169,45 @@ class PlaceCardHistoryTest {
         PlaceGraph.dropOwedKey(ctx)
         assertFalse(ctx.getDatabasePath(com.rokid.context.memory.place.PlacesDatabase.NAME).exists()); assertFalse(prefs.contains("history_deletions_owed"))
     }
+
+    // ---- place object S1: the Moment link of a single-place card for a user pin ----
+    private val pinA = "user:00000000-0000-0000-0000-00000000000a"
+    private val shot = 1_761_000_100_000L
+    private suspend fun photo(id: String, at: Long = shot) = db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity(id, null, null, "UNKNOWN", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = at))
+    private suspend fun linked() = db.placeLinkDao().momentIdsOf(pinA)
+
+    @Test fun aSinglePinCardLinksItsMomentOnceAndTheSecondPhotoOfTheMomentAddsNothing() = runBlocking {
+        photo("f1"); photo("f2", shot + 400)
+        history.add(ev(HistoryKind.PIN, pinA, frame = "f1")); history.add(ev(HistoryKind.PIN, pinA, frame = "f2"))
+        assertEquals(listOf(com.rokid.context.memory.moment.MomentId.ofMs(shot)), linked())
+        assertEquals(1, db.placeLinkDao().count())
+    }
+
+    @Test fun noLinkForAClusterAWdPlaceNoPhotoOrAnExpiredPhoto() = runBlocking {
+        photo("f1"); photo("f3", shot + 5_000)
+        history.add(ev(HistoryKind.PIN_CLUSTER, pinA, frame = "f1", members = listOf(pinA, "user:00000000-0000-0000-0000-00000000000b")))
+        history.add(ev(HistoryKind.PHOTO, "wd:Q1", frame = "f1")); history.add(ev(HistoryKind.PIN, pinA, frame = null))
+        assertEquals(0, db.placeLinkDao().count())
+        db.openHelper.writableDatabase.execSQL("INSERT INTO forget_tombstone (frameId, createdAt) VALUES ('f3', 1)")
+        history.add(ev(HistoryKind.PIN, pinA, frame = "f3")) // an expired photo keeps the history row but links nothing
+        assertEquals(0, db.placeLinkDao().count())
+    }
+
+    @Test fun noLinkWhenTheHistoryIsOffTheFrameIsForgottenOrThePinIsBeingRemoved() = runBlocking {
+        photo("f1"); on = false
+        history.add(ev(HistoryKind.PIN, pinA, frame = "f1")); on = true
+        assertEquals(0, db.placeLinkDao().count())
+        val gated = PlaceCardHistory(db, clock = { now }, log = { logs += it }, enabled = { true }, newId = { "g${++seq}" }, removing = setOf(pinA))
+        gated.add(PlaceHistoryEvent(HistoryKind.PIN, pinA, "Site A", frameId = "f1", authority = gated.capture()))
+        assertEquals(0, db.placeLinkDao().count())
+    }
+
+    @Test fun deletingThePinTakesItsLinksAndOnlyItsLinks() = runBlocking {
+        val other = "user:00000000-0000-0000-0000-00000000000c"
+        photo("f1"); photo("f2", shot + 9_000)
+        history.add(ev(HistoryKind.PIN, pinA, frame = "f1")); history.add(ev(HistoryKind.PIN, other, frame = "f2"))
+        assertEquals(2, db.placeLinkDao().count())
+        history.deletePins(listOf(pinA))
+        assertEquals(emptyList<String>(), linked()); assertEquals(1, db.placeLinkDao().momentIdsOf(other).size)
+    }
 }

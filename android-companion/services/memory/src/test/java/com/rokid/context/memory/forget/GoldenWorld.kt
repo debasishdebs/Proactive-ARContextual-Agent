@@ -109,6 +109,12 @@ class GoldenWorld(val db: ContextDatabase, now: Long = 1_000) {
             .forEach { db.momentLocationDao().insertIfAbsent(it) }
     }
 
+    /** Place object S1, called AFTER [seed] and only by the tests that pin `place_link`: one link of pin `user:p1` per photo Moment ([momA] via fA, [momB] via fB, [momFar] via fFar), the second times 1000 as the writer stores it. */
+    suspend fun seedPlaceLinks() {
+        fun row(id: String, at: Long, anchor: String) = com.rokid.context.memory.db.PlaceLinkEntity("user:p1", id, at, anchor, "CARD", 1)
+        listOf(row(momA, tA, "fA"), row(momB, tB, "fB"), row(momFar, tFar, "fFar")).forEach { db.placeLinkDao().insertIfAbsent(it) }
+    }
+
     /**
      * v18 WP3, called AFTER [seed] and only by the tests that pin `place_card_log`. One row per card: h1 of fA at tA, h2 of fB at tB, h3 of fFar at tFar, h4 with no photo at tFar + 1 h (outside every span the goldens use).
      * (The user's `fA` Forget deletes h1; a range over the first two seconds deletes h1 and h2 by time.)
