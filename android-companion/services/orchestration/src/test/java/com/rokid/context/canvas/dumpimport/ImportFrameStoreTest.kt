@@ -69,11 +69,13 @@ class ImportFrameStoreTest {
     }
 
     @Test fun theSweepRemovesOnlyStaleImpTempsOfTheArchive() {
-        val old = File(archive, ".imp-a-1.jpg").apply { writeBytes(byteArrayOf(1)); setLastModified(1_000) }
-        val fresh = File(archive, ".imp-b-2.jpg").apply { writeBytes(byteArrayOf(1)) }
+        val now = System.currentTimeMillis()
+        val old = File(archive, ".imp-a-${now - 7_200_000}.jpg").apply { writeBytes(byteArrayOf(1)) }
+        // a fresh temp whose mtime is the ORIGINAL capture time (writeStamped) must not be swept
+        val fresh = File(archive, ".imp-b-$now.jpg").apply { writeBytes(byteArrayOf(1)); setLastModified(1_000) }
         val photo = File(archive, "keep.jpg").apply { writeBytes(byteArrayOf(1)); setLastModified(1_000) }
         val hidden = File(archive, ".other.jpg").apply { writeBytes(byteArrayOf(1)); setLastModified(1_000) }
-        assertEquals(1, RokidFrameInbox.sweepImportTemps(app, nowMs = System.currentTimeMillis()))
+        assertEquals(1, RokidFrameInbox.sweepImportTemps(app, nowMs = now))
         assertFalse(old.exists()); assertTrue(fresh.exists()); assertTrue(photo.exists()); assertTrue(hidden.exists())
     }
 }

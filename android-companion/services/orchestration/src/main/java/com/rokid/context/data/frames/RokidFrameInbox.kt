@@ -63,7 +63,7 @@ object RokidFrameInbox {
 
     /** The dump import's `.imp-*` publish temps (a crash between its write and its hard link), archive only, older than an hour; nothing else is touched. */
     fun sweepImportTemps(context: Context, nowMs: Long = System.currentTimeMillis(), minAgeMs: Long = 3_600_000): Int =
-        archiveDir(context).listFiles().orEmpty().count { f -> f.isFile && f.name.startsWith(".imp-") && nowMs - f.lastModified() >= minAgeMs && f.delete() }
+        archiveDir(context).listFiles().orEmpty().count { f -> f.isFile && f.name.startsWith(".imp-") && nowMs - (ImportTempName.createdAt(f.name) ?: f.lastModified()) >= minAgeMs && f.delete() }
 
     /**
      * One drain at a time, process-wide (review B C-1): `QueueDrainWorker` and `FrameIngestWorker` both drain, and two
