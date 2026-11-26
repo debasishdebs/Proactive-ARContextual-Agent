@@ -48,12 +48,13 @@ class ImportFrameStore(
         if (listOf("jpg", "png", "webp").any { File(file.parentFile, "${frame.id}.$it").exists() }) return@withContext false
         if (MemoryWipe.generation.get() != gen0) return@withContext false
         val tmp = File(file.parentFile, ".imp-${frame.id}-${System.currentTimeMillis()}.$ext") // the creation wall time is in the name: the sweep reads it, not the mtime (writeStamped stamps the ORIGINAL capture time)
+        com.rokid.context.data.frames.ImportTempName.begin(tmp.name)
         try {
             writeStamped(tmp, FrameImages.forDisk(frame.photo), frame.capturedAtMs)
             try { java.nio.file.Files.createLink(file.toPath(), tmp.toPath()) }
             catch (e: java.nio.file.FileAlreadyExistsException) { return@withContext false }
             catch (e: Exception) { try { java.nio.file.Files.move(tmp.toPath(), file.toPath()) } catch (x: Exception) { return@withContext false } } // no hard links here: a move that refuses an existing target
-        } finally { tmp.delete() }
+        } finally { tmp.delete(); com.rokid.context.data.frames.ImportTempName.end(tmp.name) }
         // from here the file is OURS (we created the name): it is removed only on a refusal of this attempt
         val receipt = ReceiptMeta(
             wireFrameId = frame.id, capturedAtMs = frame.capturedAtMs, motion = frame.motion, dwell = frame.dwell, blur = frame.blur, dhash = frame.dhash, phash = frame.phash,

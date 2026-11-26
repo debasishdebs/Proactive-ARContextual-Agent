@@ -75,7 +75,14 @@ class ImportFrameStoreTest {
         val fresh = File(archive, ".imp-b-$now.jpg").apply { writeBytes(byteArrayOf(1)); setLastModified(1_000) }
         val photo = File(archive, "keep.jpg").apply { writeBytes(byteArrayOf(1)); setLastModified(1_000) }
         val hidden = File(archive, ".other.jpg").apply { writeBytes(byteArrayOf(1)); setLastModified(1_000) }
-        assertEquals(1, RokidFrameInbox.sweepImportTemps(app, nowMs = now))
+        val part = File(archive, ".imp-c-$now.jpg.part").apply { writeBytes(byteArrayOf(1)); setLastModified(1_000) } // the atomic writer's temp: old mtime (the ORIGINAL capture time) but being written
+        val active = File(archive, ".imp-d-1000000000000.jpg").apply { writeBytes(byteArrayOf(1)) }
+        com.rokid.context.data.frames.ImportTempName.begin(active.name)
+        assertEquals(1, RokidFrameInbox.sweepOrphanParts(app, nowMs = now)) // the .part sweep leaves import temps alone; only `old` goes (via the import sweep); the active one is skipped
+        assertTrue(part.exists()); assertTrue(active.exists())
+        com.rokid.context.data.frames.ImportTempName.end(active.name)
+        assertEquals(1, RokidFrameInbox.sweepImportTemps(app, nowMs = now)) // `active` is now unregistered and old by name
+        assertFalse(active.exists())
         assertFalse(old.exists()); assertTrue(fresh.exists()); assertTrue(photo.exists()); assertTrue(hidden.exists())
     }
 }
