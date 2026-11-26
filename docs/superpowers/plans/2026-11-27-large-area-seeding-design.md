@@ -198,10 +198,10 @@ Landmarks (matched by article title in the SPARQL result; "app" = would the app'
 | Pelling | yes | no (human settlement) | no |
 | Gangtok | yes | no (city) | no |
 
-Of 20 landmarks: 14 in the SPARQL result and 1 more only just outside the box edge; 11 pass the app rule (9 after the 1 km rule... see 9.2); looser rule adds Nathu La, Kangchenjunga, Ravangla Buddha Park (3 of the 9 that the app misses; the other 6 are settlements, a school, a zoo or have no article/coordinate, which no class list should admit).
+Of 22 landmarks listed: 19 are in the SPARQL result, 1 (Tiger Hill) is just outside the box edge, 2 are not found (Namchi Char Dham, Durpin Dara). 12 pass the app rule (10 after the 1 km rule, which drops Khecheopalri Lake and Do-drul Chorten); the looser rule adds Nathu La, Kangchenjunga and Ravangla Buddha Park. The remaining misses are settlements, a school and a zoo, which no class list should admit.
 
 ### 9.1 What the 89 extra items are
-Looser rule adds 89 items: mountain 27, tea garden 20 (not in the looser list above, it matched "garden"), protected area 9, mountain pass 7, summit 4, lake 4 (+1 proglacial), waterfall 3, national park 3, gompa 3, wildlife refuge 3, sacred mountain 2, road bridge 2, and about 8 singles (museum, park, ridge, sanctuary, bird sanctuary, range, mountain railway).
+Looser rule adds 89 items: mountain 27, tea garden 20 (matched by the word "garden"; not recommended), protected area 9, mountain pass 7, summit 4, lake 4 (+1 proglacial), waterfall 3, national park 3, gompa 3, wildlife refuge 3, sacred mountain 2, road bridge 2, and about 8 singles (museum, park, ridge, sanctuary, bird sanctuary, range, mountain railway).
 
 ### 9.2 The 1 km coordinate rule
 For the 142 looser-passing titles one Wikipedia `prop=coordinates` call per 50 titles (3 calls): 16 disagree with Wikidata by more than 1 km (5 of them pass the app rule, 11 only the looser rule) and 12 have no Wikipedia coordinate at all. The app drops a place on disagreement, so a bulk seed that copies this rule drops those 16 (two of the headline sights, Khecheopalri Lake and Do-drul Chorten, are among them). This is a decision for the owner: the rule was built for geosearch, where the Wikipedia point is what finds the place; in a bulk seed, the Wikidata point is the one used and the check is optional (3 calls saved, 5 more app places kept).
