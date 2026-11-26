@@ -179,6 +179,21 @@ class DumpImporterTest {
         assertEquals(0, cardRows()); assertEquals(0, rows()[3])
     }
 
+    @Test fun aMomentForgottenWhileItsCardsAreBeingRestoredGetsNoFurtherCard() = runBlocking<Unit> {
+        run(body(cardsJson = ""))
+        val inner = ImportCardStore(history, { pinStore.pins().map { it.id }.toSet() }) { start + 1000 }
+        val forgetAfterFirst = ImportCardWriter { c ->
+            inner.store(c).also {
+                val svc = ForgetService(db, ProposalRepository(db.proposalDao(), db.actionDao(), db)) { 99L }
+                MomentForget(db, svc) { 99L }.forgetMoments(listOf(id))
+            }
+        }
+        val two = body(cardsJson = card("c1", at = start + 600) + "," + card("c2", at = start + 700))
+        val r = runBlocking { DumpImporter(db, frameWriter, memoryWriter, { k, photo -> recorder.importMark(k.id, k.source, k.atMs, photo, k.createdAt) }, { ids -> MomentBuilder(db).build(ids) }, { locOn }, { gen }, { 777L },
+            importPin = { pinning.importPin(it) }, pinIds = { emptySet() }, cards = forgetAfterFirst, scenes = ImportSceneStore(db, SceneBuilder(db), { DaoFence(0, epoch, { gen }, { epoch }) }), zones = { zoneList }).run(DumpImportParser.parse(two), true, false) }
+        assertEquals(1, r.cards); assertEquals(1, r.cardsSkipped["moment_gone"])
+    }
+
     @Test fun locationSettingOffSavesNoLocation() {
         locOn = false
         run(body())
