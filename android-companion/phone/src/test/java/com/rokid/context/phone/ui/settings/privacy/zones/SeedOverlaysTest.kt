@@ -136,6 +136,8 @@ class SeedMapViewModelTest {
         override suspend fun pins() = pins
         override suspend fun seed(box: GeoBox): Result<SeedOutcome> { seeded += box; return result }
         val removedWithPlaces = mutableListOf<Boolean>()
+        val renamed = mutableListOf<Pair<String, String?>>()
+        override suspend fun rename(id: String, name: String?): Boolean { renamed += id to name; areas = areas.map { if (it.id == id) it.copy(name = name?.trim()?.takeIf { n -> n.isNotEmpty() }) else it }; return true }
         override suspend fun remove(id: String, withPlaces: Boolean) { removed += id; removedWithPlaces += withPlaces; areas = areas.filterNot { it.id == id } }
     }
 
@@ -148,6 +150,17 @@ class SeedMapViewModelTest {
     @Test fun refreshLoadsAreasAndPins() = runTest {
         val v = vm(); v.refresh()
         assertEquals(1, v.state.value.areas.size); assertEquals(1, v.state.value.pins.size)
+    }
+
+    @Test fun renameStoresTheLabelAndTheListAndOverlayShowIt() = runTest {
+        val v = vm(); v.refresh()
+        assertTrue(v.state.value.rows[0].text.startsWith("Seeded area 1"))
+        v.rename("seed:1", "  Gangtok trip ")
+        assertEquals(listOf("seed:1" to "  Gangtok trip "), fake.renamed)
+        assertTrue(v.state.value.rows[0].text.startsWith("Gangtok trip")); assertTrue(v.state.value.areas[0].label.startsWith("Gangtok trip"))
+        assertEquals("Area renamed.", v.state.value.message)
+        v.rename("seed:1", "") // blank = back to the default label
+        assertTrue(v.state.value.rows[0].text.startsWith("Seeded area 1"))
     }
 
     @Test fun smallBoxSeedsAtOnceAndShowsTheSeedMessage() = runTest {

@@ -170,6 +170,7 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
         return com.rokid.context.phone.ui.settings.privacy.zones.SeedRates.of(cells, st.sumOf { it.places }, st.sumOf { it.bytes })
     }
     override suspend fun cancelSeed(id: String) { seedWork.cancel(id) }
+    override suspend fun rename(id: String, name: String?) = PlaceGraph.readyPack(app).setAreaName(id, name)
     override suspend fun pins() = guide.pinning?.pins().orEmpty().map { com.rokid.context.phone.ui.settings.privacy.zones.PinInfo(it.lat, it.lon, it.radiusM) }
     override suspend fun seed(box: GeoBox) = guide.seed(box)
     override suspend fun remove(id: String, withPlaces: Boolean) { seedWork.cancel(id); PlaceGraph.readyPack(app).removeArea(id, withPlaces) }

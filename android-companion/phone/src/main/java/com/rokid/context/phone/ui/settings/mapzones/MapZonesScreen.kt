@@ -3,7 +3,9 @@ package com.rokid.context.phone.ui.settings.mapzones
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import com.rokid.context.phone.ui.settings.privacy.zones.SeedOverlay
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -127,7 +129,7 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
         LaunchedEffect(seedState?.seeding) { if (seedState?.seeding == true) mapVm.cancelDraw() } // the sheet closes once the seed has really started
     }
-    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces) else null
+    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename) else null
     val view = remember { MapViewState() }
     val zoneCb = ZonesCallbacks.of(zonesVm, back)
     val offlinePanel = offline?.let { o ->
@@ -360,12 +362,7 @@ private fun BrowseSheet(
         Text("Your zones", style = MaterialTheme.typography.titleMedium)
         if (zones.rows.isEmpty()) NoticeText("No pause zones yet.", tag = "zone_none")
         zones.rows.forEach { r -> ZoneRow(r, zoneOn) }
-        seed?.let { p -> p.ui.areas.forEach { a ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(p.ui.rows.firstOrNull { it.id == a.id }?.text ?: a.label, Modifier.weight(1f).testTag("seed_area_${a.id}"), style = MaterialTheme.typography.bodyMedium)
-                SecondaryAction("Remove", { p.askRemove(a.id) }, tag = "seed_remove_${a.id}")
-            }
-        } }
+        seed?.let { p -> p.ui.areas.forEach { a -> SeedAreaListRow(view, p, a) { on.select(it) } } }
         if (seed != null && seed.ui.areas.isNotEmpty()) NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaList.ATTRIBUTION, tag = "seed_list_attribution")
         online?.let { OnlineMapCard(it) }
         offline?.let { OfflineMapCard(it) }
@@ -422,4 +419,38 @@ private fun SelectedCard(ui: MapZonesUiState, zones: ZonesUiState, seed: SeedPan
         }
     }
     SecondaryAction("Close", { on.select(null) }, tag = "mapzones_sel_close")
+}
+
+/**
+ * One seeded-areas list row (S4): tap the text to focus the map on the area (centre and fit its box; the map section works with no network, a blank grid then), Rename (label only),
+ * Seed again (the pack skips cells that are fresh) and Remove. No coordinates in any text.
+ */
+@Composable
+internal fun SeedAreaListRow(view: MapViewState, p: SeedPanel, a: SeedOverlay, select: (Selection) -> Unit) {
+    var renaming by remember { mutableStateOf(false) }
+    androidx.compose.foundation.layout.Column {
+        Text(p.ui.rows.firstOrNull { it.id == a.id }?.text ?: a.label,
+            Modifier.fillMaxWidth().clickable { focusOn(view, a.box); select(Selection(SelectionKind.SEED, a.id)) }.testTag("seed_area_${a.id}"), style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            SecondaryAction("Rename", { renaming = true }, tag = "seed_rename_${a.id}")
+            SecondaryAction("Seed again", { p.seedBox(SeedEstimate.boxOf(a.box)) }, tag = "seed_again_${a.id}", enabled = !p.ui.seeding)
+            SecondaryAction("Remove", { p.askRemove(a.id) }, tag = "seed_remove_${a.id}")
+        }
+    }
+    if (renaming) {
+        var text by remember { mutableStateOf(a.label.takeUnless { it.startsWith("Seeded area ") } ?: "") }
+        AlertDialog(
+            onDismissRequest = { renaming = false }, modifier = Modifier.testTag("seed_rename_dialog"),
+            title = { Text("Rename seeded area") },
+            text = { androidx.compose.material3.OutlinedTextField(text, { text = it.take(com.rokid.context.memory.place.PlacePack.MAX_AREA_NAME) }, singleLine = true, label = { Text("Name") }, modifier = Modifier.testTag("seed_rename_field")) },
+            confirmButton = { TextButton({ p.rename(a.id, text); renaming = false }, Modifier.testTag("seed_rename_save")) { Text("Save") } },
+            dismissButton = { TextButton({ renaming = false }, Modifier.testTag("seed_rename_cancel")) { Text("Cancel") } },
+        )
+    }
+}
+
+/** Centres the map on [box] and fits it (works with no network: the grid is drawn from the phone's own data). */
+internal fun focusOn(view: MapViewState, box: DoubleArray) {
+    val s = view.size
+    if (s.width >= 10f && s.height >= 10f) view.vp = MapViewport.fit(listOf(box), s.width, s.height)
 }

@@ -46,6 +46,8 @@ interface SeedMapControl {
     suspend fun remove(id: String, withPlaces: Boolean = false)
     /** Cancels the area's background seed (the area stays, partial). */
     suspend fun cancelSeed(id: String) {}
+    /** S4: stores the owner's label for the area (the label only: box and places are untouched). Returns false when it could not be stored. */
+    suspend fun rename(id: String, name: String?): Boolean = false
     /** S4: what this phone's own pack says about places and bytes per seeded cell (read only, offline). The default knows nothing, so the estimate is marked rough. */
     suspend fun rates(): SeedRates = SeedRates.ROUGH
     /** Map zones "Show cells" (read only): the stored status of each 5 km cell touching [box]; a missing cell is absent. The default is empty (nothing known). */
@@ -144,7 +146,7 @@ object SeedOverlays {
 
     fun of(areas: List<SeedAreaInfo>): List<SeedOverlay> = areas.mapIndexed { i, a ->
         val look = look(a.status)
-        SeedOverlay(a.id, a.box, if (a.seed != null) AreaLook.SEEDING else look, "Seeded area ${i + 1}" + if (a.seed != null) " (${a.seed.text.replaceFirstChar { it.lowercase() }})" else when (look) { AreaLook.DONE -> ""; AreaLook.PARTIAL -> " (some cells failed, will retry)"; AreaLook.SEEDING -> " (seeding)" })
+        SeedOverlay(a.id, a.box, if (a.seed != null) AreaLook.SEEDING else look, (a.name?.takeIf { it.isNotBlank() } ?: "Seeded area ${i + 1}") + if (a.seed != null) " (${a.seed.text.replaceFirstChar { it.lowercase() }})" else when (look) { AreaLook.DONE -> ""; AreaLook.PARTIAL -> " (some cells failed, will retry)"; AreaLook.SEEDING -> " (seeding)" })
     }
 
     /** The legend: counts of what is drawn. Pause zones are counted by the caller's own list. */
@@ -289,6 +291,15 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
         viewModelScope.launch(work) {
             val ok = runCatching { control.remove(id, withPlaces) }.isSuccess
             _state.update { it.copy(message = if (ok) (if (withPlaces) "Seeded area and its places removed." else "Seeded area removed. Its places stay as ordinary fetched places.") else "Could not remove the seeded area.", messageIsError = !ok) }
+            refresh()
+        }
+    }
+
+    /** S4: renames the area (stored label only). A blank name goes back to "Seeded area N". */
+    fun rename(id: String, name: String) {
+        viewModelScope.launch(work) {
+            val ok = runCatching { control.rename(id, name) }.getOrDefault(false)
+            _state.update { it.copy(message = if (ok) "Area renamed." else "Could not rename the area.", messageIsError = !ok) }
             refresh()
         }
     }
