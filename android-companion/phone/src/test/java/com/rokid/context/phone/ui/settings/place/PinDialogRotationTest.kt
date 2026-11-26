@@ -85,6 +85,27 @@ class PinDialogRotationTest {
         owner.viewModelStore.clear()
     }
 
+    /** Place object S2, mode (a): Delete asks first; Cancel keeps the pin; "Delete place" removes it. */
+    @Test fun deleteAsksForConfirmationAndCancelKeepsThePin() {
+        val c = Ctl(); holder = c
+        val id = "user:00000000-0000-0000-0000-000000000042"
+        c.stored = listOf(UserPlace(id, "Antera", PlacePinning.KINDS.first(), 7.0, 80.0))
+        val owner = Owner(); val shown = mutableStateOf(true)
+        host(owner, shown) { false }
+        compose.onNode(androidx.compose.ui.test.hasScrollAction()).performScrollToNode(androidx.compose.ui.test.hasTestTag("pin_delete_$id"))
+        compose.onNodeWithTag("pin_delete_$id").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(androidx.compose.ui.test.hasTestTag("pin_delete_dialog")).fetchSemanticsNodes().size > 0 }
+        assertEquals(1, c.stored.size)
+        compose.onNodeWithTag("pin_delete_cancel").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(androidx.compose.ui.test.hasTestTag("pin_delete_dialog")).fetchSemanticsNodes().isEmpty() }
+        assertEquals(1, c.stored.size)
+        compose.onNodeWithTag("pin_delete_$id").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(androidx.compose.ui.test.hasTestTag("pin_delete_confirm")).fetchSemanticsNodes().size > 0 }
+        compose.onNodeWithTag("pin_delete_confirm").performClick()
+        compose.waitUntil(5_000) { c.stored.isEmpty() }
+        owner.viewModelStore.clear()
+    }
+
     @Test fun leavingTheScreenDropsTheDraft() {
         val c = Ctl(); holder = c
         val owner = Owner(); val shown = mutableStateOf(true)

@@ -54,6 +54,9 @@ data class PinDialogState(val editingId: String? = null, val parents: List<Paren
     /** Slice 1.4.2: the reference Moment attached to a NEW pin (or shown on an edit), its thumbnail source, a hint line, and the two steps of "Save without a Moment". */
     val momentId: String? = null, val moment: MomentChoice? = null, val momentHint: String? = null, val askSkipMoment: Boolean = false, val skipMoment: Boolean = false)
 
+/** Place object S2, mode (a): the open "Delete place?" confirmation: the pin and how many Moments it points at (the reference Moment plus the card links). Names no coordinate. */
+data class PinDeleteConfirm(val pinId: String, val name: String, val momentCount: Int)
+
 /** A photo Moment as the pin screen shows it: its id (whatever created it), the photo path for the thumbnail and its capture time. */
 data class MomentChoice(val id: String, val path: String, val atMs: Long)
 
@@ -63,7 +66,7 @@ data class MomentPicker(val pinId: String?, val items: List<MomentChoice>, /** L
 data class PlaceGuideUiState(
     val enabled: Boolean = false, val cardSide: com.rokid.context.core.model.PlaceSide = com.rokid.context.core.model.PlaceSide.CENTRE, val developerMode: Boolean = false, val seeding: Boolean = false, val seedLines: List<String> = emptyList(), val message: String? = null, val messageIsError: Boolean = false, val packSummary: String = "",
     val stats: PackStats? = null, val budgetMb: Int = 50, val confirmClear: Boolean = false,
-    val pins: List<UserPlace> = emptyList(), val moments: Map<String, MomentChoice> = emptyMap(), val momentPicker: MomentPicker? = null, val pinBusy: Boolean = false, val pinMessage: String? = null, val pinMessageIsError: Boolean = false, val pinDialog: PinDialogState? = null,
+    val pins: List<UserPlace> = emptyList(), val moments: Map<String, MomentChoice> = emptyMap(), val momentPicker: MomentPicker? = null, val pinBusy: Boolean = false, val pinMessage: String? = null, val pinMessageIsError: Boolean = false, val pinDialog: PinDialogState? = null, val pinDeleteConfirm: PinDeleteConfirm? = null,
     /** B2: the phone-only place card history (newest first), how many rows the list shows, and the open detail. */
     val history: List<PlaceHistoryRowUi> = emptyList(), val historyShown: Int = PlaceHistoryModel.PAGE, val historyDetail: PlaceHistoryDetail? = null,
     /** The history Developer flag (off by default): the list collapses to one line. */
@@ -145,9 +148,16 @@ interface PlaceGuideControl {
     suspend fun setMoment(pinId: String, momentId: String?): Boolean = false
     /** Clears the links of Moments that were forgotten (read-time repair; the Forget listener does it at the time). */
     suspend fun sweepMoments() {}
+    /** Place object S2: how many Moments the pin points at (its card links plus its reference Moment, distinct). 0 = none or not available on this build. */
+    suspend fun placeMomentCount(pinId: String): Int = 0
 }
 
 object PlaceGuideModel {
+    /** Mode (a) confirmation body (place object design section 3). [moments] = the pin's Moment pointers; 0 drops the link clause. */
+    fun deletePlaceText(moments: Int): String {
+        val links = if (moments > 0) ", and its links to $moments Moment" + (if (moments == 1) "" else "s") else ""
+        return "Its name, note and card history go$links. The Moments, photos and notes stay; they may now be cleaned up automatically like any other photo. This cannot be undone."
+    }
     const val SRI_LANKA_HELP = "Check local photography rules."
     /** Charminar and Golconda (Hyderabad): about 11 km by 15 km, about a dozen 5 km cells. */
     val HYDERABAD = GeoBox(17.34, 78.38, 17.41, 78.52)
@@ -370,7 +380,21 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
         }
     }
 
+    /** Mode (a), step 1: "Delete" only opens the confirmation (with the live count of the pin's Moments); nothing is removed yet. */
     fun deletePin(id: String) {
+        val pin = control.pinning?.pins()?.firstOrNull { it.id == id } ?: return
+        viewModelScope.launch(work) {
+            val n = runCatching { control.placeMomentCount(id) }.getOrDefault(0)
+            _state.update { it.copy(pinDeleteConfirm = PinDeleteConfirm(id, pin.name, n)) }
+        }
+    }
+
+    fun cancelDeletePin() { _state.update { it.copy(pinDeleteConfirm = null) } }
+
+    /** Mode (a), step 2: removes the pin, its caption (name and note), its card history and its links; every Moment, photo, note and mark stays. */
+    fun confirmDeletePin() {
+        val id = _state.value.pinDeleteConfirm?.pinId ?: return
+        _state.update { it.copy(pinDeleteConfirm = null) }
         val pinning = control.pinning ?: return
         viewModelScope.launch(work) {
             val ok = pinning.delete(id)
@@ -568,7 +592,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     }
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius))
 }
 
 /**
@@ -599,7 +623,7 @@ internal fun dropsDraftOnDispose(changingConfigurations: Boolean): Boolean = !ch
 
 class PlaceGuideActions(
     val setBudget: (Int) -> Unit = {}, val askClear: () -> Unit = {}, val confirmClear: () -> Unit = {}, val cancelClear: () -> Unit = {},
-    val beginPin: () -> Unit = {}, val editPin: (String) -> Unit = {}, val deletePin: (String) -> Unit = {},
+    val beginPin: () -> Unit = {}, val editPin: (String) -> Unit = {}, val deletePin: (String) -> Unit = {}, val confirmDeletePin: () -> Unit = {}, val cancelDeletePin: () -> Unit = {},
     val updatePinDialog: ((PinDialogState) -> PinDialogState) -> Unit = {}, val savePin: () -> Unit = {}, val cancelPin: () -> Unit = {},
     val seedPreset: (SeedPreset) -> Unit = {},
     val setCardSide: (com.rokid.context.core.model.PlaceSide) -> Unit = {},
@@ -717,6 +741,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
     )
     state.historyDetail?.let { d -> PlaceHistoryDetailDialog(d, java.time.ZoneId.systemDefault(), on.closeHistory, on.showAgain, on.deleteHistory, on.openMoment) }
     state.pinDialog?.let { d -> PinDialog(d, on) }
+    state.pinDeleteConfirm?.let { c -> PinDeleteDialog(c, on) }
     state.momentPicker?.let { pk -> MomentPickerDialog(pk, on) }
 }
 
@@ -767,6 +792,18 @@ private fun MomentPickerDialog(pk: MomentPicker, on: PlaceGuideActions) {
         },
         confirmButton = {},
         dismissButton = { TextButton(on.closeMomentPicker, Modifier.testTag("pin_moment_picker_close")) { Text("Close") } },
+    )
+}
+
+/** Place object S2, mode (a) ("only the place and its caption"): what goes, what stays, and that it cannot be undone. */
+@Composable
+private fun PinDeleteDialog(c: PinDeleteConfirm, on: PlaceGuideActions) {
+    AlertDialog(
+        onDismissRequest = on.cancelDeletePin, modifier = Modifier.testTag("pin_delete_dialog"),
+        title = { Text("Delete place \"${c.name}\"?") },
+        text = { Text(PlaceGuideModel.deletePlaceText(c.momentCount), Modifier.testTag("pin_delete_text")) },
+        confirmButton = { TextButton(on.confirmDeletePin, Modifier.testTag("pin_delete_confirm")) { Text("Delete place") } },
+        dismissButton = { TextButton(on.cancelDeletePin, Modifier.testTag("pin_delete_cancel")) { Text("Cancel") } },
     )
 }
 

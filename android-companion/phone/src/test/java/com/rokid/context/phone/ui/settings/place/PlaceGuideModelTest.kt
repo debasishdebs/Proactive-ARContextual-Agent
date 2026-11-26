@@ -48,6 +48,8 @@ class PlaceGuideModelTest {
         )
         /** Slice 1.4.2: the photo Moments that exist (newest first); a Forget removes one from here. */
         var moments = listOf<MomentChoice>()
+        var momentCount = 0
+        override suspend fun placeMomentCount(pinId: String) = momentCount
         val logged = mutableListOf<String>()
         override suspend fun recentMoments(limit: Int) = moments.take(limit)
         var gate: kotlinx.coroutines.CompletableDeferred<Unit>? = null; var gateDay: Long? = null
@@ -224,7 +226,31 @@ class PlaceGuideModelTest {
         vm.updatePinDialog { it.copy(name = "Mirror Wall 2", radius = "90") }; vm.savePin(); d.scheduler.advanceUntilIdle()
         assertEquals("Mirror Wall 2", vm.state.value.pins.single().name); assertEquals(90, vm.state.value.pins.single().radiusM); assertEquals("wd:Q1", vm.state.value.pins.single().parentId)
         vm.deletePin(pin.id); d.scheduler.advanceUntilIdle()
-        assertTrue(vm.state.value.pins.isEmpty())
+        assertEquals(1, vm.state.value.pins.size) // mode (a): Delete only asks
+        vm.confirmDeletePin(); d.scheduler.advanceUntilIdle()
+        assertTrue(vm.state.value.pins.isEmpty()); assertNull(vm.state.value.pinDeleteConfirm)
+    }
+
+    @Test fun deleteAsksFirstShowsTheMomentCountAndCancelKeepsThePin() = runTest(d) {
+        val id = "user:00000000-0000-0000-0000-000000000009"
+        val c = Control().also { it.stored = listOf(UserPlace(id, "Antera", PlaceKinds.MONUMENT, 7.0, 80.0)); it.momentCount = 7 }
+        val vm = PlaceGuideViewModel(c, d); d.scheduler.advanceUntilIdle()
+        vm.deletePin(id); d.scheduler.advanceUntilIdle()
+        assertEquals(PinDeleteConfirm(id, "Antera", 7), vm.state.value.pinDeleteConfirm)
+        assertEquals(1, c.stored.size)
+        vm.cancelDeletePin(); d.scheduler.advanceUntilIdle()
+        assertNull(vm.state.value.pinDeleteConfirm); assertEquals(1, c.stored.size)
+        vm.confirmDeletePin(); d.scheduler.advanceUntilIdle() // nothing open: nothing removed
+        assertEquals(1, c.stored.size)
+        vm.deletePin("user:none"); d.scheduler.advanceUntilIdle() // an unknown pin opens nothing
+        assertNull(vm.state.value.pinDeleteConfirm)
+    }
+
+    @Test fun deleteDialogTextSaysWhatGoesAndWhatStays() {
+        val t7 = PlaceGuideModel.deletePlaceText(7)
+        assertTrue(t7.contains("links to 7 Moments")); assertTrue(t7.contains("The Moments, photos and notes stay")); assertTrue(t7.contains("cannot be undone"))
+        assertTrue(PlaceGuideModel.deletePlaceText(1).contains("links to 1 Moment."))
+        assertFalse(PlaceGuideModel.deletePlaceText(0).contains("links to"))
     }
 
     @Test fun pinningInsideAZoneIsRefusedAndNoFormOpens() = runTest(d) {
@@ -399,7 +425,7 @@ class PlaceGuideModelTest {
         val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC); d.scheduler.advanceUntilIdle()
         assertFalse(PlaceGuideModel.needsMoment(vm.state.value.pins.single(), vm.state.value.moments))
         c.moments = emptyList() // Forget removed the Moment
-        vm.deletePin("user:none"); d.scheduler.advanceUntilIdle() // any refresh of the screen
+        vm.cancelSeeds(); d.scheduler.advanceUntilIdle() // any refresh of the screen
         val pin = vm.state.value.pins.single()
         assertNull(pin.momentId); assertTrue(vm.state.value.moments.isEmpty()); assertTrue(PlaceGuideModel.needsMoment(pin, vm.state.value.moments))
     }

@@ -109,6 +109,11 @@ class AndroidPlaceGuideControl(
     }
     override suspend fun setMoment(pinId: String, momentId: String?): Boolean = pinning.setMoment(pinId, momentId)
     /** A link whose Moment was forgotten is cleared whenever the screen reads the pins (the Forget listener does it at the time; this also covers a crash in between). */
+    override suspend fun placeMomentCount(pinId: String): Int {
+        val linked = com.rokid.context.memory.MemoryGraph.get(app).db.placeLinkDao().momentIdsOf(pinId)
+        val ref = pinning.pins().firstOrNull { it.id == pinId }?.momentId
+        return (linked + listOfNotNull(ref)).distinct().size
+    }
     override suspend fun sweepMoments() { com.rokid.context.work.frames.place.PinMomentLinks.sweep(app) }
 
     /** B2: the place card history. */
