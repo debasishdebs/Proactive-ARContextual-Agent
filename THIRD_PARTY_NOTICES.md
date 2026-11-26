@@ -28,3 +28,26 @@ Model weights and vision projector, GGUF conversions by ggml-org (https://huggin
 (https://huggingface.co/HuggingFaceTB/SmolVLM2-500M-Video-Instruct), licensed under the Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
 The files are NOT part of the app or this repository: the user downloads them on demand from the model catalog (Settings > AI > Local models; pinned URLs and sha256 in `LocalModels.kt`),
 and the feature that uses them is off by default. No change was made to the model by this project.
+
+## Models in the catalog (downloaded by the user on demand; not part of the app or this repository)
+
+Licences are as stated in the model catalog (`android-companion/services/ai/src/main/java/com/rokid/context/ai/local/LocalModels.kt`); URLs and sha256 are pinned there. No model was modified by this project.
+
+| Model | Licence (catalog) | Notes |
+|---|---|---|
+| bge-small-en-v1.5 (GGUF q8 by CompendiumLabs, model by BAAI) | MIT (upstream BAAI MIT) | Default text embedder. |
+| Nomic Embed v1.5 (text GGUF and vision ONNX, nomic-ai) | Apache-2.0 | Opt-in; never auto-bound. |
+| SigLIP 2 base patch16-224 (ONNX export by onnx-community, model by Google) | Apache-2.0 | Opt-in shadow embedder. The SentencePiece `tokenizer.model` comes from the google repo; its separate licence is verify (the catalog states one licence for the bundle). |
+| SmolVLM2-500M-Video-Instruct (see above) | Apache-2.0 | Offline captioner, off by default. |
+
+## Seeding data (Place guide)
+
+The place seeder fetches facts on the user's network and stores them on the device. Seeding data is not shipped in this repository or in the APK.
+
+- Wikipedia article text (intros): CC BY-SA (Creative Commons Attribution-ShareAlike). Version (4.0 vs 3.0 per article): verify. Attribution is shown in the seeding screen; derived text stays under the same licence.
+- Wikidata: CC0 1.0 (public domain dedication).
+- OpenStreetMap data: ODbL 1.0, (c) OpenStreetMap contributors (https://www.openstreetmap.org/copyright).
+
+## Map tiles (MapTiler, live only)
+
+The optional street map (Settings > Privacy > Pause zones, off by default) requests raster tiles live from MapTiler as a selector under the zone boxes (`docs/offline-maps.md`). Tiles are not stored or redistributed by this project, and no key is in this file or the repository (it comes from untracked `local.properties`). The tiles show "(c) MapTiler (c) OpenStreetMap contributors". MapTiler's terms apply to whoever supplies the key: verify.
