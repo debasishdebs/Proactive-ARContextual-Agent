@@ -26,6 +26,21 @@ object MomentLocationGraph {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val gate = Mutex()
 
+    /**
+     * review2 #6: the deletion epoch of saved locations. Bumped when "Delete saved locations" starts and again when it ended, and after every user Forget, range Forget and Delete all COMMITTED (a [com.rokid.context.memory.forget.ForgetListener]
+     * registered with the first read of this object). A reader of locations (the Activity map) remembers the value before it reads and publishes only if it is unchanged; a change also tells it to drop what it shows and read again.
+     */
+    private val epoch = kotlinx.coroutines.flow.MutableStateFlow(0L)
+    val deletionEpoch: kotlinx.coroutines.flow.StateFlow<Long> get() = epoch
+    private fun bumpEpoch() { epoch.value = epoch.value + 1 }
+    private val forgetWatch = object : com.rokid.context.memory.forget.ForgetListener {
+        override suspend fun onFramesForgotten(frameIds: List<String>) = bumpEpoch()
+        override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) = bumpEpoch()
+        override suspend fun onDeleteAll() = bumpEpoch()
+        override suspend fun onUserForget() = bumpEpoch()
+    }
+    init { com.rokid.context.memory.forget.ForgetListeners.register(forgetWatch) }
+
     @Volatile private var zoneFix: () -> HeldFix? = { null }
     @Volatile private var zones: suspend () -> List<PauseZone>? = { null }
     @Volatile private var zoneBlocked: suspend () -> Boolean = { true }
@@ -99,5 +114,5 @@ object MomentLocationGraph {
     const val MAP_MAX_ROWS = 20_000
 
     /** "Delete saved locations": removes every `moment_location` row, under the delete side of the data-operation gate. Returns the number of rows removed. */
-    suspend fun deleteAll(app: Context): Int = DataOpGate.shared.delete { MemoryGraph.get(app).db.momentLocationDao().deleteAllMomentLocations() }
+    suspend fun deleteAll(app: Context): Int { bumpEpoch(); try { return DataOpGate.shared.delete { MemoryGraph.get(app).db.momentLocationDao().deleteAllMomentLocations() } } finally { bumpEpoch() } }
 }

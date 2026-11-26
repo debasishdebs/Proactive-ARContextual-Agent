@@ -84,6 +84,7 @@ internal fun ActivityHeatMap(map: ActivityMapState, g: Granularity, online: Onli
     var fitKey by remember { mutableStateOf(0) }
     var picked by remember { mutableStateOf<HeatCell?>(null) }
     val notice = MomentHeat.tileNotice(online?.ui?.available == true, online?.ui?.enabled == true)
+    LaunchedEffect(map.points) { picked = null } // review2 #6: a new set of points (a reload after a deletion) never keeps a cell of the old one selected
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
         if (map.loaded && map.points.isEmpty()) {
             Text(MomentHeat.EMPTY, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft, modifier = Modifier.padding(vertical = 12.dp).testTag("map_empty"))
