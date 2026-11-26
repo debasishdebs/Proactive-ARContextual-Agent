@@ -134,7 +134,9 @@ class PlaceFetchTest {
         )
         // Added 2026-11-27 by owner decision (ids from the large-area design doc sections 9 and 10; glacial lake Q211302 read back 2026-11-18); asserted separately in classRuleLoosened27Nov.
         val loosened27Nov = setOf("Q23397", "Q211302", "Q34038", "Q133056", "Q1559394", "Q46169", "Q1377575", "Q473972", "Q537127", "Q22698", "Q1139682")
-        assertEquals(verified.keys + loosened27Nov, PlaceCellSource.MONUMENT_CLASSES.keys)
+        // 27 Nov night owner list A (always on, ids from design doc section 4/5): asserted in ExtraPlaceTypesTest.theAlwaysOnClassesAreAdmitted...
+        val ownerNight = setOf("Q2613100", "Q337986", "Q697295", "Q44613", "Q34627", "Q24398318", "Q2639699", "Q162875", "Q23413", "Q57831", "Q1473950", "Q7882520", "Q321053", "Q936941", "Q179700", "Q53060", "Q2785355", "Q853854", "Q1091037", "Q9096832", "Q1010155", "Q12323", "Q3497167", "Q131681", "Q3215290", "Q55470036", "Q43501", "Q29553", "Q2714144", "Q1320719", "Q188025", "Q22746", "Q787934", "Q420962", "Q1497019", "Q1395089", "Q13409250")
+        assertEquals(verified.keys + loosened27Nov + ownerNight, PlaceCellSource.MONUMENT_CLASSES.keys)
         assertEquals(PlaceKinds.PRISON_MUSEUM, PlaceCellSource.MONUMENT_CLASSES["Q10500763"])
         assertFalse("Q40357 is a plain prison") { "Q40357" in PlaceCellSource.MONUMENT_CLASSES }
         assertFalse("Q160742 is an abbey") { "Q160742" in PlaceCellSource.MONUMENT_CLASSES }
@@ -142,8 +144,8 @@ class PlaceFetchTest {
 
     /** Classes seen on the trip check and deliberately NOT admitted (not monument-like, or people/organisations/businesses), ids and labels from wikidata.org 2026-11-18. */
     @Test fun tripClassesThatAreNotMonumentsStayOut() {
-        val out = mapOf("Q618123" to "geographical feature", "Q1827414" to "tea garden", "Q8502" to "mountain (toggle only)", "Q207326" to "summit (toggle only)", "Q1595289" to "sacred mountain (toggle only)", "Q55488" to "railway station",
-            "Q1395089" to "horseshoe curve", "Q70780172" to "tea plantation", "Q811534" to "remarkable tree", "Q486972" to "human settlement", "Q5" to "human")
+        val out = mapOf("Q618123" to "geographical feature", "Q1827414" to "tea garden", "Q8502" to "mountain (toggle only)", "Q207326" to "summit (toggle only)", "Q1595289" to "sacred mountain (toggle only)", "Q55488" to "railway station", "Q494829" to "bus station (toggle only)",
+            "Q70780172" to "tea plantation", "Q811534" to "remarkable tree", "Q486972" to "human settlement", "Q5" to "human")
         for ((id, label) in out) assertFalse("$label ($id) must not be admitted") { id in PlaceCellSource.MONUMENT_CLASSES }
     }
 
@@ -153,7 +155,7 @@ class PlaceFetchTest {
         for (c in listOf("Q23397", "Q211302", "Q34038", "Q133056", "Q1559394", "Q46169", "Q1377575", "Q473972", "Q537127", "Q22698", "Q1139682")) assertNotNull(PlaceCellSource.kindOf(setOf(c), "Q1"), c)
         assertEquals(PlaceKinds.TEMPLE, PlaceCellSource.kindOf(setOf("Q1559394"), "Q1"))
         assertEquals(PlaceKinds.MUSEUM, PlaceCellSource.kindOf(setOf("Q1139682"), "Q1"))
-        for (c in listOf("Q486972", "Q3914", "Q5", "Q43501")) assertNull(PlaceCellSource.kindOf(setOf(c), "Q1", all), "$c stays out with every switch on") // settlement, school, human, zoo: no switch
+        for (c in listOf("Q486972", "Q3914", "Q5", "Q953806")) assertNull(PlaceCellSource.kindOf(setOf(c), "Q1", all), "$c stays out with every switch on") // settlement, school, human, bus stop (TODO-verify id): no class
         // the extra types are admitted only through their switch (see ExtraPlaceTypesTest for every class)
         for (c in listOf("Q8502", "Q207326", "Q1595289", "Q740445", "Q46831")) { assertNull(PlaceCellSource.kindOf(setOf(c), "Q1"), c); assertNull(PlaceCellSource.kindOf(setOf(c), "Q1", setOf(ExtraPlaceTypes.RIVERS))); assertNotNull(PlaceCellSource.kindOf(setOf(c), "Q1", setOf(ExtraPlaceTypes.MOUNTAINS))) }
         assertNull(PlaceCellSource.kindOf(none, "Q2", all))

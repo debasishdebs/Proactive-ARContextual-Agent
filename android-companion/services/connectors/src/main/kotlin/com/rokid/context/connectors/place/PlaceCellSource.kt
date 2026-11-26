@@ -120,7 +120,9 @@ class PlaceCellSource(
         const val WIDE_COORD_DISAGREE_M = 5000.0
 
         /** P31 classes that are areas rather than points: lake, glacial lake, park, national park, wildlife refuge, protected area, waterfall, mountain pass and the mountain classes (admitted or not, the limit only matters once admitted). TODO-verify classes (proglacial lake, sanctuary, bird sanctuary) join when their ids are verified. */
-        val AREA_LIKE_CLASSES: Set<String> = setOf("Q23397", "Q211302", "Q22698", "Q46169", "Q1377575", "Q473972", "Q34038", "Q133056") + ExtraPlaceTypes.AREA_LIKE_CLASSES
+        val AREA_LIKE_CLASSES: Set<String> = setOf("Q23397", "Q211302", "Q22698", "Q46169", "Q1377575", "Q473972", "Q34038", "Q133056",
+            // 27 Nov night additions (always admitted): proglacial lake, salt lake, paleontological site, urban park, ghat, reservoir, artificial lake, intermittent reservoir, sanctuary, bird sanctuary
+            "Q1320719", "Q188025", "Q9096832", "Q22746", "Q1010155", "Q131681", "Q3215290", "Q55470036", "Q29553", "Q2714144") + ExtraPlaceTypes.AREA_LIKE_CLASSES
 
         /** Curated ids with no admitted area class that still get the wide limit: Do-drul Chorten Q5285886 (no P31 at all; owner follow-up 27 Nov). A point-like curated place is not listed. */
         val WIDE_COORD_QIDS: Set<String> = setOf("Q5285886")
@@ -178,8 +180,7 @@ class PlaceCellSource(
             "Q167346" to PlaceKinds.ATTRACTION, // botanical garden: Royal Botanic Gardens, Peradeniya
             // Added 2026-11-27 (owner decision, design 2026-11-27-large-area-seeding-design.md sections 9 and 10, Sikkim coverage). Ids from that document and from trip-seed-coverage-2026-11-18.md (glacial lake Q211302 was
             // read back from wikidata.org on 2026-11-18); the English labels are in the comments. Not admitted: tea garden Q1827414, villages, human settlements, schools, zoos.
-            // TODO-verify (no id in the repo docs, NOT guessed, so NOT admitted yet): proglacial lake, sanctuary, bird sanctuary.
-            "Q23397" to PlaceKinds.ATTRACTION, "Q211302" to PlaceKinds.ATTRACTION, // lake, glacial lake
+                        "Q23397" to PlaceKinds.ATTRACTION, "Q211302" to PlaceKinds.ATTRACTION, // lake, glacial lake
             "Q34038" to PlaceKinds.ATTRACTION, // waterfall
             "Q133056" to PlaceKinds.ATTRACTION, // mountain pass
             "Q1559394" to PlaceKinds.TEMPLE, // gompa
@@ -189,13 +190,35 @@ class PlaceCellSource(
             "Q537127" to PlaceKinds.ATTRACTION, // road bridge
             "Q22698" to PlaceKinds.ATTRACTION, // park
             "Q1139682" to PlaceKinds.MUSEUM, // Tibet museum
+            // Added 2026-11-27 night (owner decision, design doc "Class survey Rajasthan 27 Nov" sections 4 and 5; handoff 12af): ALWAYS admitted (default ON, not toggles). Ids and labels from the survey (read back via wbgetentities/wbsearchentities).
+            "Q2613100" to PlaceKinds.TEMPLE, "Q337986" to PlaceKinds.TEMPLE, "Q697295" to PlaceKinds.TEMPLE, "Q44613" to PlaceKinds.TEMPLE, // Jain temple, gurdwara, shrine, monastery
+            "Q34627" to PlaceKinds.TEMPLE, // synagogue (no WORSHIP kind: the kind list stays as it is, a place of worship maps to TEMPLE)
+            "Q24398318" to PlaceKinds.TEMPLE, // religious building
+            "Q2639699" to PlaceKinds.TOMB, "Q162875" to PlaceKinds.TOMB, // dargah, mausoleum
+            "Q23413" to PlaceKinds.FORT, "Q57831" to PlaceKinds.FORT, // castle, fortress
+            "Q1473950" to PlaceKinds.HERITAGE_BUILDING, "Q7882520" to PlaceKinds.HERITAGE_BUILDING, // stepwell, haveli
+            "Q321053" to PlaceKinds.MEMORIAL, // cenotaph
+            "Q936941" to PlaceKinds.MONUMENT, "Q179700" to PlaceKinds.MONUMENT, // chhatri, statue
+            "Q53060" to PlaceKinds.MONUMENT, "Q2785355" to PlaceKinds.MONUMENT, "Q853854" to PlaceKinds.MONUMENT, // gate, gate building, clock tower
+            "Q1091037" to PlaceKinds.STUPA, // chorten
+            "Q9096832" to PlaceKinds.ARCHAEOLOGICAL_SITE, // paleontological site (area-like)
+            "Q1010155" to PlaceKinds.ATTRACTION, // ghat (area-like)
+            "Q12323" to PlaceKinds.ATTRACTION, "Q3497167" to PlaceKinds.ATTRACTION, // dam, gravity dam (noisy: many small irrigation dams, kept ON as the owner approved; the cell log counts them)
+            "Q131681" to PlaceKinds.ATTRACTION, "Q3215290" to PlaceKinds.ATTRACTION, "Q55470036" to PlaceKinds.ATTRACTION, // reservoir, artificial lake, intermittent reservoir (area-like)
+            "Q43501" to PlaceKinds.ATTRACTION, // zoo
+            "Q29553" to PlaceKinds.ATTRACTION, "Q2714144" to PlaceKinds.ATTRACTION, // sanctuary, bird sanctuary (area-like, radius capped)
+            "Q1320719" to PlaceKinds.ATTRACTION, "Q188025" to PlaceKinds.ATTRACTION, // proglacial lake, salt lake (area-like)
+            "Q22746" to PlaceKinds.ATTRACTION, // urban park (area-like)
+            "Q787934" to PlaceKinds.MUSEUM, // automobile museum
+            "Q420962" to PlaceKinds.ATTRACTION, "Q1497019" to PlaceKinds.ATTRACTION, "Q1395089" to PlaceKinds.ATTRACTION, // heritage railway, mountain railway, horseshoe curve
+            "Q13409250" to PlaceKinds.ATTRACTION, // ropeway (aerial lift)
         )
 
         // The optional place types (mountains, rivers, glaciers, hills, tea gardens, railway, power, stadiums...) are DATA in [ExtraPlaceTypes]; the Settings switches choose which are admitted.
 
         /** Large areas: the radius an OSM extent may widen a place to (metres). A national park or a mountain is hundreds of square kilometres: the card is for being near its sign, not inside its border. */
         const val AREA_RADIUS_CAP_M = 300
-        val RADIUS_CAP_M: Map<String, Int> = mapOf("Q473972" to AREA_RADIUS_CAP_M, "Q46169" to AREA_RADIUS_CAP_M, "Q1377575" to AREA_RADIUS_CAP_M) + ExtraPlaceTypes.RADIUS_CAPS
+        val RADIUS_CAP_M: Map<String, Int> = mapOf("Q473972" to AREA_RADIUS_CAP_M, "Q46169" to AREA_RADIUS_CAP_M, "Q1377575" to AREA_RADIUS_CAP_M, "Q29553" to AREA_RADIUS_CAP_M, "Q2714144" to AREA_RADIUS_CAP_M) + ExtraPlaceTypes.RADIUS_CAPS
 
         /** The kind of an item with these P31 [classes] and this [qid], or null when it is not admitted: the strict list, the curated ids, then the extra types in [extra] (the one class rule of the per-cell and the bulk path; people are checked by the caller). */
         fun kindOf(classes: Set<String>, qid: String, extra: Set<String> = emptySet()): String? =

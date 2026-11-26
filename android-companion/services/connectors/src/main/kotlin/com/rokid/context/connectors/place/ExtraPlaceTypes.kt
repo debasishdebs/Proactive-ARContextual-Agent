@@ -6,8 +6,7 @@ import com.rokid.context.memory.place.PlaceKinds
  * The OPTIONAL place types of Settings > Place Guide > "Extra place types" (owner decisions 27 Nov): each is a switch, stored in the `place_guide` prefs, honoured by NEW seeds (per-cell and bulk alike); places
  * already stored are never purged by switching one off. The strict list ([PlaceCellSource.MONUMENT_CLASSES] with the 27 Nov additions) is always on; these are on top of it.
  *
- * DATA, not code: a class is one [ClassDef] line in a [Type], a type is one [Type] line in [ALL] (id, label, category, areaLike flag, radius cap, default). Ids are the owner's (27 Nov); only railway station Q55488 was read back from
- * wikidata.org in this repo (2026-11-18). TODO-verify (labels read back) before the next release: all the others.
+ * DATA, not code: a class is one [ClassDef] line in a [Type], a type is one [Type] line in [ALL] (id, label, category, areaLike flag, radius cap, default). Ids are the owner's (27 Nov) and the class survey's (design doc, Class survey Rajasthan 27 Nov); the always-on classes are in [PlaceCellSource.MONUMENT_CLASSES]. TODO-verify: bus stop Q953806.
  * Deliberately NOT here and with no switch: villages, settlements, constituencies, wards, districts, gewogs, blocks, borders, schools, census towns.
  * [Type.areaLike] types get the 5 km Wikipedia-versus-Wikidata tolerance; [Type.radiusCapM] is the most an OSM extent may widen the radius to.
  */
@@ -15,7 +14,7 @@ object ExtraPlaceTypes {
     /** One Wikidata P31 class: its id, its English label (for the log-free screens and docs) and the kind a place of it is stored with. */
     class ClassDef(val id: String, val label: String, val kind: String)
 
-    /** [category] groups the switches on the screen; [defaultOn] is the owner's default (27 Nov night: all ON). A type with no [classes] admits nothing and is not shown (see [shown]). */
+    /** [category] groups the switches on the screen; [defaultOn] is the owner's default (27 Nov night: ON except battles, valleys, cities and airports). A type with no [classes] admits nothing and is not shown (see [shown]). */
     class Type(val key: String, val title: String, val category: String, val classes: List<ClassDef>, val areaLike: Boolean = false, val radiusCapM: Int? = null, val defaultOn: Boolean = true, val note: String = "") {
         val classIds: Set<String> get() = classes.map { it.id }.toSet()
         val shown: Boolean get() = classes.isNotEmpty()
@@ -30,6 +29,10 @@ object ExtraPlaceTypes {
     const val BUS_STOPS = "bus_stops"
     const val POWER = "power"
     const val STADIUMS = "stadiums"
+    const val BATTLES = "battles"
+    const val VALLEYS = "valleys"
+    const val CITIES = "cities"
+    const val AIRPORTS = "airports"
 
     val ALL: List<Type> = listOf(
         Type(MOUNTAINS, "Include mountains and peaks", "Nature", listOf(
@@ -40,11 +43,17 @@ object ExtraPlaceTypes {
         Type(GLACIERS, "Include glaciers", "Nature", listOf(ClassDef("Q35666", "glacier", PlaceKinds.ATTRACTION)), areaLike = true, radiusCapM = 300),
         Type(HILLS, "Include hills", "Nature", listOf(ClassDef("Q54050", "hill", PlaceKinds.VIEWPOINT)), areaLike = true, radiusCapM = 300, note = "adds many places"),
         Type(TEA_GARDENS, "Include tea gardens", "Sights", listOf(ClassDef("Q1827414", "tea garden", PlaceKinds.ATTRACTION))),
-        Type(RAILWAY, "Include railway stations and mountain railways", "Transport", listOf(ClassDef("Q55488", "railway station", PlaceKinds.ATTRACTION), ClassDef("Q1497019", "mountain railway", PlaceKinds.ATTRACTION)), note = "adds many places"),
-        // TODO-verify: the Wikidata id of "bus stop" is in no repo doc or measurement and is NOT guessed; until it is added here the switch has no class and is not shown.
-        Type(BUS_STOPS, "Include bus stops", "Transport", emptyList()),
-        Type(POWER, "Include power stations and dams", "Sights", listOf(ClassDef("Q1411996", "hydroelectric power station", PlaceKinds.ATTRACTION))), // the power-station family is one switch; a dam id is TODO-verify
-        Type(STADIUMS, "Include stadiums", "Sights", listOf(ClassDef("Q483110", "stadium", PlaceKinds.ATTRACTION))),
+        Type(RAILWAY, "Include railway stations", "Transport", listOf(ClassDef("Q55488", "railway station", PlaceKinds.ATTRACTION), ClassDef("Q22808404", "station located on surface", PlaceKinds.ATTRACTION)), note = "adds many places"), // mountain railway, heritage railway and horseshoe curve are always on (MONUMENT_CLASSES)
+        // 27 Nov night: bus station Q494829 is ON by default; "bus stop" Q953806 is TODO-verify (listed in the handoff only, not read back) and is NOT admitted.
+        Type(BUS_STOPS, "Include bus stations", "Transport", listOf(ClassDef("Q494829", "bus station", PlaceKinds.ATTRACTION))),
+        Type(POWER, "Include power stations", "Sights", listOf(ClassDef("Q1411996", "hydroelectric power station", PlaceKinds.ATTRACTION))), // dams are always on; the Q15911738 hydroelectric id is TODO-verify
+        Type(STADIUMS, "Include stadiums and cricket grounds", "Sights", listOf(ClassDef("Q483110", "stadium", PlaceKinds.ATTRACTION), ClassDef("Q682943", "cricket field", PlaceKinds.ATTRACTION))),
+        // New optional switches, default OFF (owner 27 Nov night).
+        Type(BATTLES, "Include battles and sieges", "Sights", listOf(ClassDef("Q178561", "battle", PlaceKinds.HISTORIC_SITE), ClassDef("Q188055", "siege", PlaceKinds.HISTORIC_SITE)), defaultOn = false, note = "historic events at a place"),
+        Type(VALLEYS, "Include valleys", "Nature", listOf(ClassDef("Q39816", "valley", PlaceKinds.VIEWPOINT)), areaLike = true, radiusCapM = 300, defaultOn = false),
+        Type(CITIES, "Include cities and towns", "Context", listOf(ClassDef("Q515", "city", PlaceKinds.ATTRACTION), ClassDef("Q3957", "town", PlaceKinds.ATTRACTION), ClassDef("Q1549591", "big city", PlaceKinds.ATTRACTION)), areaLike = true, radiusCapM = 300, defaultOn = false, note = "adds place names like city and town for context, not sights"),
+        Type(AIRPORTS, "Include airports", "Transport", listOf(ClassDef("Q1248784", "airport", PlaceKinds.ATTRACTION), ClassDef("Q94993988", "commercial traffic aerodrome", PlaceKinds.ATTRACTION)), defaultOn = false),
+        // Not offered (owner: OFF and not offered): universities and colleges (Q3918, Q189004, Q131389368, Q7603893). No class, no toggle.
     )
 
     /** The switches the screen offers (a type with no class yet is not shown). */
