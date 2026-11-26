@@ -25,11 +25,18 @@ class ImportSourceRulesTest {
     }
 
     @Test fun onlyTheReviewedDaoWritesAppear() {
-        val writes = Regex("""\.(insert\w*|upsert\w*|put\w*|delete\w*|update\w*|record|wipe\w*)\(""")
+        val writes = Regex("""\.(insert\w*|upsert\w*|put\w*|delete\w*|update\w*|record|wipe\w*|write\w*)\(""")
         val found = files.flatMap { f -> writes.findAll(code(f).replace("file.delete()", "")).map { it.groupValues[1] } }.toSet()
-        // reviewed: the location row (insertIfAbsent, as the recorder and the GPS backfill write it) and the frame_source edge (insertAll, as the extraction writes it); everything else goes through
+        // reviewed (round 7b adds `writeDerivedGuarded`: the Scene text goes through the guarded derive write, attribution `imported`): the location row (insertIfAbsent, as the recorder and the GPS backfill write it) and the frame_source edge (insertAll, as the extraction writes it); everything else goes through
         // ImportFrameWriter (frame ingest), ImportMemoryWriter (appendFact), recordMark (MarkRecorder) and build (MomentBuilder)
-        assertEquals(setOf("insertIfAbsent", "insertAll"), found)
+        assertEquals(setOf("insertIfAbsent", "insertAll", "writeDerivedGuarded"), found)
+    }
+
+    /** Round 7b: pins, cards, Scenes and marks each enter through their one normal writer; the import never touches the pin prefs, the place_link, scene or card tables itself. */
+    @Test fun pinsCardsScenesAndMarksGoThroughTheirNormalWritersOnly() {
+        val all = files.joinToString("\n") { code(it) }
+        for (t in listOf("UserPinStore", "savePins", "placeLinkDao", "placeCardLogDao", "sceneDao().replace", "sceneDao().upsert", "sceneDao().insert", "upsertScene", "insertLabel", "insertLabelFenced", "putMeta", "SharedPreferences")) assertTrue("the import must not use $t directly", t !in all)
+        for (t in listOf("importPin", "history.add(", "rebuildWindow(", "writeDerivedGuarded(", "recordMark(")) assertTrue("expected the normal writer call $t", t in all)
     }
 
     @Test fun neverImportsADaoOrDatabaseBuilderOfItsOwn() {

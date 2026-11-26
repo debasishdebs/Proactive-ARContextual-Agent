@@ -76,7 +76,7 @@ class ImportRoutes(
                 put("skipped", buildJsonObject { skipped.toSortedMap().forEach { (k, v) -> put(k, v) } })
                 put("counts", buildJsonObject {
                     put("frames", r.frames); put("memories", r.memories); put("marks", r.marks); put("locations", r.locations)
-                    put("place_cards", r.cards); put("place_cards_skipped", buildJsonObject { r.cardsSkipped.toSortedMap().forEach { (k, v) -> put(k, v) } }); put("pins", r.pins); put("pin_links_dropped", r.pinLinksDropped)
+                    put("place_cards", r.cards); put("place_cards_skipped", buildJsonObject { r.cardsSkipped.toSortedMap().forEach { (k, v) -> put(k, v) } }); put("pins", r.pins); put("scenes", r.scenes); put("scenes_remapped", r.scenesRemapped); put("scene_texts", r.sceneTexts); put("pin_links_dropped", r.pinLinksDropped)
                 })
                 put("results", JsonArray(r.items.mapIndexed { i, p -> buildJsonObject { put("i", i); put("status", p.first); put("reason", p.second) } }))
             }

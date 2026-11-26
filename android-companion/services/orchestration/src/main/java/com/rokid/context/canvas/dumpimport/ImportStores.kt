@@ -16,6 +16,12 @@ import com.rokid.context.orchestration.PipelineRecords
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.rokid.context.canvas.moment.SceneBuilder
+import com.rokid.context.memory.db.ContextDatabase
+import com.rokid.context.memory.db.DaoFence
+import com.rokid.context.memory.db.ObjectDao
+import com.rokid.context.memory.moment.DerivedField
+import com.rokid.context.memory.moment.ObjectAudit
 import com.rokid.context.memory.place.UserPlace
 import com.rokid.context.work.frames.place.HistoryKind
 import com.rokid.context.work.frames.place.PlaceCardHistory
@@ -83,5 +89,19 @@ class ImportCardStore(private val history: PlaceCardHistory, private val pinIds:
         if (UserPlace.isUserId(card.placeId) && card.placeId !in pinIds()) return "pin_missing"
         val e = PlaceHistoryEvent(card.kind, card.placeId, card.title, emptyList(), card.frameId, card.cardId, null, card.delivery, history.capture(), importedId = card.id, importedAt = card.at)
         return if (history.add(e) != null) "ok" else "refused"
+    }
+}
+
+/**
+ * Developer IMPORT, the Scene writer: the normal [SceneBuilder] (a rebuild of the clock hours of a span; the same builder the 15-minute cadence runs, with its fences) and the guarded derived write
+ * ([ObjectAudit.writeDerivedGuarded], the call a summary derive makes: Delete all generation, parent exists, inputs unchanged) with the attribution `imported`.
+ */
+class ImportSceneStore(private val db: ContextDatabase, private val builder: SceneBuilder, private val fence: () -> DaoFence, clock: () -> Long = System::currentTimeMillis) : ImportSceneWriter {
+    private val audit = ObjectAudit(db.objectDao(), clock)
+    override suspend fun rebuild(fromMs: Long, toMs: Long) { builder.rebuildWindow(fromMs, toMs) }
+    override suspend fun derive(sceneId: String, field: String, text: String): Boolean {
+        if (field != DerivedField.SUMMARY && field != DerivedField.CAPTION) return false
+        val scene = db.sceneDao().scene(sceneId) ?: return false
+        return audit.writeDerivedGuarded(scene, field, text, null, SceneBuilder.BUILD_REV, fence(), audit.inputSeq(scene), ModelAttribution(ImportMemoryStore.ATTRIBUTION)) == ObjectDao.WriteOutcome.WRITTEN
     }
 }

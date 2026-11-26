@@ -48,6 +48,19 @@ class ImportRoutesTest {
         assertEquals(413, post(tooLarge = true)!!.status)
     }
 
+    @Test fun theAnswerCarriesTheCountsOfEveryRestoredType() {
+        val pin = """{"object_type":"pin","id":"user:00000000-0000-0000-0000-00000000000a","name":"Wall","kind":"monument","lat":7.9,"lon":80.7,"radiusM":60,"note":"n"}"""
+        val scene = """{"object_type":"scene","id":"S${"%08x".format(sec)}","momentIds":["${"%08x".format(sec)}"]}"""
+        val mark = """{"object_type":"mark","id":"mk:e:1","atMs":${sec * 1000},"source":"voice"}"""
+        reply = { e -> ImportReport(e.map { "created" to "ok" }, 0, 0, 1, 0, 2, 0, false, pins = 1, pinLinksDropped = 1, cardsSkipped = mapOf("expired" to 3), scenes = 1, scenesRemapped = 1, sceneTexts = 2) }
+        val r = post("""{"items":[$pin,$scene,$mark]}""")!!
+        assertEquals(200, r.status)
+        val c = json(r)["counts"]!!.jsonObject
+        assertEquals(listOf(1, 1, 1, 1, 2, 2), listOf("pins", "pin_links_dropped", "scenes", "scenes_remapped", "scene_texts", "place_cards").map { c[it]!!.jsonPrimitive.content.toInt() })
+        assertEquals(3, c["place_cards_skipped"]!!.jsonObject["expired"]!!.jsonPrimitive.content.toInt())
+        assertTrue(!String(r.body).contains("Wall"))
+    }
+
     @Test fun paramsReachTheImporterAndTheAnswerIsCountsOnly() {
         val r = post(q = mapOf("dedup" to "true", "dry_run" to "true"))!!
         assertEquals(200, r.status); assertEquals(Triple(1, true, true), seen)

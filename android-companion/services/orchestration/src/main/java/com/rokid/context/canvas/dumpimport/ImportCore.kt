@@ -38,6 +38,8 @@ object DumpImportParser {
     const val MAX_MEMORIES = 50
     const val MAX_MARKS = 20
     const val MAX_CARDS = 20
+    const val MAX_SCENE_MOMENTS = 500
+    private val SCENE_ID = Regex("^S[0-9a-f]{8}$")
     private val CARD_ID = Regex("^[A-Za-z0-9_-]{1,80}$")
     private val PLACE_ID = Regex("^[A-Za-z0-9_.:-]{1,100}$")
     private val DELIVERIES = setOf(CardDelivery.PENDING, CardDelivery.SENT, CardDelivery.NOT_SENT_LINK, CardDelivery.NOT_SENT_HOST, CardDelivery.NOT_SENT_BUSY, CardDelivery.NOT_SENT_ZONE, CardDelivery.NOT_SENT_POSSIBLE, CardDelivery.NOT_SENT_LATE)
@@ -76,6 +78,8 @@ object DumpImportParser {
         class StandaloneMark(val mark: Mark, val momentId: String?) : Entry()
         /** A pin item: already validated by [UserPlace.isValid] (id, name, kind, position, radius, parent, note, Moment link, time). */
         class Pin(val pin: UserPlace) : Entry()
+        /** A Scene item: its original [id], the exported member Moment ids and the exported derived TEXT (SUMMARY, CAPTION; fresh values only). */
+        class Scene(val id: String, val momentIds: List<String>, val derived: Map<String, String>) : Entry()
     }
 
     class Bad(val index: Int, val reason: String) : Exception(null, null, false, false)
@@ -89,7 +93,7 @@ object DumpImportParser {
             val o = e as? JsonObject ?: throw Bad(i, "not_object")
             when (str(o, "object_type", i) ?: "moment") {
                 "moment" -> Entry.Moment(moment(o, i))
-                "scene" -> Entry.Skip("scene")
+                "scene" -> sceneItem(o, i)
                 "pin" -> pinItem(o, i)
                 "mark" -> markItem(o, i)
                 else -> throw Bad(i, "object_type")
@@ -141,6 +145,28 @@ object DumpImportParser {
         val created = long(m, "createdAt", i) ?: at
         if (created < 0) throw Bad(i, "mark_createdAt")
         return Mark(mid, source, at, photo, created)
+    }
+
+    private fun sceneItem(o: JsonObject, i: Int): Entry.Scene {
+        val id = str(o, "id", i, 20)?.takeIf { SCENE_ID.matches(it) } ?: throw Bad(i, "scene_id")
+        val raw = o["momentIds"] as? JsonArray ?: throw Bad(i, "scene_momentIds")
+        if (raw.isEmpty() || raw.size > MAX_SCENE_MOMENTS) throw Bad(i, "scene_momentIds")
+        val ids = raw.map { m -> ((m as? JsonPrimitive)?.takeIf { it.isString })?.content?.takeIf { MomentId.parse(it) != null } ?: throw Bad(i, "scene_momentIds") }
+        if (ids.distinct().size != ids.size) throw Bad(i, "scene_momentIds")
+        return Entry.Scene(id, ids, sceneDerived(o, i))
+    }
+
+    private fun sceneDerived(o: JsonObject, i: Int): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        for (d in arr(o, "derived", i, 20)) {
+            val field = str(d, "field", i, 20) ?: throw Bad(i, "scene_derived")
+            if (field != "SUMMARY" && field != "CAPTION") continue // EMBEDDING and others rebuild
+            if (bool(d, "stale", i) == true) continue
+            val v = str(d, "value", i, MAX_TEXT)?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+            if (field in out) throw Bad(i, "scene_derived")
+            out[field] = v
+        }
+        return out
     }
 
     private fun pinItem(o: JsonObject, i: Int): Entry.Pin {
@@ -253,12 +279,18 @@ object DumpImportParser {
 /** What the importer writes through. The production implementations ([ImportFrameStore], [ImportMemoryStore]) call the app's normal ingest; tests pass fakes over the same intake. */
 fun interface ImportFrameWriter { suspend fun store(frame: DumpImportParser.Frame): Boolean }
 fun interface ImportCardWriter { suspend fun store(card: DumpImportParser.Card): String }
+/** What the importer needs from the Scene builder: a normal rebuild of the clock hours of a time span, and the guarded derived-text write with the attribution `imported`. */
+interface ImportSceneWriter {
+    suspend fun rebuild(fromMs: Long, toMs: Long)
+    /** True = written (false: the Scene or its inputs changed, a Delete all moved the fence, or the field is not allowed). */
+    suspend fun derive(sceneId: String, field: String, text: String): Boolean
+}
 fun interface ImportMemoryWriter { suspend fun store(memory: DumpImportParser.Memory): Boolean }
 
 /** The counts of one request (never ids, text or coordinates). [status] per item in order: `created`, `would_create`, `skipped`, `conflict`, `failed`. */
 class ImportReport(
     val items: List<Pair<String, String>>, val frames: Int, val memories: Int, val marks: Int, val locations: Int, val cards: Int, val skippedNotImported: Int, val stopped: Boolean,
-    val pins: Int = 0, val pinLinksDropped: Int = 0, val cardsSkipped: Map<String, Int> = emptyMap(),
+    val pins: Int = 0, val pinLinksDropped: Int = 0, val cardsSkipped: Map<String, Int> = emptyMap(), val scenes: Int = 0, val scenesRemapped: Int = 0, val sceneTexts: Int = 0,
 ) {
     fun count(status: String) = items.count { it.first == status }
 }
@@ -286,31 +318,67 @@ class DumpImporter(
     private val pinIds: () -> Set<String> = { emptySet() },
     /** The card-history writer ([ImportCardStore] in production). */
     private val cards: ImportCardWriter = ImportCardWriter { "history_off" },
+    /** The Scene builder ([ImportSceneStore] in production). */
+    private val scenes: ImportSceneWriter = object : ImportSceneWriter { override suspend fun rebuild(fromMs: Long, toMs: Long) {}; override suspend fun derive(sceneId: String, field: String, text: String) = false },
 ) {
     private class Stopped : Exception(null, null, false, false)
 
-    private class Tally { var f = 0; var m = 0; var k = 0; var l = 0; var cards = 0; var notImported = 0; var pins = 0; var pinLinksDropped = 0; var cardsDone = 0; val cardsSkipped = java.util.TreeMap<String, Int>(); val newMoments = ArrayList<DumpImportParser.MomentItem>() }
+    private class Tally { var f = 0; var m = 0; var k = 0; var l = 0; var cards = 0; var notImported = 0; var pins = 0; var pinLinksDropped = 0; var cardsDone = 0; val cardsSkipped = java.util.TreeMap<String, Int>(); val newMoments = ArrayList<DumpImportParser.MomentItem>(); var scenes = 0; var scenesRemapped = 0; var sceneTexts = 0 }
 
     suspend fun run(entries: List<DumpImportParser.Entry>, dedup: Boolean, dryRun: Boolean): ImportReport {
         val out = arrayOfNulls<Pair<String, String>>(entries.size)
         val t = Tally()
         var stopped = false
         val gen0 = generation()
-        // Moments (and skips, standalone marks) first, then pins (a pin may name a Moment of this request); results keep the request order
-        val order = entries.indices.sortedBy { if (entries[it] is DumpImportParser.Entry.Pin) 1 else 0 }
-        for (idx in order) {
-            if (stopped) { out[idx] = "failed" to "stopped"; continue }
-            out[idx] = try { one(entries[idx], dedup, dryRun, gen0, t)
-            } catch (s: Stopped) { stopped = true; "failed" to "stopped"
-            } catch (c: kotlinx.coroutines.CancellationException) { throw c
-            } catch (x: Exception) { "failed" to "error" }
+        // Scenes that exist BEFORE this request: one Scene rebuild covers its whole clock hour, so "exists" must not see what this request's own rebuilds made
+        val sceneBefore = db.sceneDao().scenesByIds(entries.filterIsInstance<DumpImportParser.Entry.Scene>().map { it.id }.distinct()).map { it.sceneId }.toSet()
+        suspend fun phase(pick: (DumpImportParser.Entry) -> Boolean) {
+            for (idx in entries.indices) {
+                val e = entries[idx]
+                if (!pick(e)) continue
+                if (stopped) { out[idx] = "failed" to "stopped"; continue }
+                out[idx] = try {
+                    if (e is DumpImportParser.Entry.Scene) scene(e, sceneBefore, dedup, dryRun, gen0, t) else one(e, dedup, dryRun, gen0, t)
+                } catch (s: Stopped) { stopped = true; "failed" to "stopped"
+                } catch (c: kotlinx.coroutines.CancellationException) { throw c
+                } catch (x: Exception) { "failed" to "error" }
+            }
         }
-        // place cards last: a card may name a pin of this request, and its photo must be on the phone
+        // order: Moments (and skips, standalone marks), pins (a pin may name a Moment of this request), place cards (they may name a pin, and their photo must be on the phone), Scenes (they hold Moments); results keep the request order
+        phase { it !is DumpImportParser.Entry.Pin && it !is DumpImportParser.Entry.Scene }
+        phase { it is DumpImportParser.Entry.Pin }
         if (!stopped) for (m in t.newMoments) {
             try { for (c in m.cards) { if (dryRun) t.cardsDone++ else { check(gen0); cardOne(c, t) } } } catch (s: Stopped) { stopped = true; break }
             catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (x: Exception) { t.cardsSkipped.merge("error", 1, Int::plus) }
         }
-        return ImportReport(out.map { it!! }, t.f, t.m, t.k, t.l, t.cardsDone, t.notImported, stopped, pins = t.pins, pinLinksDropped = t.pinLinksDropped, cardsSkipped = t.cardsSkipped.toMap())
+        phase { it is DumpImportParser.Entry.Scene }
+        return ImportReport(out.map { it!! }, t.f, t.m, t.k, t.l, t.cardsDone, t.notImported, stopped, pins = t.pins, pinLinksDropped = t.pinLinksDropped, cardsSkipped = t.cardsSkipped.toMap(),
+            scenes = t.scenes, scenesRemapped = t.scenesRemapped, sceneTexts = t.sceneTexts)
+    }
+
+    /**
+     * A Scene item. There is NO normal write path that accepts a Scene's id and members: a Scene is a projection that only [com.rokid.context.canvas.moment.SceneBuilder] writes. So the Scene is REBUILT from the
+     * Moments that are on the phone (the normal builder, deterministic: the id is `S` + the first Moment's id, so the same Moments give the SAME id) and the old id is mapped to the new one (`created: ok` = same id,
+     * `created: remapped` = another id because other Moments were present). The exported summary/caption is written (attribution `imported`) only when the id is the same AND the members are exactly the exported ones.
+     */
+    private suspend fun scene(e: DumpImportParser.Entry.Scene, before: Set<String>, dedup: Boolean, dryRun: Boolean, gen0: Long, t: Tally): Pair<String, String> {
+        if (e.id in before) return if (dedup) "skipped" to "dedup" else "conflict" to "exists"
+        val live = e.momentIds.filter { db.momentDao().moment(it) != null && db.momentDao().tombstonedAmong(listOf(it)).isEmpty() }
+        if (live.isEmpty()) return if (dryRun && e.momentIds.any { m -> t.newMoments.any { it.id == m } }) "would_create" to "ok" else "skipped" to "no_members"
+        if (dryRun) { t.scenes++; return "would_create" to "ok" }
+        check(gen0)
+        val times = live.mapNotNull(MomentId::startMs)
+        scenes.rebuild(times.min(), times.max() + 999)
+        check(gen0)
+        val sd = db.sceneDao()
+        val firstLive = live.minByOrNull { MomentId.startMs(it) ?: Long.MAX_VALUE }!!
+        val newId = (if (sd.scene(e.id) != null) e.id else sd.momentPartsOf(listOf(firstLive)).firstOrNull()?.sceneId) ?: return "failed" to "not_built"
+        t.scenes++
+        val same = newId == e.id
+        if (!same) t.scenesRemapped++
+        val members = sd.parts(newId).filter { it.kind == "MOMENT" }.map { it.refId }.toSet()
+        if (same && members == e.momentIds.toSet()) for ((field, text) in e.derived) { check(gen0); if (scenes.derive(newId, field, text)) t.sceneTexts++ }
+        return "created" to if (same) "ok" else "remapped"
     }
 
     private suspend fun cardOne(c: DumpImportParser.Card, t: Tally) {
@@ -324,6 +392,7 @@ class DumpImporter(
             is DumpImportParser.Entry.Skip -> { t.notImported++; return "skipped" to e.reason }
             is DumpImportParser.Entry.StandaloneMark -> return standaloneMark(e, dedup, dryRun, gen0).also { if (it.first == "created" || it.first == "would_create") t.k++ }
             is DumpImportParser.Entry.Pin -> return pin(e.pin, dedup, dryRun, gen0, t)
+            is DumpImportParser.Entry.Scene -> return "failed" to "error" // judged by [scene], never here
             is DumpImportParser.Entry.Moment -> {}
         }
         val m = (e as DumpImportParser.Entry.Moment).item

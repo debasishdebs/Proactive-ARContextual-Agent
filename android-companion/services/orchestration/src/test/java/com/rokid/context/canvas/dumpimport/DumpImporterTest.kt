@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.canvas.marks.MarkRecorder
 import com.rokid.context.canvas.moment.MomentBuilder
+import com.rokid.context.canvas.moment.SceneBuilder
 import com.rokid.context.memory.FrameIntake
 import com.rokid.context.memory.FrameRows
 import com.rokid.context.memory.MemoryRepository
@@ -80,6 +81,7 @@ class DumpImporterTest {
     private fun importer() = DumpImporter(
         db, frameWriter, memoryWriter, { k, photo -> recorder.importMark(k.id, k.source, k.atMs, photo, k.createdAt) }, { ids -> MomentBuilder(db).build(ids) }, { locOn }, { gen }, { 777L },
         importPin = { pinning.importPin(it) }, pinIds = { pinStore.pins().map { it.id }.toSet() }, cards = ImportCardStore(history, { pinStore.pins().map { it.id }.toSet() }) { start + 1000 },
+        scenes = ImportSceneStore(db, SceneBuilder(db), { DaoFence(0, epoch, { gen }, { epoch }) }),
     )
     private val history = PlaceCardHistory(db, clock = { start + 2000 }, pinActive = { p -> pinStore.pins().any { it.id == p } }, generation = { gen })
     private fun cardRows() = runBlocking { db.placeCardLogDao().cardLogCount() }
@@ -186,9 +188,67 @@ class DumpImporterTest {
         bad(good.replace("\"photos\":{\"f1\"", "\"photos\":{\"zz\""))                  // photo for no frame
     }
 
-    @Test fun scenesAreStillSkipped() {
-        val e = DumpImportParser.parse("""{"items":[{"object_type":"scene","id":"s"}]}""".toByteArray())
-        assertEquals(listOf("skipped" to "scene"), runBlocking { importer().run(e, false, false) }.items)
+    // ---- scenes ----
+    private val mIds = (0..2).map { MomentId.format(sec + it * 10) }
+    private fun momentItem(n: Int) = String(body(frameId = "f$n", memId = "m$n", markId = null, withLoc = false, momentId = mIds[n], st = (sec + n * 10) * 1000, cardsJson = "")).removePrefix("{\"items\":[").removeSuffix("]}")
+    private fun sceneJson(sid: String = "S${mIds[0]}", members: List<String> = mIds, derived: String = """[{"field":"SUMMARY","value":"a quiet walk","stale":false},{"field":"CAPTION","value":"stale one","stale":true},{"field":"EMBEDDING","value":null,"stale":false}]""") =
+        """{"object_type":"scene","id":"$sid","startMs":${start},"endMs":${start + 30000},"momentIds":[${members.joinToString(",") { "\u0022$it\u0022" }}],"derived":$derived,"clusters":[]}"""
+    private fun threeMoments(vararg extra: String) = """{"items":[${(0..2).joinToString(",") { momentItem(it) }}${extra.joinToString("") { ",$it" }}]}""".toByteArray()
+    private fun sceneIds() = runBlocking { db.sceneDao().allScenes().map { it.sceneId } }
+
+    @Test fun sceneIsRebuiltFromTheImportedMomentsWithTheSameIdAndImportedText() = runBlocking<Unit> {
+        val r = run(threeMoments(sceneJson()))
+        assertEquals(listOf("created" to "ok", "created" to "ok", "created" to "ok", "created" to "ok"), r.items)
+        assertEquals(listOf("S${mIds[0]}"), sceneIds()); assertEquals(1, r.scenes); assertEquals(0, r.scenesRemapped)
+        assertEquals(mIds.toSet(), db.sceneDao().parts("S${mIds[0]}").map { it.refId }.toSet())
+        val d = db.objectDao().derivedRow("SCENE", "S${mIds[0]}", "SUMMARY")!!
+        assertEquals("a quiet walk", d.value); assertEquals(1, r.sceneTexts)
+        assertEquals("imported", db.modelAttributionDao().get(AttributionKind.DERIVED, AttributionKind.derivedRef("SCENE", "S${mIds[0]}", "SUMMARY"))!!.model)
+        assertNull("a stale exported text is not imported", db.objectDao().derivedRow("SCENE", "S${mIds[0]}", "CAPTION"))
+    }
+
+    @Test fun sceneWithMissingMembersIsRemappedAndGetsNoText() = runBlocking<Unit> {
+        val ghost = MomentId.format(sec - 5)
+        val r = run(threeMoments(sceneJson(sid = "S$ghost", members = listOf(ghost) + mIds)))
+        assertEquals("created" to "remapped", r.items.last()); assertEquals(1, r.scenesRemapped); assertEquals(0, r.sceneTexts)
+        assertEquals(listOf("S${mIds[0]}"), sceneIds()); assertNull(db.objectDao().derivedRow("SCENE", "S${mIds[0]}", "SUMMARY"))
+    }
+
+    @Test fun sceneWithNoMomentOnThePhoneIsSkipped() {
+        assertEquals(listOf("skipped" to "no_members"), run("""{"items":[${sceneJson()}]}""".toByteArray()).items); assertEquals(0, sceneIds().size)
+    }
+
+    @Test fun sceneDedupConflictAndDryRun() {
+        val dry = run(threeMoments(sceneJson()), dry = true)
+        assertEquals("would_create" to "ok", dry.items.last()); assertEquals(0, sceneIds().size)
+        run(threeMoments(sceneJson()))
+        assertEquals("conflict" to "exists", run("""{"items":[${sceneJson()}]}""".toByteArray()).items.single())
+        assertEquals("skipped" to "dedup", run("""{"items":[${sceneJson()}]}""".toByteArray(), dedup = true).items.single())
+        assertEquals(1, sceneIds().size)
+    }
+
+    @Test fun twoScenesOfTheSameHourDoNotConflictWithEachOthersRebuild() {
+        val r = run(threeMoments(sceneJson(), sceneJson(sid = "S${mIds[2]}", members = listOf(mIds[2]))))
+        assertTrue("the second item is judged by what existed before the request: $r", r.items.last().first != "conflict")
+    }
+
+    @Test fun badSceneItemsAre400() {
+        fun bad(j: String) { try { DumpImportParser.parse("""{"items":[$j]}""".toByteArray()); fail(j) } catch (e: DumpImportParser.Bad) { assertEquals(0, e.index) } }
+        bad(sceneJson(sid = "x")); bad(sceneJson(members = emptyList())); bad(sceneJson(members = listOf("zz"))); bad(sceneJson(members = listOf(mIds[0], mIds[0])))
+        bad(sceneJson().replace("\"momentIds\"", "\"nope\"")); bad(sceneJson(derived = "[{\"value\":\"x\"}]")); bad(sceneJson(derived = "\"x\""))
+    }
+
+    @Test fun sceneForgetAndDeleteAllLeaveZeroRows() = runBlocking<Unit> {
+        run(threeMoments(sceneJson()))
+        val svc = ForgetService(db, ProposalRepository(db.proposalDao(), db.actionDao(), db)) { 99L }
+        MomentForget(db, svc) { 99L }.forgetMoments(mIds)
+        assertEquals(0, sceneIds().size); assertEquals(0, db.sceneDao().partCount()); assertNull(db.objectDao().derivedRow("SCENE", "S${mIds[0]}", "SUMMARY"))
+        val other = (3..5).map { MomentId.format(sec + 600 + it * 10) }
+        val items = other.mapIndexed { n, m -> String(body(frameId = "g$n", memId = "h$n", markId = null, withLoc = false, momentId = m, st = (sec + 600 + (n + 3) * 10) * 1000, cardsJson = "")).removePrefix("{\"items\":[").removeSuffix("]}") }
+        run("""{"items":[${items.joinToString(",")},${sceneJson(sid = "S${other[0]}", members = other)}]}""".toByteArray())
+        assertEquals(1, sceneIds().size)
+        db.wipeDao().wipeMemory(99L)
+        assertEquals(0, sceneIds().size); assertEquals(0, db.sceneDao().partCount()); assertEquals(0, db.modelAttributionDao().count())
     }
 
     // ---- pins ----
