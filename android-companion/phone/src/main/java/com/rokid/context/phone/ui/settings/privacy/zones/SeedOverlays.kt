@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.ceil
@@ -181,13 +182,12 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
     private fun startPoll() {
         if (poll?.isActive == true) return
         poll = viewModelScope.launch(work) {
-            while (true) {
-                kotlinx.coroutines.delay(POLL_MS)
+            com.rokid.context.phone.ui.settings.seedTicks(POLL_MS).takeWhile {
                 val a = runCatching { control.areas() }.getOrDefault(emptyList())
                 infos = a
                 _state.update { it.copy(areas = SeedOverlays.of(a), progress = a.mapNotNull { x -> x.seed?.let { SeedProgressRow(x.id, it.text) } }) }
-                if (a.none { it.seed != null }) break
-            }
+                a.any { it.seed != null }
+            }.collect {}
         }
     }
 

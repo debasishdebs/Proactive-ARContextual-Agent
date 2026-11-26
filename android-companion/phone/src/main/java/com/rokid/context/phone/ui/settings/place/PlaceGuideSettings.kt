@@ -45,6 +45,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -471,7 +472,7 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     private fun pollSeeds() {
         if (poll?.isActive == true) return
         poll = viewModelScope.launch(work) {
-            while (true) { kotlinx.coroutines.delay(2_000L); val n = refreshSeedLines(); if (n == 0) break }
+            com.rokid.context.phone.ui.settings.seedTicks(2_000L).takeWhile { refreshSeedLines() != 0 }.collect {}
         }
     }
 

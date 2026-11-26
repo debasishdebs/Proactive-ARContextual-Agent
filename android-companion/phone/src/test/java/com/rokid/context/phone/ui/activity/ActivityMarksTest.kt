@@ -11,6 +11,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performClick
 import com.rokid.context.phone.ui.list.ListKind
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -166,6 +167,7 @@ class ActivityMarksTest {
         compose.onAllNodesWithTag("mark_row")[0].performClick()
         compose.onAllNodesWithTag("mark_row")[1].performClick()
         assertEquals(listOf(listOf("mark:a"), listOf("mark:b")), previews)
+        compose.onNodeWithTag("activity_list").performScrollToNode(hasTestTag("marks_all"))
         compose.onNodeWithTag("marks_all").performClick()
         assertEquals(listOf(ListKind.MARKS to Period.TODAY), lists)
     }
