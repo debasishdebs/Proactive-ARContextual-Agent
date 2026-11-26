@@ -19,7 +19,8 @@ import com.rokid.context.work.frames.scene.SceneRules
  * no usable vector in a space gets no row there; an empty, non-finite or zero-norm result is never written.
  *
  * DEDUP: the existing near-duplicate marking is reused (`frame_meta.nearDupOf`, set by the semantic dedupe of [com.rokid.context.work.frames.scene.SceneIndexer] at cosine 0.93). Each duplicate group counts ONCE:
- * a frame marked as a duplicate stands for the frame it duplicates (its representative), and the representative's own vector is used when it has one (else the first member's vector). One hop only.
+ * a frame marked as a duplicate stands for the frame it duplicates, followed along the whole chain (f2 -> f1 -> f0, cycle-safe) to its root, and the root's own vector is used when it has one (else the first member's vector).
+ * ONLY this Scene's own member frames are used (a duplicate whose representative lies in another Scene stands for itself), so the row depends on nothing outside the Scene: forgetting any contributing frame shrinks the membership and bumps `membershipRev`.
  *
  * Content-free: the vectors derive from photos (so the rows go with the Scene and with every Forget, see WP10), and nothing here logs more than counts.
  */
@@ -65,19 +66,34 @@ class SceneCentroidProducer(
         val momentIds = db.sceneDao().parts(sceneId).filter { it.kind == ScenePartKind.MOMENT }.map { it.refId }
         val frames = momentIds.chunked(CHUNK).flatMap { db.momentDao().partsOf(it) }.filter { it.kind == MomentPartKind.FRAME }.map { it.refId }.distinct().sorted()
         val metas = frames.chunked(CHUNK).flatMap { db.frameMetaDao().byIds(it) }.associateBy { it.frameId }
-        // One group per duplicate set: the key is the representative (the frame this one duplicates), or the frame itself.
-        val groups = frames.groupBy { metas[it]?.nearDupOf?.takeIf { rep -> rep.isNotEmpty() } ?: it }
+        // One group per duplicate set, by the ROOT of its `nearDupOf` chain (f2 -> f1 -> f0), resolved among THIS Scene's frames only (review2 #3, #8).
+        val own = frames.toHashSet()
+        val groups = frames.groupBy { rootOf(it, own, metas) }
         var written = 0; var none = 0
         for (t in todo) {
-            val wanted = (groups.keys + groups.values.flatten()).distinct()
-            val blobs = wanted.chunked(CHUNK).flatMap { db.frameVectorDao().forFrames(t.spaceId, it) }.associate { it.frameId to it.blob }
-            val picked = groups.entries.sortedBy { it.key }.mapNotNull { (rep, members) -> (listOf(rep) + members).firstNotNullOfOrNull { f -> blobs[f]?.let { decodeOrNull(it, t.dim) } } }
+            val blobs = frames.chunked(CHUNK).flatMap { db.frameVectorDao().forFrames(t.spaceId, it) }.associate { it.frameId to it.blob }
+            val picked = groups.entries.sortedBy { it.key }.mapNotNull { (root, members) -> (listOf(root) + members).firstNotNullOfOrNull { f -> blobs[f]?.let { decodeOrNull(it, t.dim) } } }
             val v = build(picked, t.dim)
             if (v == null) { none++; continue }
             db.sceneCentroidDao().upsert(SceneCentroidEntity(sceneId, t.fingerprint, rev, t.dim, VectorCodec.encode(v), picked.size, clock()))
             written++
         }
         return Report(written, targets.size - todo.size, none, 0)
+    }
+
+    /**
+     * The representative a frame stands for: follow `nearDupOf` while it points at a frame of THIS Scene. A pointer to a frame outside the Scene ends the chain (the frame stands for itself: no vector is borrowed from another Scene,
+     * so the row depends only on this Scene's members and a Forget of any of them moves its `membershipRev`). A cycle (corrupt data) ends at its smallest id, whichever frame it was entered from.
+     */
+    private fun rootOf(frame: String, own: Set<String>, metas: Map<String, com.rokid.context.memory.db.FrameMetaEntity>): String {
+        val path = ArrayList<String>(); var cur = frame
+        while (true) {
+            path += cur
+            val next = metas[cur]?.nearDupOf?.takeIf { it.isNotEmpty() && it in own } ?: return cur
+            val seen = path.indexOf(next)
+            if (seen >= 0) return path.subList(seen, path.size).min()
+            cur = next
+        }
     }
 
     private fun decodeOrNull(b: ByteArray, dim: Int): FloatArray? =

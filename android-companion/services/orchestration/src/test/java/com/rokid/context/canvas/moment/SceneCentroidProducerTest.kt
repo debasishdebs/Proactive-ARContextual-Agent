@@ -80,6 +80,32 @@ class SceneCentroidProducerTest {
         assertEquals(0f, v[2], 0f)
     }
 
+    /** review2 #8: production dedupe chains f2 -> f1 -> f0; the whole connected group counts ONCE (and a cycle terminates and counts once). */
+    @Test fun aDuplicateChainCountsOnceAndACycleTerminates() = runBlocking<Unit> {
+        photo(0, unit(1f, 0f, 0f, 0f)); photo(1, unit(1f, 0.1f, 0f, 0f), dupOf = "f0"); photo(2, unit(1f, 0f, 0.1f, 0f), dupOf = "f1"); photo(3, unit(0f, 1f, 0f, 0f))
+        rebuild()
+        assertEquals("two groups: the chain {f0,f1,f2} and {f3}", 2, db.sceneCentroidDao().get(sid(0), "nomic-fp")!!.memberCount)
+        // a cycle f5 <-> f6 (corrupt data) and a tail f7 -> f5: one group, no hang
+        photo(5, unit(0f, 0f, 1f, 0f), dupOf = "f6"); photo(6, unit(0f, 0f, 1f, 0.1f), dupOf = "f5"); photo(7, unit(0f, 0f, 1f, 0.2f), dupOf = "f5")
+        rebuild()
+        assertEquals("the chain, the cycle group and f3", 3, db.sceneCentroidDao().get(sid(0), "nomic-fp")!!.memberCount)
+    }
+
+    /** review2 #3: a Scene uses ONLY its own members' vectors: a duplicate whose representative lives in ANOTHER Scene does not borrow that vector. */
+    @Test fun aSceneNeverBorrowsADuplicateRepresentativesVectorFromAnotherScene() = runBlocking<Unit> {
+        photo(0, unit(1f, 0f, 0f, 0f))
+        photo(1500, unit(0f, 1f, 0f, 0f), dupOf = "f0") // 25 minutes later: another Scene, a "duplicate" of a photo that is not in it
+        rebuild()
+        assertTrue("two Scenes", sid(0) != sid(1500) && db.sceneDao().scene(sid(1500)) != null)
+        val v = VectorCodec.decode(db.sceneCentroidDao().get(sid(1500), "nomic-fp")!!.vector)
+        assertEquals("its own vector, not f0's", 1f, v[1], 1e-5f); assertEquals(0f, v[0], 0f)
+        // forgetting the outside photo cannot matter to it; forgetting its own member invalidates the row (the revision moves or the Scene is gone)
+        com.rokid.context.memory.forget.ForgetService(db, com.rokid.context.memory.ProposalRepository(db.proposalDao(), db.actionDao(), db)) { 9_000 }.forgetMoment("f1500")
+        val row = db.sceneCentroidDao().get(sid(1500), "nomic-fp")
+        val scene = db.sceneDao().scene(sid(1500))
+        assertTrue("a forgotten contributor leaves no current centroid", row == null || scene == null || row.membershipRev != scene.membershipRev)
+    }
+
     @Test fun aGroupWhoseRepresentativeHasNoVectorUsesAMember() = runBlocking<Unit> {
         photo(0, null); photo(1, unit(1f, 0f, 0f, 0f), dupOf = "f0"); photo(2, unit(1f, 0f, 0f, 0f), dupOf = "f0")
         rebuild()
