@@ -33,26 +33,29 @@ object ExtraPlaceTypes {
     const val VALLEYS = "valleys"
     const val CITIES = "cities"
     const val AIRPORTS = "airports"
+    const val VENUES = "venues"
 
     val ALL: List<Type> = listOf(
         Type(MOUNTAINS, "Include mountains and peaks", "Nature", listOf(
             ClassDef("Q8502", "mountain", PlaceKinds.VIEWPOINT), ClassDef("Q207326", "summit", PlaceKinds.VIEWPOINT), ClassDef("Q1595289", "sacred mountain", PlaceKinds.VIEWPOINT),
             ClassDef("Q740445", "mountain ridge", PlaceKinds.VIEWPOINT), ClassDef("Q46831", "mountain range", PlaceKinds.VIEWPOINT),
         ), areaLike = true, radiusCapM = 300, note = "adds many places; good for a mountain trip"),
-        Type(RIVERS, "Include rivers and streams", "Nature", listOf(ClassDef("Q47521", "stream", PlaceKinds.ATTRACTION)), areaLike = true, radiusCapM = 100, note = "adds many places"),
+        Type(RIVERS, "Include rivers and streams", "Nature", listOf(ClassDef("Q47521", "stream", PlaceKinds.ATTRACTION), ClassDef("Q4022", "river", PlaceKinds.ATTRACTION)), areaLike = true, radiusCapM = 100, note = "adds many places"),
         Type(GLACIERS, "Include glaciers", "Nature", listOf(ClassDef("Q35666", "glacier", PlaceKinds.ATTRACTION)), areaLike = true, radiusCapM = 300),
         Type(HILLS, "Include hills", "Nature", listOf(ClassDef("Q54050", "hill", PlaceKinds.VIEWPOINT)), areaLike = true, radiusCapM = 300, note = "adds many places"),
         Type(TEA_GARDENS, "Include tea gardens", "Sights", listOf(ClassDef("Q1827414", "tea garden", PlaceKinds.ATTRACTION))),
         Type(RAILWAY, "Include railway stations", "Transport", listOf(ClassDef("Q55488", "railway station", PlaceKinds.ATTRACTION), ClassDef("Q22808404", "station located on surface", PlaceKinds.ATTRACTION)), note = "adds many places"), // mountain railway, heritage railway and horseshoe curve are always on (MONUMENT_CLASSES)
         // 27 Nov night: bus station Q494829 is ON by default; "bus stop" Q953806 is TODO-verify (listed in the handoff only, not read back) and is NOT admitted.
         Type(BUS_STOPS, "Include bus stations", "Transport", listOf(ClassDef("Q494829", "bus station", PlaceKinds.ATTRACTION))),
-        Type(POWER, "Include power stations", "Sights", listOf(ClassDef("Q1411996", "hydroelectric power station", PlaceKinds.ATTRACTION))), // dams are always on; the Q15911738 hydroelectric id is TODO-verify
-        Type(STADIUMS, "Include stadiums and cricket grounds", "Sights", listOf(ClassDef("Q483110", "stadium", PlaceKinds.ATTRACTION), ClassDef("Q682943", "cricket field", PlaceKinds.ATTRACTION))),
+        Type(POWER, "Include power stations", "Sights", listOf(ClassDef("Q1411996", "hydroelectric power station", PlaceKinds.ATTRACTION), ClassDef("Q15911738", "hydroelectric power station (design doc id)", PlaceKinds.ATTRACTION))), // dams are always on; both hydroelectric ids carry items in the trip-region survey (4 and 1), so both are admitted
+        Type(STADIUMS, "Include stadiums and cricket grounds", "Sights", listOf(ClassDef("Q483110", "stadium", PlaceKinds.ATTRACTION), ClassDef("Q682943", "cricket field", PlaceKinds.ATTRACTION), ClassDef("Q641226", "arena", PlaceKinds.ATTRACTION), ClassDef("Q1049757", "multi-purpose stadium", PlaceKinds.ATTRACTION))),
         // New optional switches, default OFF (owner 27 Nov night).
         Type(BATTLES, "Include battles and sieges", "Sights", listOf(ClassDef("Q178561", "battle", PlaceKinds.HISTORIC_SITE), ClassDef("Q188055", "siege", PlaceKinds.HISTORIC_SITE)), defaultOn = false, note = "historic events at a place"),
-        Type(VALLEYS, "Include valleys", "Nature", listOf(ClassDef("Q39816", "valley", PlaceKinds.VIEWPOINT)), areaLike = true, radiusCapM = 300, defaultOn = false),
+        Type(VALLEYS, "Include valleys and plateaus", "Nature", listOf(ClassDef("Q39816", "valley", PlaceKinds.VIEWPOINT), ClassDef("Q75520", "plateau", PlaceKinds.VIEWPOINT)), areaLike = true, radiusCapM = 300, defaultOn = false),
         Type(CITIES, "Include cities and towns", "Context", listOf(ClassDef("Q515", "city", PlaceKinds.ATTRACTION), ClassDef("Q3957", "town", PlaceKinds.ATTRACTION), ClassDef("Q1549591", "big city", PlaceKinds.ATTRACTION)), areaLike = true, radiusCapM = 300, defaultOn = false, note = "adds place names like city and town for context, not sights"),
         Type(AIRPORTS, "Include airports", "Transport", listOf(ClassDef("Q1248784", "airport", PlaceKinds.ATTRACTION), ClassDef("Q94993988", "commercial traffic aerodrome", PlaceKinds.ATTRACTION)), defaultOn = false),
+        // 27 Nov late night (owner): venues and ports, ON by default, switchable OFF.
+        Type(VENUES, "Include venues and ports", "Sights", listOf(ClassDef("Q17350442", "venue", PlaceKinds.ATTRACTION), ClassDef("Q1076486", "sports venue", PlaceKinds.ATTRACTION), ClassDef("Q44782", "port", PlaceKinds.ATTRACTION), ClassDef("Q11822917", "horse racing venue", PlaceKinds.ATTRACTION))),
         // Not offered (owner: OFF and not offered): universities and colleges (Q3918, Q189004, Q131389368, Q7603893). No class, no toggle.
     )
 

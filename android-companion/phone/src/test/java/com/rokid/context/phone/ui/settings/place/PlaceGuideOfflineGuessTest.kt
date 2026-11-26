@@ -16,7 +16,7 @@ class PlaceGuideOfflineGuessTest {
     @Test fun extraPlaceTypesDefaultOnWithPlainWording() {
         assertEquals(com.rokid.context.connectors.place.ExtraPlaceTypes.DEFAULT_ON, PlaceGuideUiState().extraTypes)
         val e = com.rokid.context.connectors.place.ExtraPlaceTypes
-        assertTrue(PlaceGuideUiState().extraTypes.containsAll(listOf(e.MOUNTAINS, e.RIVERS, e.GLACIERS, e.HILLS, e.TEA_GARDENS, e.RAILWAY, e.BUS_STOPS, e.POWER, e.STADIUMS)))
+        assertTrue(PlaceGuideUiState().extraTypes.containsAll(listOf(e.MOUNTAINS, e.RIVERS, e.GLACIERS, e.HILLS, e.TEA_GARDENS, e.RAILWAY, e.BUS_STOPS, e.POWER, e.STADIUMS, e.VENUES)))
         for (k in listOf(e.BATTLES, e.VALLEYS, e.CITIES, e.AIRPORTS)) { assertFalse(k, k in PlaceGuideUiState().extraTypes); assertTrue(k, e.SHOWN.any { it.key == k }) } // the four new switches are offered, default OFF
         assertTrue("adds place names like city and town for context, not sights" in e.fullLabel(e.byKey(e.CITIES)!!))
         assertEquals("Include mountains and peaks (adds many places; good for a mountain trip)", PlaceGuideModel.MOUNTAINS_LABEL)

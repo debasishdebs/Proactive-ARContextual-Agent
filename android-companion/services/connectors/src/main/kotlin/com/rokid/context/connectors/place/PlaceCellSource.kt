@@ -120,9 +120,15 @@ class PlaceCellSource(
         const val WIDE_COORD_DISAGREE_M = 5000.0
 
         /** P31 classes that are areas rather than points: lake, glacial lake, park, national park, wildlife refuge, protected area, waterfall, mountain pass and the mountain classes (admitted or not, the limit only matters once admitted). TODO-verify classes (proglacial lake, sanctuary, bird sanctuary) join when their ids are verified. */
+        /** 27 Nov late night, second owner list, always admitted, area-like with the protected-area radius cap: forest, nature, tiger, biosphere and conservation reserves, animal sanctuary, river island, island group, archipelago, lagoon, wetland, impact crater. */
+        val RESERVE_LIKE_CLASSES: Set<String> = setOf("Q7315273", "Q179049", "Q5533772", "Q158454", "Q5162999", "Q1533036", "Q162602", "Q1402592", "Q33837", "Q187223", "Q170321", "Q55818")
+
         val AREA_LIKE_CLASSES: Set<String> = setOf("Q23397", "Q211302", "Q22698", "Q46169", "Q1377575", "Q473972", "Q34038", "Q133056",
             // 27 Nov night additions (always admitted): proglacial lake, salt lake, paleontological site, urban park, ghat, reservoir, artificial lake, intermittent reservoir, sanctuary, bird sanctuary
-            "Q1320719", "Q188025", "Q9096832", "Q22746", "Q1010155", "Q131681", "Q3215290", "Q55470036", "Q29553", "Q2714144") + ExtraPlaceTypes.AREA_LIKE_CLASSES
+            "Q1320719", "Q188025", "Q9096832", "Q22746", "Q1010155", "Q131681", "Q3215290", "Q55470036", "Q29553", "Q2714144",
+            // 27 Nov late night additions (always admitted): island, garden, geological formation
+            "Q23442", "Q1107656", "Q736917",
+            ) + RESERVE_LIKE_CLASSES + ExtraPlaceTypes.AREA_LIKE_CLASSES
 
         /** Curated ids with no admitted area class that still get the wide limit: Do-drul Chorten Q5285886 (no P31 at all; owner follow-up 27 Nov). A point-like curated place is not listed. */
         val WIDE_COORD_QIDS: Set<String> = setOf("Q5285886")
@@ -212,13 +218,70 @@ class PlaceCellSource(
             "Q787934" to PlaceKinds.MUSEUM, // automobile museum
             "Q420962" to PlaceKinds.ATTRACTION, "Q1497019" to PlaceKinds.ATTRACTION, "Q1395089" to PlaceKinds.ATTRACTION, // heritage railway, mountain railway, horseshoe curve
             "Q13409250" to PlaceKinds.ATTRACTION, // ropeway (aerial lift)
+            // Added 2026-11-27 late night (owner decision after the India survey; handoff 12af): ALWAYS admitted, no switch. Labels read back via wbgetentities.
+            "Q40080" to PlaceKinds.ATTRACTION, "Q35509" to PlaceKinds.ATTRACTION, // beach, cave
+            "Q23442" to PlaceKinds.ATTRACTION, // island (area-like)
+            "Q58621988" to PlaceKinds.TEMPLE, // temple complex
+            "Q56242215" to PlaceKinds.CHURCH, "Q120560" to PlaceKinds.CHURCH, // Catholic cathedral, minor basilica
+            "Q15135589" to PlaceKinds.ATTRACTION, // pilgrimage site (no existing kind is specific to it)
+            "Q194195" to PlaceKinds.ATTRACTION, // amusement park
+            "Q1107656" to PlaceKinds.ATTRACTION, // garden (area-like)
+            "Q1244922" to PlaceKinds.ATTRACTION, "Q350495" to PlaceKinds.ATTRACTION, // embankment dam, barrage (same kind as dam)
+            "Q736917" to PlaceKinds.ATTRACTION, // geological formation (area-like)
+            "Q12280" to PlaceKinds.ATTRACTION, "Q1210334" to PlaceKinds.ATTRACTION, // bridge, railway bridge (same kind as road bridge)
+            // Added 2026-11-27 late night, second owner list (India survey, labels from india_state.json): ALWAYS admitted, no switch.
+            "Q1088552" to PlaceKinds.CHURCH, // Catholic church building
+            "Q56242250" to PlaceKinds.CHURCH, // Anglican/Episcopal cathedral
+            "Q466449" to PlaceKinds.TEMPLE, // ashram
+            "Q21550442" to PlaceKinds.TEMPLE, // cave temple
+            "Q105889895" to PlaceKinds.TEMPLE, // religious site
+            "Q4588528" to PlaceKinds.TEMPLE, // sacred place
+            "Q7698769" to PlaceKinds.TEMPLE, // temple tank
+            "Q141140" to PlaceKinds.TEMPLE, // husayniyya
+            "Q7426457" to PlaceKinds.TEMPLE, // satra
+            "Q744099" to PlaceKinds.FORT, // hillfort
+            "Q35112127" to PlaceKinds.HERITAGE_BUILDING, // historic building
+            "Q2319498" to PlaceKinds.HERITAGE_BUILDING, // architectural landmark
+            "Q5739200" to PlaceKinds.HERITAGE_BUILDING, // heritage structures in Hyderabad
+            "Q5739135" to PlaceKinds.HERITAGE_BUILDING, // heritage centre
+            "Q481289" to PlaceKinds.HERITAGE_BUILDING, // official residence
+            "Q24354" to PlaceKinds.HERITAGE_BUILDING, // theatre building
+            "Q1329623" to PlaceKinds.HERITAGE_BUILDING, // cultural center
+            "Q1200957" to PlaceKinds.ATTRACTION, // tourist destination
+            "Q570116" to PlaceKinds.ATTRACTION, // tourist attraction
+            "Q12518" to PlaceKinds.MONUMENT, // tower
+            "Q1779653" to PlaceKinds.MONUMENT, // colossal statue
+            "Q1584134" to PlaceKinds.ARCHAEOLOGICAL_SITE, // archaeological mound
+            "Q740326" to PlaceKinds.ATTRACTION, // water park
+            "Q588140" to PlaceKinds.MUSEUM, // science museum
+            "Q3329412" to PlaceKinds.MUSEUM, // archaeological museum
+            "Q2772772" to PlaceKinds.MUSEUM, // military museum
+            "Q1254933" to PlaceKinds.ATTRACTION, // astronomical observatory
+            "Q62832" to PlaceKinds.ATTRACTION, // observatory
+            "Q148319" to PlaceKinds.ATTRACTION, // planetarium
+            "Q132510" to PlaceKinds.ATTRACTION, // market
+            "Q330284" to PlaceKinds.ATTRACTION, // marketplace
+            "Q158555" to PlaceKinds.ATTRACTION, // cable-stayed bridge
+            "Q1068842" to PlaceKinds.ATTRACTION, // footbridge
+            "Q7315273" to PlaceKinds.ATTRACTION, // forest reserve
+            "Q179049" to PlaceKinds.ATTRACTION, // nature reserve
+            "Q5533772" to PlaceKinds.ATTRACTION, // tiger reserve
+            "Q158454" to PlaceKinds.ATTRACTION, // biosphere reserve
+            "Q5162999" to PlaceKinds.ATTRACTION, // conservation reserve
+            "Q1533036" to PlaceKinds.ATTRACTION, // animal sanctuary
+            "Q162602" to PlaceKinds.ATTRACTION, // river island
+            "Q1402592" to PlaceKinds.ATTRACTION, // island group
+            "Q33837" to PlaceKinds.ATTRACTION, // archipelago
+            "Q187223" to PlaceKinds.ATTRACTION, // lagoon
+            "Q170321" to PlaceKinds.ATTRACTION, // wetland
+            "Q55818" to PlaceKinds.ATTRACTION, // impact crater
         )
 
         // The optional place types (mountains, rivers, glaciers, hills, tea gardens, railway, power, stadiums...) are DATA in [ExtraPlaceTypes]; the Settings switches choose which are admitted.
 
         /** Large areas: the radius an OSM extent may widen a place to (metres). A national park or a mountain is hundreds of square kilometres: the card is for being near its sign, not inside its border. */
         const val AREA_RADIUS_CAP_M = 300
-        val RADIUS_CAP_M: Map<String, Int> = mapOf("Q473972" to AREA_RADIUS_CAP_M, "Q46169" to AREA_RADIUS_CAP_M, "Q1377575" to AREA_RADIUS_CAP_M, "Q29553" to AREA_RADIUS_CAP_M, "Q2714144" to AREA_RADIUS_CAP_M) + ExtraPlaceTypes.RADIUS_CAPS
+        val RADIUS_CAP_M: Map<String, Int> = mapOf("Q473972" to AREA_RADIUS_CAP_M, "Q46169" to AREA_RADIUS_CAP_M, "Q1377575" to AREA_RADIUS_CAP_M, "Q29553" to AREA_RADIUS_CAP_M, "Q2714144" to AREA_RADIUS_CAP_M) + RESERVE_LIKE_CLASSES.associateWith { AREA_RADIUS_CAP_M } + ExtraPlaceTypes.RADIUS_CAPS
 
         /** The kind of an item with these P31 [classes] and this [qid], or null when it is not admitted: the strict list, the curated ids, then the extra types in [extra] (the one class rule of the per-cell and the bulk path; people are checked by the caller). */
         fun kindOf(classes: Set<String>, qid: String, extra: Set<String> = emptySet()): String? =

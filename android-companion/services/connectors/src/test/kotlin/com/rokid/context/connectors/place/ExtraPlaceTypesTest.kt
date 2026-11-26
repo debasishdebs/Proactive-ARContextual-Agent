@@ -15,11 +15,11 @@ import kotlin.test.assertTrue
 class ExtraPlaceTypesTest {
     @Test fun theOwnersIdsAreTheOnesInTheData() {
         val expected = mapOf(
-            ExtraPlaceTypes.MOUNTAINS to setOf("Q8502", "Q207326", "Q1595289", "Q740445", "Q46831"), ExtraPlaceTypes.TEA_GARDENS to setOf("Q1827414"), ExtraPlaceTypes.RIVERS to setOf("Q47521"),
-            ExtraPlaceTypes.GLACIERS to setOf("Q35666"), ExtraPlaceTypes.HILLS to setOf("Q54050"), ExtraPlaceTypes.RAILWAY to setOf("Q55488", "Q22808404"), ExtraPlaceTypes.POWER to setOf("Q1411996"),
-            ExtraPlaceTypes.STADIUMS to setOf("Q483110", "Q682943"), ExtraPlaceTypes.BUS_STOPS to setOf("Q494829"),
-            ExtraPlaceTypes.BATTLES to setOf("Q178561", "Q188055"), ExtraPlaceTypes.VALLEYS to setOf("Q39816"), ExtraPlaceTypes.CITIES to setOf("Q515", "Q3957", "Q1549591"),
-            ExtraPlaceTypes.AIRPORTS to setOf("Q1248784", "Q94993988"),
+            ExtraPlaceTypes.MOUNTAINS to setOf("Q8502", "Q207326", "Q1595289", "Q740445", "Q46831"), ExtraPlaceTypes.TEA_GARDENS to setOf("Q1827414"), ExtraPlaceTypes.RIVERS to setOf("Q47521", "Q4022"),
+            ExtraPlaceTypes.GLACIERS to setOf("Q35666"), ExtraPlaceTypes.HILLS to setOf("Q54050"), ExtraPlaceTypes.RAILWAY to setOf("Q55488", "Q22808404"), ExtraPlaceTypes.POWER to setOf("Q1411996", "Q15911738"),
+            ExtraPlaceTypes.STADIUMS to setOf("Q483110", "Q682943", "Q641226", "Q1049757"), ExtraPlaceTypes.BUS_STOPS to setOf("Q494829"),
+            ExtraPlaceTypes.BATTLES to setOf("Q178561", "Q188055"), ExtraPlaceTypes.VALLEYS to setOf("Q39816", "Q75520"), ExtraPlaceTypes.CITIES to setOf("Q515", "Q3957", "Q1549591"),
+            ExtraPlaceTypes.AIRPORTS to setOf("Q1248784", "Q94993988"), ExtraPlaceTypes.VENUES to setOf("Q17350442", "Q1076486", "Q44782", "Q11822917"),
         )
         for ((k, ids) in expected) assertEquals(ids, ExtraPlaceTypes.byKey(k)!!.classIds, k)
         assertEquals(expected.keys, ExtraPlaceTypes.KEYS)
@@ -52,6 +52,13 @@ class ExtraPlaceTypesTest {
         "Q57831" to (PlaceKinds.FORT to false), "Q853854" to (PlaceKinds.MONUMENT to false), "Q1091037" to (PlaceKinds.STUPA to false), "Q24398318" to (PlaceKinds.TEMPLE to false), "Q188025" to (PlaceKinds.ATTRACTION to true),
         "Q9096832" to (PlaceKinds.ARCHAEOLOGICAL_SITE to true), "Q22746" to (PlaceKinds.ATTRACTION to true), "Q787934" to (PlaceKinds.MUSEUM to false), "Q420962" to (PlaceKinds.ATTRACTION to false), "Q1497019" to (PlaceKinds.ATTRACTION to false),
         "Q1395089" to (PlaceKinds.ATTRACTION to false), "Q13409250" to (PlaceKinds.ATTRACTION to false), "Q179700" to (PlaceKinds.MONUMENT to false),
+        // 27 Nov late night (India survey)
+        "Q40080" to (PlaceKinds.ATTRACTION to false), "Q35509" to (PlaceKinds.ATTRACTION to false), "Q23442" to (PlaceKinds.ATTRACTION to true), "Q58621988" to (PlaceKinds.TEMPLE to false),
+        "Q56242215" to (PlaceKinds.CHURCH to false), "Q120560" to (PlaceKinds.CHURCH to false), "Q15135589" to (PlaceKinds.ATTRACTION to false), "Q194195" to (PlaceKinds.ATTRACTION to false),
+        "Q1107656" to (PlaceKinds.ATTRACTION to true), "Q1244922" to (PlaceKinds.ATTRACTION to false), "Q350495" to (PlaceKinds.ATTRACTION to false), "Q736917" to (PlaceKinds.ATTRACTION to true),
+        "Q12280" to (PlaceKinds.ATTRACTION to false), "Q1210334" to (PlaceKinds.ATTRACTION to false),
+        // 27 Nov late night, second owner list
+        "Q1088552" to (PlaceKinds.CHURCH to false), "Q56242250" to (PlaceKinds.CHURCH to false), "Q466449" to (PlaceKinds.TEMPLE to false), "Q21550442" to (PlaceKinds.TEMPLE to false), "Q105889895" to (PlaceKinds.TEMPLE to false), "Q4588528" to (PlaceKinds.TEMPLE to false), "Q7698769" to (PlaceKinds.TEMPLE to false), "Q141140" to (PlaceKinds.TEMPLE to false), "Q7426457" to (PlaceKinds.TEMPLE to false), "Q744099" to (PlaceKinds.FORT to false), "Q35112127" to (PlaceKinds.HERITAGE_BUILDING to false), "Q2319498" to (PlaceKinds.HERITAGE_BUILDING to false), "Q5739200" to (PlaceKinds.HERITAGE_BUILDING to false), "Q5739135" to (PlaceKinds.HERITAGE_BUILDING to false), "Q481289" to (PlaceKinds.HERITAGE_BUILDING to false), "Q24354" to (PlaceKinds.HERITAGE_BUILDING to false), "Q1329623" to (PlaceKinds.HERITAGE_BUILDING to false), "Q1200957" to (PlaceKinds.ATTRACTION to false), "Q570116" to (PlaceKinds.ATTRACTION to false), "Q12518" to (PlaceKinds.MONUMENT to false), "Q1779653" to (PlaceKinds.MONUMENT to false), "Q1584134" to (PlaceKinds.ARCHAEOLOGICAL_SITE to false), "Q740326" to (PlaceKinds.ATTRACTION to false), "Q588140" to (PlaceKinds.MUSEUM to false), "Q3329412" to (PlaceKinds.MUSEUM to false), "Q2772772" to (PlaceKinds.MUSEUM to false), "Q1254933" to (PlaceKinds.ATTRACTION to false), "Q62832" to (PlaceKinds.ATTRACTION to false), "Q148319" to (PlaceKinds.ATTRACTION to false), "Q132510" to (PlaceKinds.ATTRACTION to false), "Q330284" to (PlaceKinds.ATTRACTION to false), "Q158555" to (PlaceKinds.ATTRACTION to false), "Q1068842" to (PlaceKinds.ATTRACTION to false), "Q7315273" to (PlaceKinds.ATTRACTION to true), "Q179049" to (PlaceKinds.ATTRACTION to true), "Q5533772" to (PlaceKinds.ATTRACTION to true), "Q158454" to (PlaceKinds.ATTRACTION to true), "Q5162999" to (PlaceKinds.ATTRACTION to true), "Q1533036" to (PlaceKinds.ATTRACTION to true), "Q162602" to (PlaceKinds.ATTRACTION to true), "Q1402592" to (PlaceKinds.ATTRACTION to true), "Q33837" to (PlaceKinds.ATTRACTION to true), "Q187223" to (PlaceKinds.ATTRACTION to true), "Q170321" to (PlaceKinds.ATTRACTION to true), "Q55818" to (PlaceKinds.ATTRACTION to true),
     )
 
     @Test fun theAlwaysOnClassesAreAdmittedWithNoSwitchWithTheRightKindAndTolerance() {
@@ -61,6 +68,7 @@ class ExtraPlaceTypesTest {
             assertEquals(if (ka.second) 5000.0 else 1000.0, PlaceCellSource.disagreeLimitM(setOf(id), "Q1"), id)
             assertTrue(ExtraPlaceTypes.ALL.none { id in it.classIds }, "$id is not a toggle")
         }
+        for (c in PlaceCellSource.RESERVE_LIKE_CLASSES) { assertEquals(300, PlaceCellSource.radiusCapOf(setOf(c)), c); assertTrue(c in PlaceCellSource.AREA_LIKE_CLASSES) }
         assertEquals(300, PlaceCellSource.radiusCapOf(setOf("Q29553"))); assertEquals(300, PlaceCellSource.radiusCapOf(setOf("Q2714144")))
     }
 
@@ -91,6 +99,22 @@ class ExtraPlaceTypesTest {
         // universities and colleges, villages, settlements, constituencies, districts, schools, borders, tehsils, panchayats, hospitals, roads, stations of metro, generic building classes: no class, no switch
         val out = listOf("Q3918", "Q189004", "Q131389368", "Q7603893", "Q56436498", "Q532", "Q486972", "Q54375498", "Q1149652", "Q3914", "Q133346", "Q122987735", "Q2732840", "Q16917", "Q34442", "Q928830", "Q11670533", "Q22808403", "Q41176", "Q811979", "Q618123")
         for (c in out) { assertNull(PlaceCellSource.kindOf(setOf(c), "Q1", ExtraPlaceTypes.KEYS), c); assertTrue(c !in PlaceCellSource.MONUMENT_CLASSES) }
+    }
+
+    @Test fun riverQ4022JoinsTheRiversSwitchAreaLikeAndVenuesPortsIsASwitchOnByDefault() {
+        assertEquals(5000.0, PlaceCellSource.disagreeLimitM(setOf("Q4022"), "Q1")); assertEquals(100, PlaceCellSource.radiusCapOf(setOf("Q4022")))
+        assertNull(PlaceCellSource.kindOf(setOf("Q4022"), "Q1", emptySet()))
+        assertEquals(PlaceKinds.ATTRACTION, PlaceCellSource.kindOf(setOf("Q4022"), "Q1", setOf(ExtraPlaceTypes.RIVERS)))
+        assertNull(PlaceCellSource.kindOf(setOf("Q4022"), "Q1", ExtraPlaceTypes.KEYS - ExtraPlaceTypes.RIVERS))
+        assertTrue(ExtraPlaceTypes.VENUES in ExtraPlaceTypes.DEFAULT_ON)
+        assertEquals("Include venues and ports", ExtraPlaceTypes.byKey(ExtraPlaceTypes.VENUES)!!.title)
+        for (c in listOf("Q17350442", "Q1076486", "Q44782", "Q11822917")) {
+            assertNull(PlaceCellSource.kindOf(setOf(c), "Q1", ExtraPlaceTypes.KEYS - ExtraPlaceTypes.VENUES), c)
+            assertEquals(PlaceKinds.ATTRACTION, PlaceCellSource.kindOf(setOf(c), "Q1", ExtraPlaceTypes.DEFAULT_ON), c)
+            assertEquals(1000.0, PlaceCellSource.disagreeLimitM(setOf(c), "Q1"), c)
+        }
+        // both hydroelectric ids sit under the one power switch
+        for (c in listOf("Q1411996", "Q15911738")) { assertNull(PlaceCellSource.kindOf(setOf(c), "Q1", ExtraPlaceTypes.KEYS - ExtraPlaceTypes.POWER)); assertNotNull(PlaceCellSource.kindOf(setOf(c), "Q1", setOf(ExtraPlaceTypes.POWER))) }
     }
 
     @Test fun eachSwitchAdmitsExactlyItsClassesAndTheStrictListIsUnaffected() {
@@ -130,8 +154,8 @@ class ExtraPlaceTypesTest {
         assertEquals(defaults, WikidataBulkSource(http, extraTypes = { ExtraPlaceTypes.DEFAULT_ON }).fetchBox(box).map { it.id }.toSet()) // the four new switches add nothing until turned on
         // one switch off: only that type's places leave
         val noRivers = WikidataBulkSource(http, extraTypes = { ExtraPlaceTypes.KEYS - ExtraPlaceTypes.RIVERS }).fetchBox(box).map { it.id }.toSet()
-        val riverId = rows.first { it.third == "Q47521" }.first
-        assertEquals(rows.map { "wd:${it.first}" }.toSet() - "wd:$riverId", noRivers)
+        val riverIds = rows.filter { it.third in setOf("Q47521", "Q4022") }.map { it.first }
+        assertEquals(rows.map { "wd:${it.first}" }.toSet() - riverIds.map { "wd:$it" }.toSet(), noRivers)
         // the per-cell filter reads the same switches
         val wiki = object : WikipediaSource {
             override suspend fun geosearch(box: GeoBox) = rows.mapIndexed { i, r -> WikiHit(i + 1L, r.second, 27.3, 88.6) }
@@ -144,6 +168,6 @@ class ExtraPlaceTypesTest {
         assertEquals(emptySet(), PlaceCellSource(wiki, wd, null).fetchCell(cell).places.map { it.id }.toSet())
         assertEquals(rows.map { "wd:${it.first}" }.toSet(), PlaceCellSource(wiki, wd, null, extraTypes = { ExtraPlaceTypes.KEYS }).fetchCell(cell).places.map { it.id }.toSet())
         val rivers = PlaceCellSource(wiki, wd, null, extraTypes = { setOf(ExtraPlaceTypes.RIVERS) }).fetchCell(cell).places
-        assertEquals(setOf("wd:$riverId"), rivers.map { it.id }.toSet()); assertTrue(rivers.single().radiusM <= 100); assertEquals(PlaceKinds.ATTRACTION, rivers.single().kind)
+        assertEquals(riverIds.map { "wd:$it" }.toSet(), rivers.map { it.id }.toSet()); assertTrue(rivers.all { it.radiusM <= 100 && it.kind == PlaceKinds.ATTRACTION })
     }
 }

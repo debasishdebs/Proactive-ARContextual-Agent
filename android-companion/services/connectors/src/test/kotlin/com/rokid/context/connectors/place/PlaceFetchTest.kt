@@ -41,16 +41,18 @@ class PlaceFetchTest {
     private val charminarCell = Geohash5.encode(17.361944, 78.474722)
     private val golcondaCell = Geohash5.encode(17.3833, 78.4011)
 
-    @Test fun charminarCellKeepsMonumentsAndNeverPeopleOrMarkets() = runTest {
+    @Test fun charminarCellKeepsMonumentsAndMarketsNeverPeople() = runTest {
         val h = FixtureHttp("charminar")
         val got = source(h).fetchCell(charminarCell)
         assertTrue(got.complete)
-        assertEquals(listOf("wd:Q9000001", "wd:Q9000003"), got.places.map { it.id })
-        val c = got.places.first()
+        // 27 Nov late night: marketplace Q330284 (Laad Bazaar) is admitted by owner decision; people never are
+        assertEquals(setOf("wd:Q9000001", "wd:Q9000003"), got.places.map { it.id }.toSet().filter { it != got.places.firstOrNull { p -> p.name.contains("Laad") }?.id }.toSet())
+        assertEquals(PlaceKinds.ATTRACTION, got.places.single { it.name.contains("Laad") }.kind)
+        val c = got.places.first { it.id == "wd:Q9000001" }
         assertEquals("Charminar", c.name); assertEquals(PlaceKinds.MONUMENT, c.kind); assertEquals("wikipedia:en", c.source)
         assertEquals(17.361944, c.lat, 1e-9); assertTrue(c.summary.startsWith("Charminar is a monument"))
-        assertEquals(PlaceKinds.MOSQUE, got.places[1].kind)
-        assertTrue(got.places.none { it.name.contains("Mahboob") || it.name.contains("Laad") })
+        assertEquals(PlaceKinds.MOSQUE, got.places.first { it.id == "wd:Q9000003" }.kind)
+        assertTrue(got.places.none { it.name.contains("Mahboob") })
     }
 
     @Test fun golcondaHierarchyFromPartOfAndHasPartAndOverpassJoin() = runTest {
@@ -136,7 +138,8 @@ class PlaceFetchTest {
         val loosened27Nov = setOf("Q23397", "Q211302", "Q34038", "Q133056", "Q1559394", "Q46169", "Q1377575", "Q473972", "Q537127", "Q22698", "Q1139682")
         // 27 Nov night owner list A (always on, ids from design doc section 4/5): asserted in ExtraPlaceTypesTest.theAlwaysOnClassesAreAdmitted...
         val ownerNight = setOf("Q2613100", "Q337986", "Q697295", "Q44613", "Q34627", "Q24398318", "Q2639699", "Q162875", "Q23413", "Q57831", "Q1473950", "Q7882520", "Q321053", "Q936941", "Q179700", "Q53060", "Q2785355", "Q853854", "Q1091037", "Q9096832", "Q1010155", "Q12323", "Q3497167", "Q131681", "Q3215290", "Q55470036", "Q43501", "Q29553", "Q2714144", "Q1320719", "Q188025", "Q22746", "Q787934", "Q420962", "Q1497019", "Q1395089", "Q13409250")
-        assertEquals(verified.keys + loosened27Nov + ownerNight, PlaceCellSource.MONUMENT_CLASSES.keys)
+        val lateNight = setOf("Q40080", "Q35509", "Q23442", "Q58621988", "Q56242215", "Q120560", "Q15135589", "Q194195", "Q1107656", "Q1244922", "Q350495", "Q736917", "Q12280", "Q1210334", "Q1088552", "Q56242250", "Q466449", "Q21550442", "Q105889895", "Q4588528", "Q7698769", "Q141140", "Q7426457", "Q744099", "Q35112127", "Q2319498", "Q5739200", "Q5739135", "Q481289", "Q24354", "Q1329623", "Q1200957", "Q570116", "Q12518", "Q1779653", "Q1584134", "Q740326", "Q588140", "Q3329412", "Q2772772", "Q1254933", "Q62832", "Q148319", "Q132510", "Q330284", "Q158555", "Q1068842", "Q7315273", "Q179049", "Q5533772", "Q158454", "Q5162999", "Q1533036", "Q162602", "Q1402592", "Q33837", "Q187223", "Q170321", "Q55818") // 27 Nov late night owner lists 2 and 3
+        assertEquals(verified.keys + loosened27Nov + ownerNight + lateNight, PlaceCellSource.MONUMENT_CLASSES.keys)
         assertEquals(PlaceKinds.PRISON_MUSEUM, PlaceCellSource.MONUMENT_CLASSES["Q10500763"])
         assertFalse("Q40357 is a plain prison") { "Q40357" in PlaceCellSource.MONUMENT_CLASSES }
         assertFalse("Q160742 is an abbey") { "Q160742" in PlaceCellSource.MONUMENT_CLASSES }
