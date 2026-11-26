@@ -43,7 +43,7 @@ class PlaceHttpGlobalPauseTest {
         assertEquals(7_000L, slept.sum())
         assertEquals(startedAt[0] + 7_000L, startedAt[1])
         assertTrue(logs.any { it == "place req failed svc=wiki_geosearch status=429 cls=http attempt=1 retryAfterS=7 waitMs=7000 ms=0" }, logs.toString())
-        assertTrue(logs.any { it.startsWith("place pause global status=429 waitMs=7000") })
+        assertTrue(logs.any { it.startsWith("place pause group=wikimedia status=429 waitMs=7000") })
     }
 
     @Test fun a503WithoutRetryAfterBacksOffTenTwentyFortyAndASuccessResets() {
@@ -69,5 +69,27 @@ class PlaceHttpGlobalPauseTest {
         script += Script(429, "2")
         assertFailsWith<PlaceHttpException> { get("https://en.wikipedia.org/w/api.php?action=query&list=geosearch&gsbbox=17.4123%7C78.4456") }
         assertFalse(logs.any { it.contains("wikipedia") || it.contains("http") && it.contains("://") || it.contains("17.41") || it.contains("gsbbox") })
+    }
+
+    @Test fun anOverpass503DoesNotPauseWikipediaOrWikidata() {
+        script += Script(503); script += Script(200); script += Script(200)
+        assertFailsWith<PlaceHttpException> { get("https://overpass-api.de/api/interpreter") }
+        get("https://en.wikipedia.org/w/api.php?action=query&list=geosearch&gsbbox=1")
+        get("https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q1")
+        assertEquals(0L, slept.sum())
+        assertTrue(logs.any { it.startsWith("place pause group=overpass status=503 waitMs=10000") }, logs.toString())
+    }
+
+    @Test fun aWikipedia429PausesWikipediaAndWikidataButNotOverpass() {
+        script += Script(429, "5"); script += Script(200); script += Script(200); script += Script(200)
+        assertFailsWith<PlaceHttpException> { get("https://en.wikipedia.org/w/api.php?action=query&list=geosearch&gsbbox=1") }
+        get("https://overpass-api.de/api/interpreter")
+        assertEquals(0L, slept.sum())
+        get("https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q1") // same group: waits
+        assertEquals(5_000L, slept.sum())
+    }
+
+    @Test fun userAgentCarriesThePublicRepositoryAsContact() {
+        assertEquals("ProactiveContextAgent/1.1 (https://github.com/debasishdebs/Proactive-ARContextual-Agent; contact: see repository)", UrlConnectionPlaceHttp.DEFAULT_USER_AGENT)
     }
 }

@@ -97,7 +97,7 @@ class UrlConnectionPlaceHttp(
         val u = URL(url)
         require(u.protocol == "https") { "place fetch is https only" }
         val svc = serviceOf(u)
-        guard.await() // a 429/503 anywhere pauses EVERY request, whichever cell or service asks
+        guard.await(svc) // a 429/503 pauses every request of the same server group (Wikimedia or Overpass), whichever cell asks
         val t0 = clock()
         try {
             val r = sendNow(u, url, body)

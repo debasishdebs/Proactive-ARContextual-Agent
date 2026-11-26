@@ -177,30 +177,33 @@ class OverpassHttpSource(private val http: PlaceHttp, private val endpoint: Stri
 /**
  * Overpass through a list of public mirrors, tried in order. Each attempt has its own timeout ([perEndpointTimeoutMs], 25 s: mobile networks are slow, not dead); after a timeout or a 5xx/IO failure the next mirror is
  * asked at once. Only after an HTTP 429 (rate limit) does the fetcher back off ([backoffMs] times the attempt number) before the next mirror. When every mirror failed the call throws one [java.io.IOException] and the caller (PlaceCellSource) makes the cell PARTIAL: Wikipedia and Wikidata results are
- * kept and the cell is retried later. After such a failure the mirrors are not tried again for [cooldownMs], so a seed of many cells does not wait out every timeout on every cell
+ * kept and the cell is retried later. After such a failure the mirrors are not tried again for the cool-down (3, then 10, then 30 minutes for consecutive failed rounds; a success resets it), so a seed of many cells does not wait out every timeout on every cell
  * (the next cell after the cool-down probes them again). Logs carry the mirror's index and the exception class only: no URL, no position.
  */
 class OverpassMirrorSource(
     private val mirrors: List<OverpassSource>,
     private val perEndpointTimeoutMs: Long = 25_000,
     private val backoffMs: Long = 2_000,
-    private val cooldownMs: Long = 180_000,
+    /** Cool-down after all mirrors failed: grows with each consecutive all-failed round (3, 10, 30 min) and resets on a success. */
+    private val cooldownsMs: List<Long> = listOf(180_000, 600_000, 1_800_000),
     private val clock: () -> Long = System::currentTimeMillis,
     private val pause: suspend (Long) -> Unit = { delay(it) },
     private val log: (String) -> Unit = {},
 ) : OverpassSource {
     private var allFailedAt: Long? = null
+    private var failedRounds = 0
+    private fun cooldownMs() = cooldownsMs[(failedRounds - 1).coerceIn(0, cooldownsMs.size - 1)]
 
     override suspend fun elements(box: GeoBox): List<OsmElement> {
         val down = allFailedAt
-        if (down != null && clock() - down in 0 until cooldownMs) throw java.io.IOException("overpass mirrors cooling down")
+        if (down != null && clock() - down in 0 until cooldownMs()) throw java.io.IOException("overpass mirrors cooling down")
         var rateLimited = false
         for ((i, m) in mirrors.withIndex()) {
             if (i > 0 && rateLimited) pause(backoffMs * i)
             rateLimited = false
             try {
                 val r = withTimeout(perEndpointTimeoutMs) { m.elements(box) }
-                allFailedAt = null
+                allFailedAt = null; failedRounds = 0
                 return r
             } catch (e: TimeoutCancellationException) {
                 log("overpass mirror failed idx=$i cls=timeout")
@@ -210,7 +213,7 @@ class OverpassMirrorSource(
                 log("overpass mirror failed idx=$i cls=${e.javaClass.simpleName}")
             }
         }
-        allFailedAt = clock()
+        allFailedAt = clock(); failedRounds++
         log("overpass all mirrors failed n=${mirrors.size}")
         throw java.io.IOException("all overpass mirrors failed")
     }

@@ -515,7 +515,7 @@ class PlaceFetchTest {
         var now = 1_000L
         val ms = List(3) { Mirror { throw IOException("down") } }
         val logs = mutableListOf<String>()
-        val src = OverpassMirrorSource(ms, cooldownMs = 180_000, clock = { now }, pause = {}, log = { logs += it })
+        val src = OverpassMirrorSource(ms, cooldownsMs = listOf(180_000L, 600_000L, 1_800_000L), clock = { now }, pause = {}, log = { logs += it })
         assertFailsWith<IOException> { src.elements(someBox) }
         assertEquals(listOf(1, 1, 1), ms.map { it.calls })
         assertTrue("overpass all mirrors failed n=3" in logs)
@@ -526,6 +526,22 @@ class PlaceFetchTest {
         assertFailsWith<IOException> { src.elements(someBox) }
         assertEquals(listOf(2, 2, 2), ms.map { it.calls })
         assertTrue(logs.none { "http" in it.lowercase() || "17." in it })
+    }
+
+    @Test fun cooldownGrowsThreeTenThirtyMinutesAndResetsOnSuccess() = runTest {
+        var now = 1_000L
+        var up = false
+        val m = Mirror { if (up) listOf(el) else throw IOException("down") }
+        val src = OverpassMirrorSource(listOf(m), clock = { now }, pause = {})
+        suspend fun round(): Boolean = try { src.elements(someBox); true } catch (e: IOException) { false }
+        assertFalse(round())
+        now += 179_000; assertFalse(round()); assertEquals(1, m.calls) // still in the 3 min cool-down
+        now += 2_000; assertFalse(round()); assertEquals(2, m.calls)   // probed, failed again: now 10 min
+        now += 599_000; assertFalse(round()); assertEquals(2, m.calls)
+        now += 2_000; assertFalse(round()); assertEquals(3, m.calls)   // failed again: now 30 min
+        now += 1_799_000; assertFalse(round()); assertEquals(3, m.calls)
+        up = true; now += 2_000; assertTrue(round()); assertEquals(4, m.calls)
+        up = false; assertFalse(round()); now += 181_000; assertFalse(round()); assertEquals(6, m.calls) // reset: 3 min again
     }
 
     @Test fun allMirrorsDownMakesTheCellPartialButKeepsWikipediaAndWikidata() = runTest {
