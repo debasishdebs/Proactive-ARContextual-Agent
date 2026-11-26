@@ -3,6 +3,7 @@
 #   tools/install-trip-build.sh --phone <serial> --glasses <serial> [--watch <serial>] --apks <dir> [--tag <tag>] [--go]
 #        [--allow-emulator] [--allow-downgrade] [--accept-unverified-signature [--i-understand-no-signature-check]] [--accept-unverified-form-factor]
 #   tools/install-trip-build.sh --self-test --phone emulator-5554 --apks <dir> [--go]    (emulator only, phone only; runs the fixtures first)
+#   tools/install-trip-build.sh --cert-compare <installed.apk> <new.apk>                  (local files only: prints match|lineage|mismatch, exit 0 allowed / 2 refused)
 #   tools/install-trip-build.sh --fixtures                                                (refusal fixtures only, no device, no adb)
 # Exit codes: 2 = REFUSED, 3 = installed but NOT verified or log scan FAILED (glasses not installed), other nonzero = failure, 0 = success.
 # Serial aliases: every serial is resolved to a device identity (hardware serial + android_id + model + fingerprint); all must differ, re-checked before every install.
@@ -22,7 +23,7 @@ SCAN_SECS="${PCA_SCAN_SECS:-60}"
 RETRY_SLEEP="${PCA_RETRY_SLEEP:-1}"
 
 PHONE="" GLASSES="" WATCH="" APKS="" TAG="" GO=0 ALLOW_EMU=0 ALLOW_DOWN=0 SELFTEST=0 PLAIN_OK=0
-ACCEPT_UNSIG=0 UNDERSTAND_NOSIG=0 FIXTURES=0 ACCEPT_UNFORM=0
+ACCEPT_UNSIG=0 UNDERSTAND_NOSIG=0 FIXTURES=0 ACCEPT_UNFORM=0 CERT_INSTALLED="" CERT_NEW=""
 TMP="" FXDIR="" WATCH_VC="" wvc=""
 BACKUP_TAR="" PREV_APK="" BACKUP_VALID=0
 PHASE=preflight    # preflight | backup | installing | installed
@@ -37,7 +38,7 @@ cleanup() {
   if [ -n "$FXDIR" ] && [ -d "$FXDIR" ]; then rm -rf "$FXDIR"; fi; FXDIR=""
   return 0
 }
-usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 is_emu() { case "$1" in emulator-*) return 0 ;; *) return 1 ;; esac; }
 # A <serial> args... : the ONLY way adb is called with a device
@@ -198,6 +199,45 @@ apk_cert() { # apk -> validated cert SHA-256, or return 1
   d="$(printf '%s\n' "$out" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | sed -n 1p)" || return 1
   [[ "$d" =~ $re ]] || return 1
   printf '%s\n' "$d"
+}
+apk_signers() { # apk -> all current signer cert SHA-256 digests (plain "Signer #1" or v3/v3.1 "Signer (minSdkVersion=..)" lines), sorted, one per line; return 1 unless the APK verifies
+  local out re='^[0-9a-f]{64}$' d res="" l
+  [ -n "$APKSIGNER" ] || return 1
+  out="$("$APKSIGNER" verify --print-certs "$1" 2>/dev/null)" || return 1
+  while IFS= read -r l; do
+    d="$(printf '%s\n' "$l" | sed -En 's/^Signer (#[0-9]+|\([^)]*\)) certificate SHA-256 digest: //p')"
+    [ -n "$d" ] || continue
+    [[ "$d" =~ $re ]] || return 1
+    res="$res$d"$'\n'
+  done <<< "$out"
+  [ -n "$res" ] || return 1
+  printf '%s' "$res" | sort -u
+}
+apk_lineage() { # apk -> "digest capability" per lineage member that has the installed-data capability true; return 1 when the APK has no valid lineage
+  local out
+  [ -n "$APKSIGNER" ] || return 1
+  out="$("$APKSIGNER" lineage --in "$1" --print-certs 2>/dev/null || true)"
+  printf '%s\n' "$out" | awk '
+    /^Signer #[0-9]+ in lineage certificate SHA-256 digest: / { d=$NF; next }
+    /^Has installed data capability *: / { if (d != "" && $NF == "true" && d ~ /^[0-9a-f]+$/ && length(d) == 64) print d; d="" }'
+  return 0
+}
+# cert_decision: installed-APK signer set + new APK -> echoes "match" | "lineage" | "mismatch"; any read problem -> "unreadable".
+#   match   = the two signer sets are identical (the old plain comparison).
+#   lineage = the new APK is v3/v3.1 signed, its lineage contains an installed signer WITH the installed-data capability,
+#             and every current signer of the new APK is a member of that lineage (so the lineage really ends at the new key).
+#   Anything else is "mismatch" (hard refusal, no override).
+cert_decision() { # have_set(newline separated) new_apk
+  local have="$1" apk="$2" want lin h w ok=0
+  want="$(apk_signers "$apk")" || { echo unreadable; return 0; }
+  [ -n "$have" ] || { echo unreadable; return 0; }
+  if [ "$(printf '%s\n' "$have" | sort -u)" = "$want" ]; then echo match; return 0; fi
+  lin="$(apk_lineage "$apk" || true)"
+  [ -n "$lin" ] || { echo mismatch; return 0; }
+  for h in $have; do if printf '%s\n' "$lin" | grep -qx "$h"; then ok=1; fi; done
+  [ "$ok" = 1 ] || { echo mismatch; return 0; }
+  for w in $want; do if ! printf '%s\n' "$lin" | grep -qx "$w"; then echo mismatch; return 0; fi; done
+  echo lineage
 }
 apk_badging() { # apk -> aapt/aapt2 'dump badging' text (fails when no aapt is available)
   [ -n "$AAPT" ] || return 1
@@ -366,18 +406,23 @@ unverified() { # label reason : refuses unless the explicit override was given (
   die "$1: cannot verify the signature ($2). Refusing. (Override, NOT recommended: --accept-unverified-signature)"
 }
 sig_check() { # serial pkg newapk label
-  local s="$1" pkg="$2" apk="$3" label="$4" path want have
+  local s="$1" pkg="$2" apk="$3" label="$4" path want have dec
   if [ -z "$APKSIGNER" ]; then unverified "$label" "apksigner not found"; return 0; fi
-  want="$(apk_cert "$apk")" || want=""
+  want="$(apk_signers "$apk")" || want=""
   if [ -z "$want" ]; then unverified "$label" "cannot read the signing certificate of the new APK"; return 0; fi
   if [ "$GO" = 0 ]; then say "$label: signature check will run with --go (dry-run pulls nothing)"; return 0; fi
   path="$(A "$s" shell pm path "$pkg" 2>/dev/null | tr -d '\r' | sed -n 's/^package://p' | sed -n 1p)" || path=""
   if [ -z "$path" ]; then unverified "$label" "installed APK path unknown"; return 0; fi
   if ! A "$s" pull "$path" "$TMP/installed-$label.apk" >/dev/null 2>&1; then unverified "$label" "pull of the installed APK failed"; return 0; fi
-  have="$(apk_cert "$TMP/installed-$label.apk")" || have=""
+  have="$(apk_signers "$TMP/installed-$label.apk")" || have=""
   if [ -z "$have" ]; then unverified "$label" "cannot read the installed APK certificate"; return 0; fi
-  [ "$have" = "$want" ] || die "$label: signing certificate differs (installed ${have:0:8}... vs new ${want:0:8}...); a different signature makes the encrypted DB unreadable (no override)"
-  say "$label: signature matches installed (SHA-256 ${want:0:8}...)"
+  dec="$(cert_decision "$have" "$apk")"
+  case "$dec" in
+    match) say "$label: signature matches installed (SHA-256 $(printf '%s' "$want" | sed -n 1p | cut -c1-8)...)" ;;
+    lineage) say "$label: ALLOWED KEY ROTATION: the new APK's v3/v3.1 lineage contains the installed certificate ($(printf '%s' "$have" | sed -n 1p | cut -c1-8)... -> $(printf '%s' "$want" | sed -n 1p | cut -c1-8)...); data stays readable (same lineage, installed-data capability)" ;;
+    unreadable) unverified "$label" "cannot compare the certificates" ;;
+    *) die "$label: signing certificate differs and the new APK's lineage does not contain the installed certificate (installed $(printf '%s' "$have" | sed -n 1p | cut -c1-8)... vs new $(printf '%s' "$want" | sed -n 1p | cut -c1-8)...); a different signature makes the encrypted DB unreadable (no override)" ;;
+  esac
   return 0
 }
 
@@ -697,7 +742,8 @@ sha_fx() { hash_cmd() { printf '%b' "$FX_OUT"; return "${FX_RC:-0}"; }; sha256_o
 dsk() { PHONE=emulator-5554; BACKUP_DIR="$FXDIR/b"; A() { printf '%b' "$FX_OUT"; return "${FX_RC:-0}"; }; free_kb() { printf '%s\n' "$FX_FREE"; }; disk_check; }
 sg() { # signature fixture
   PHONE=emulator-5554; TMP="$FXDIR"; GO="${FX_GO:-1}"; APKSIGNER="${FX_SIGNER-/x/apksigner}"; ACCEPT_UNSIG="${FX_ACC:-0}"
-  apk_cert() { case "$1" in *installed*) printf '%s' "$FX_HAVE";; *) printf '%s' "$FX_WANT";; esac; [ -n "$FX_WANT" ] || return 1; }
+  apk_signers() { case "$1" in *installed*) [ -n "$FX_HAVE" ] && printf '%s\n' "$FX_HAVE" | sort -u;; *) [ -n "$FX_WANT" ] && printf '%s\n' "$FX_WANT" | sort -u;; esac; }
+  apk_lineage() { [ -n "${FX_LIN-}" ] || return 1; printf '%s\n' $FX_LIN; }
   A() { echo called >> "$FXDIR/adbcalls"; case "$*" in *"shell pm path"*) printf 'package:/data/app/x/base.apk\n' ;; *pull*) return "${FX_PULL:-0}" ;; esac; }
   sig_check emulator-5554 com.x /new.apk phone
 }
@@ -919,7 +965,13 @@ SIGS
   FX_HAVE=aa; FX_WANT='';                                      fx "signature: new cert unreadable" refuse sg
   FX_WANT=aa; FX_HAVE=bb;                                      fx "signature: certificate mismatch" refuse sg
   FX_ACC=1; FX_HAVE=bb;                                        fx "signature: mismatch is NOT overridable" refuse sg
-  FX_HAVE=''; FX_PULL=1; FX_SIGNER='';                         fx "signature: override accepts missing apksigner" ok sg
+  FX_ACC=0; FX_HAVE=bb; FX_WANT=cc; FX_LIN="bb cc";            fx "signature: lineage contains installed cert, new key is the lineage end" ok sg
+  FX_LIN="aa cc";                                              fx "signature: lineage lacks the installed cert" refuse sg
+  FX_LIN="bb";                                                 fx "signature: lineage does not contain the new signer" refuse sg
+  FX_LIN="";                                                   fx "signature: different cert and no lineage" refuse sg
+  FX_ACC=1; FX_LIN="aa cc";                                    fx "signature: lineage lacking the installed cert is NOT overridable" refuse sg
+  FX_ACC=0; FX_LIN=; FX_WANT=aa; FX_HAVE=bb
+  FX_ACC=1; FX_HAVE=''; FX_PULL=1; FX_SIGNER='';               fx "signature: override accepts missing apksigner" ok sg
   FX_GO=0; FX_ACC=0; FX_SIGNER=/x/apksigner; FX_HAVE=aa; FX_WANT=aa; FX_PULL=0; rm -f "$FXDIR/adbcalls"
   fx "signature: dry-run passes" ok sg
   if [ -e "$FXDIR/adbcalls" ]; then FX_FAIL=$((FX_FAIL + 1)); echo "  FIXTURE FAILED  : dry-run made adb calls"; else FX_PASS=$((FX_PASS + 1)); echo "  fixture ok      : dry-run pulls nothing, no adb call"; fi
@@ -1008,6 +1060,7 @@ while [ $# -gt 0 ]; do
     --i-understand-no-signature-check) UNDERSTAND_NOSIG=1; shift ;;
     --accept-unverified-form-factor) ACCEPT_UNFORM=1; shift ;;
     --fixtures) FIXTURES=1; shift ;;
+    --cert-compare) CERT_INSTALLED="${2:-}"; CERT_NEW="${3:-}"; shift 3 || die "--cert-compare needs <installed.apk> <new.apk>" ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -1016,6 +1069,18 @@ done
 if [ "$FIXTURES" = 1 ]; then
   run_fixtures || exit 1
   exit 0
+fi
+
+if [ -n "$CERT_NEW" ]; then FIXTURES=1 # local-files-only certificate comparison (no adb, no device, no output file)
+  SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"; BT=""
+  if [ -d "$SDK/build-tools" ]; then BT="$(ls -d "$SDK"/build-tools/*/ 2>/dev/null | sort -V | tail -n 1 || true)"; BT="${BT%/}"; fi
+  if [ -n "$BT" ] && [ -x "$BT/apksigner" ]; then APKSIGNER="$BT/apksigner"; else APKSIGNER="$(command -v apksigner || true)"; fi
+  [ -n "$APKSIGNER" ] || die "apksigner not found (set ANDROID_HOME)"
+  [ -f "$CERT_INSTALLED" ] && [ -f "$CERT_NEW" ] || die "--cert-compare: both APK files must exist"
+  have="$(apk_signers "$CERT_INSTALLED")" || die "cannot read the certificate of $CERT_INSTALLED"
+  dec="$(cert_decision "$have" "$CERT_NEW")"
+  echo "cert-compare: $dec"
+  case "$dec" in match|lineage) exit 0 ;; *) exit 2 ;; esac
 fi
 
 validate_args
