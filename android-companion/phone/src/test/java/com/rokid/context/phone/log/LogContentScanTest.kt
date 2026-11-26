@@ -49,7 +49,7 @@ class LogContentScanTest {
 
     /** Names that hold a count, an enum/state name, a wire channel name or a fixed call-site constant (each reviewed; `what`/`how`/`why`/`cmd`/`channel` are literals at their call sites). */
     private val SAFE_NAMES = setOf(
-        "saved", "skippedLine", // MomentLocationRecorder: the saved count and "<fixed reason token>:<count>" pairs; never an id or a coordinate
+        "created", "would", "conflicts", "dry", "saved", "skippedLine", // MomentLocationRecorder: the saved count and "<fixed reason token>:<count>" pairs; never an id or a coordinate
         "appended", "attempt", "attempts", "backfill", "capacity", "channel", "cls", "cmd", "code", "deleted", "described", "done", "extracted", "failed", "how", "left", "leftovers",
         "loadedDistractors", "memories", "missing", "n", "objects", "ok", "parsed", "pending", "purged", "reason", "rejected", "remote", "report", "resumed", "saved", "scanned", "source",
         "state", "stored", "streak", "swept", "transient", "types", "versionNo", "w", "wearing", "what", "why", "written", "health", "catalogId", "origin", "wearCheck", "s", "o.error", "d.reason",

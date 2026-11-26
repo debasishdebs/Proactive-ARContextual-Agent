@@ -332,6 +332,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         var retentionP2On by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.retentionP2(app)) }
         var mapZonesV2On by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app)) }
         var mapZonesP23On by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesP23(app)) }
+        var devImportOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.devImport(app)) }
         var packMomentsOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.packMoments(app)) }
         var offlineCaptionOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.offlineCaption(app)) }
         var offlineTierOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.offlineTier(app)) }
@@ -364,6 +365,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             retentionP2 = retentionP2On, onRetentionP2 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setRetentionP2(app, on); retentionP2On = on },
             mapZonesV2 = mapZonesV2On, onMapZonesV2 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setMapZonesV2(app, on); mapZonesV2On = on },
             mapZonesP23 = mapZonesP23On, onMapZonesP23 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setMapZonesP23(app, on); mapZonesP23On = on },
+            devImport = devImportOn, onDevImport = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setDevImport(app, on); devImportOn = on },
             packMoments = packMomentsOn, onPackMoments = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setPackMoments(app, on); packMomentsOn = on },
             packMomentsCount = if (packMomentsOn) com.rokid.context.work.frames.place.PackMomentStats.summary() else "",
             offlineCaption = offlineCaptionOn,

@@ -339,6 +339,8 @@ fun DiagnosticsScreen(
     mapZonesP23: Boolean = false,
     onMapZonesP23: (Boolean) -> Unit = {},
     /** 1.4.6 pack Moments (shadow only, counts in the log): Developer toggle plus one count line. Default OFF; shown only with [developerMode]. */
+    devImport: Boolean = false,
+    onDevImport: (Boolean) -> Unit = {},
     packMoments: Boolean = false,
     onPackMoments: (Boolean) -> Unit = {},
     packMomentsCount: String = "",
@@ -477,6 +479,13 @@ fun DiagnosticsScreen(
                             Text("Off (default): Settings > Privacy > Pause zones is the screen you know. On: the new full-height map where you draw an area and choose Pause or Seed. Pause zones are saved, checked and enforced exactly the same either way.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
                         }
                         Switch(checked = mapZonesV2, onCheckedChange = onMapZonesV2, modifier = Modifier.testTag("map_zones_v2_switch"))
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Developer import API", style = MaterialTheme.typography.titleSmall)
+                            Text("Off (default). On: a paired laptop may send a pulled dump back to this phone (POST /api/import) to recreate Moments with their original time, photos, captions and location. Needs Developer mode. Nothing is sent anywhere.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                        }
+                        Switch(checked = devImport, onCheckedChange = onDevImport, modifier = Modifier.testTag("dev_import_switch"))
                     }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {

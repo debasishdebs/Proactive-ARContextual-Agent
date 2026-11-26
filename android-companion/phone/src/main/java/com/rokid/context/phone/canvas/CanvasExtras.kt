@@ -55,6 +55,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                     ),
                 ),
                 dump = dumpRoutes(app, devMode),
+                import = importRoutes(app, devMode),
                 sender = { HubGraph.get(app); HubGraph.planSender }, collect = { HubGraph.get(app); HubGraph.collectSession },
                 importer = TraceImport(dao, com.rokid.context.canvas.trace.FencedFiles(db, app.filesDir), fence, onImported = com.rokid.context.canvas.moment.MomentTriggers.get(app)::onTraceImported),
                 stagingRoot = { app.getExternalFilesDir(null)?.let { File(it, com.rokid.context.canvas.trace.FencedFiles.STAGING_DIR).also(File::mkdirs) } },
@@ -87,6 +88,24 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             return com.rokid.context.phone.canvas.api.DumpRoutes(devMode::value, reader)
         }
 
+        /**
+         * Developer IMPORT (`POST /api/import`, owner round 7): the writer over the app's normal write paths: the frame ingest ([com.rokid.context.canvas.dumpimport.ImportFrameStore]), the memory writer, the one [com.rokid.context.canvas.marks.MarkRecorder] and the Moment builder.
+         * Gate: Developer mode, the paired session the router demands and the `devImport` flag (OFF by default).
+         */
+        internal fun importRoutes(app: Context, devMode: StateFlow<Boolean>): com.rokid.context.phone.canvas.api.ImportRoutes {
+            val db = MemoryGraph.get(app).db
+            val importer = com.rokid.context.canvas.dumpimport.DumpImporter(
+                db,
+                frames = com.rokid.context.canvas.dumpimport.ImportFrameStore(app, { f, b, t -> com.rokid.context.phone.hub.AtomicJpegWriter.writeStamped(f, b, t) }),
+                memories = com.rokid.context.canvas.dumpimport.ImportMemoryStore(app),
+                recordMark = { m, at -> MarkGraph.recorder(app).onMark(m, com.rokid.context.canvas.marks.MarkArrival(at, true, System.currentTimeMillis())) },
+                build = { ids -> com.rokid.context.canvas.moment.MomentTriggers.builder(app).build(ids) },
+                locationEnabled = { com.rokid.context.orchestration.forget.DeveloperFlags.momentLocation(app) },
+                generation = { MemoryWipe.generation.get() },
+            )
+            return com.rokid.context.phone.canvas.api.ImportRoutes(devMode::value, { com.rokid.context.orchestration.forget.DeveloperFlags.devImport(app) }, importer::run)
+        }
+
         /** The pure assembly, so a test can pass its own dao, replay service and hub references. */
         fun build(
             dao: com.rokid.context.memory.db.CanvasSlice3Dao, replay: ReplayService, devMode: StateFlow<Boolean>, startup: suspend () -> Unit,
@@ -109,6 +128,8 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             momentLocationImport: com.rokid.context.phone.canvas.api.MomentLocationRoutes? = null,
             /** v1.7 Developer dump API: the read-only `GET /api/dump/...` routes (Developer mode and the paired session); null = not registered (404). */
             dump: com.rokid.context.phone.canvas.api.DumpRoutes? = null,
+            /** Developer IMPORT: `POST /api/import` (Developer mode, paired session and the `devImport` flag); null = not registered (404). */
+            import: com.rokid.context.phone.canvas.api.ImportRoutes? = null,
             /** v0.9.7 A: the signal configuration store (`/api/signals`); null = the routes are not registered. */
             signals: com.rokid.context.phone.ui.settings.capture.SignalConfigStore? = null,
             /** v0.9.8 slice D: the device capability store (`/api/devices`); null = the routes are not registered. */
@@ -130,6 +151,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 if (moments != null) MomentRoutes(devMode::value, moments, scenes = momentScenes, repair = momentRepair).let { add(ApiExtra(it::handle)) }
                 momentLocationImport?.let { add(ApiExtra(it::handle)) }
                 dump?.let { add(ApiExtra(it::handle)) }
+                import?.let { add(ApiExtra(it::handle)) }
                 add(ApiExtra(com.rokid.context.phone.canvas.api.ExprRoutes()::handle))
                 signals?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.SignalRoutes(it, signalTry)::handle)) }
                 devices?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.DeviceRoutes(it)::handle)) }

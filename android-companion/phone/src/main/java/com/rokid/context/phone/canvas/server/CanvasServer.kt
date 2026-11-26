@@ -34,6 +34,9 @@ class CanvasServer(
         const val MAX_BODY = 256 * 1024
         /** The helper's `result` post (a Python experiment's answers, at most 2 MiB of result plus its envelope). */
         const val MAX_RESULT_BODY = 2 * 1024 * 1024 + 4096
+        /** Developer IMPORT (`POST /api/import`): up to 50 items with photos (a photo is at most 12 MB decoded, 16 MB as base64). Only a paired session may send this much, see [CanvasRouter.mayReadLargeBody]. */
+        const val MAX_IMPORT_BODY = 20 * 1024 * 1024
+        const val IMPORT_PATH = "/api/import"
         private val RESULT_ROUTE = Regex("^/api/helper/jobs/[A-Za-z0-9:_-]{1,64}/result$")
 
         /** Reads up to [len] bytes in chunks of at most 64 KiB: a peer that claims much and sends little costs only what it sent, never a buffer sized from its Content-Length. */
@@ -52,7 +55,7 @@ class CanvasServer(
 
         /** The largest request body for [method] [path]: [MAX_BODY] everywhere except the one helper `result` route, which alone is raised to [MAX_RESULT_BODY]. */
         fun bodyLimit(method: String, path: String): Int =
-            if (method.equals("POST", true) && RESULT_ROUTE.matches(path)) MAX_RESULT_BODY else MAX_BODY
+            if (method.equals("POST", true) && RESULT_ROUTE.matches(path)) MAX_RESULT_BODY else if (method.equals("POST", true) && path == IMPORT_PATH) MAX_IMPORT_BODY else MAX_BODY
         internal val TLS_PROTOCOLS = arrayOf("TLSv1.3", "TLSv1.2")
 
         // held strongly: java.util.logging keeps loggers weakly, and a collected one forgets its level

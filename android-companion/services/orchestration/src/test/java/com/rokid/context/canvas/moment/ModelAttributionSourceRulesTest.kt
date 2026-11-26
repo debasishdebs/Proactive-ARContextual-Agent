@@ -18,7 +18,7 @@ class ModelAttributionSourceRulesTest {
     private fun code(f: File) = f.readLines().filter { l -> l.trimStart().let { !it.startsWith("*") && !it.startsWith("//") && !it.startsWith("/*") } }.joinToString("\n")
     private fun names(f: File) = code(f).let { c -> tokens.any { it in c } }
 
-    private val writers = setOf("ExtractSave.kt", "ClusterSave.kt", "PipelineRecords.kt", "QueueDrainWorker.kt", "ResummarizeWorker.kt", "AnswerService.kt", "DerivePorts.kt", "ObjectAudit.kt")
+    private val writers = setOf("ImportStores.kt", "ExtractSave.kt", "ClusterSave.kt", "PipelineRecords.kt", "QueueDrainWorker.kt", "ResummarizeWorker.kt", "AnswerService.kt", "DerivePorts.kt", "ObjectAudit.kt")
     private val deletes = setOf(
         "ModelAttribution.kt", "ContextDatabase.kt", "DerivedStaleDao.kt", "ObjectDao.kt", "ForgetDao.kt", "MemoryDaos.kt", "WipeDao.kt",
         "ForgetService.kt", "ForgetExecutor.kt", "MomentForget.kt", "PlaceRefSweep.kt", "Families.kt", "ForgetPolicy.kt", "DeletionGraph.kt", "DesignDivergence.kt",

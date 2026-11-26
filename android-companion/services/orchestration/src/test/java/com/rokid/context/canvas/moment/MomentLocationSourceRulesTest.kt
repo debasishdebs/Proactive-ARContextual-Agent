@@ -22,6 +22,8 @@ class MomentLocationSourceRulesTest {
         // v1.7 Developer dump API (design 2026-11-26): the owner's ONE explicit exception. He asked to pull the saved location of his own Moments to his own laptop for offline experiments, behind Developer mode, the devDump
         // switch and a 10-minute arming. DumpReader is the single reader; its route (DumpRoutes.kt) only carries the JSON it builds and never names the store (pinned below). Every other path stays forbidden.
         "DumpReader.kt",
+        // Developer IMPORT (owner round 7, 26 Nov): the importer is the one writer of a location a dump carried back (source IMPORTED, original time and place, never logged), behind Developer mode, a paired session and the devImport flag.
+        "ImportCore.kt",
     )
 
     @Test fun momentLocationDaoEntityAndTableAppearOnlyInTheAllowList() {

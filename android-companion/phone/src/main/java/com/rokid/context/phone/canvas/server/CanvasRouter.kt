@@ -130,6 +130,8 @@ class CanvasRouter(
         if (CanvasServer.bodyLimit(method, path) <= CanvasServer.MAX_BODY || !hosts.hostAllowed(headers["host"])) return false
         val h = headers["authorization"] ?: return false
         if (h.length <= 7 || !h.regionMatches(0, "Bearer ", 0, 7, ignoreCase = true)) return false
+        // the Developer import is a paired-session route (the canvas token), the helper `result` route a helper-token one
+        if (path == CanvasServer.IMPORT_PATH) return auth.check(h.substring(7).trim())
         return helperAuth?.check(h.substring(7).trim()) == true
     }
 

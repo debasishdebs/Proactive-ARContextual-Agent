@@ -69,6 +69,14 @@ object DeveloperFlags {
     fun setOfflineTier(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(OFFLINE_TIER, on).apply() }
 
     /**
+     * Developer IMPORT (owner round 7, 26 Nov): `POST /api/import` recreates Moments (photos, captions, marks, location) from a dump. Needs Developer mode and a paired session AND this flag. OFF by default (also OFF when the
+     * prefs cannot be read); switch in Settings > Diagnostics. Turning it OFF makes the route answer 403 at once.
+     */
+    const val DEV_IMPORT = "devImport"
+    fun devImport(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(DEV_IMPORT, false) }.getOrDefault(false)
+    fun setDevImport(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(DEV_IMPORT, on).apply() }
+
+    /**
      * v18 WP12a: the Scene centroid producer (`scene_centroid`, the mean of a Scene's member vectors per embedding space). Runs inside the existing Scene rebuild (the 15-minute cadence worker), derived data only, nothing
      * is shown, sent or prompted. OFF by default (also OFF when the prefs cannot be read); no UI. Turning it OFF stops new rows; existing rows go with their Scene and every Forget as always.
      */
