@@ -99,6 +99,7 @@ object PlaceSamplers {
         offlineModelReady: () -> Boolean = { false },
     ): PlaceSampler {
         val keyframes = KeyframeGraph.get(app)
+        clearTierPhoto(app.cacheDir)
         val share = SharedPhoto { id -> FramePhotos.load(app, listOf(id)).photos.singleOrNull() } // ONE loaded photo for the model call and the shadow
         val shadowOf by lazy { shadowCompareFor(app, zoneBlocked, share::get) }
         val tier = offlineCaptioner?.let { cap -> offlineTierFor(app, cap, offlineModelReady) }
@@ -148,12 +149,22 @@ object PlaceSamplers {
     }
 
     /** The configured EMBED model (bge-small by default) over the caption and the candidate texts, as documents on both sides (no query prefix: that is how the Mac test ranked). Null while it is unbound, paused or refused (Offline only refuses a remote one). */
-    private class BoundTextEmbed(private val app: Context) : TextEmbed {
+    private class BoundTextEmbed(private val app: Context) : TextEmbed by LocalOnlyTextEmbed(
+        isLocal = { AiGraph.get(app).embedders.bindingIsLocal() },
+        embedder = { AiGraph.get(app).embedders.forBinding() },
+    )
+
+    /** Offline guess text (a photo caption, a place name and note) goes only to an ON-DEVICE embedder: a remote EMBED binding gets nothing (null, the tier says it could not guess). */
+    internal class LocalOnlyTextEmbed(private val isLocal: suspend () -> Boolean, private val embedder: suspend () -> com.rokid.context.memory.Embedder?) : TextEmbed {
         override suspend fun embed(texts: List<String>): List<FloatArray>? {
-            val e = AiGraph.get(app).embedders.forBinding() ?: return null
+            if (!isLocal()) return null
+            val e = embedder() ?: return null
             return e.embedDocuments(texts)
         }
     }
+
+    /** Removes a temp photo copy a dead process left behind (called when a sampler is made, i.e. at every process start that uses the guide). */
+    internal fun clearTierPhoto(cacheDir: java.io.File) { runCatching { java.io.File(cacheDir, TIER_PHOTO).delete() } }
 
     /**
      * One offline guess (V2b): the candidates from the pack's list, the photo from the attempt's one loaded copy written to a temp file for the captioner (deleted at once), and the tier's answer. Nothing is read when the tier is
