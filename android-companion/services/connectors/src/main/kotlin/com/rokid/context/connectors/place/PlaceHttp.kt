@@ -177,9 +177,8 @@ class UrlConnectionPlaceHttp(
 
     companion object {
         /**
-         * Wikimedia asks for an app name, a version and a way to reach the operator: the repository is the contact. No personal data (no email, no name). The URL is a placeholder until the
-         * repository is public: replace `https://github.com/` with the repository URL then.
+         * Wikimedia asks for an app name, a version and a way to reach the operator: the public repository is the contact. No personal data (no email, no name).
          */
-        const val DEFAULT_USER_AGENT = "ProactiveContextAgent/1.1 (https://github.com/; contact: see repository)"
+        const val DEFAULT_USER_AGENT = "ProactiveContextAgent/1.1 (https://github.com/debasishdebs/Proactive-ARContextual-Agent; contact: see repository)"
     }
 }

@@ -150,7 +150,7 @@ class PlaceFetchTest {
         assertFailsWith<IllegalArgumentException> { h.get("http://example.invalid/") }
         assertEquals("a=1&b=x%20y".replace("%20", "+"), formEncode(linkedMapOf("a" to "1", "b" to "x y")))
         assertTrue(UrlConnectionPlaceHttp.DEFAULT_USER_AGENT.contains("ProactiveContextAgent") && !UrlConnectionPlaceHttp.DEFAULT_USER_AGENT.contains("@"))
-        assertEquals("ProactiveContextAgent/1.1 (https://github.com/; contact: see repository)", UrlConnectionPlaceHttp.DEFAULT_USER_AGENT)
+        assertEquals("ProactiveContextAgent/1.1 (https://github.com/debasishdebs/Proactive-ARContextual-Agent; contact: see repository)", UrlConnectionPlaceHttp.DEFAULT_USER_AGENT)
         val pauses = mutableListOf<Long>(); var t = 1_000L
         val limited = UrlConnectionPlaceHttp(minGapMs = 400, clock = { t }, pause = { pauses += it; t += it })
         // no network: both calls fail at connect, but the second must have waited out the gap first
