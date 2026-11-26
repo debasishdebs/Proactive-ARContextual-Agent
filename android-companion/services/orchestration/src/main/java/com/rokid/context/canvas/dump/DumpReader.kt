@@ -82,9 +82,10 @@ class DumpReader(
         }
     }
 
-    override suspend fun moments(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem> {
+    override suspend fun moments(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean): List<DumpItem> {
         val fromId = idAtOrNull(fromMs) ?: MIN_ID; val toId = idAtOrNull(toMs) ?: MAX_ID
-        val rows = dump.momentsPage(fromId, toId, after ?: "", limit.coerceIn(1, DumpSource.MAX_PAGE_ITEMS))
+        val n = limit.coerceIn(1, DumpSource.MAX_PAGE_ITEMS)
+        val rows = if (ascending) dump.momentsPage(fromId, toId, after ?: "", n) else dump.momentsPageDesc(fromId, toId, after ?: "~", n)
         if (rows.isEmpty()) return emptyList()
         val ids = rows.map { it.momentId }
         val parts = ids.chunked(CHUNK).flatMap { dump.partsOfMoments(it) }.groupBy { it.momentId }
@@ -164,9 +165,10 @@ class DumpReader(
         buildJsonObject { put("field", d.field); put("value", if (d.staleSince != null) null else d.value) /* review2 #2: a hidden (stale) value is never exported, with forgetV2 off its text is still in the row */; put("embeddingSpace", if (d.field == "EMBEDDING") d.ref else null); put("builtRev", d.builtRev); put("atMs", d.atMs); put("stale", d.staleSince != null); put("model", a?.model); put("modelVersion", a?.modelVersion) }
     })
 
-    override suspend fun scenes(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem> {
-        val (key, id) = splitCursor(after) ?: (Long.MIN_VALUE to "")
-        val rows = dump.scenesPage(fromMs, toMs, key, id, limit.coerceIn(1, DumpSource.MAX_PAGE_ITEMS))
+    override suspend fun scenes(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean): List<DumpItem> {
+        val n = limit.coerceIn(1, DumpSource.MAX_PAGE_ITEMS)
+        val rows = if (ascending) (splitCursor(after) ?: (Long.MIN_VALUE to "")).let { (k, i) -> dump.scenesPage(fromMs, toMs, k, i, n) }
+        else (splitCursor(after) ?: (Long.MAX_VALUE to "\uffff")).let { (k, i) -> dump.scenesPageDesc(fromMs, toMs, k, i, n) }
         if (rows.isEmpty()) return emptyList()
         val sceneIds = rows.map { it.sceneId }
         val parts = sceneIds.chunked(CHUNK).flatMap { db.sceneDao().partsOf(it) }.groupBy { it.sceneId }
@@ -206,9 +208,10 @@ class DumpReader(
         }))
     }
 
-    override suspend fun marks(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem> {
-        val (key, id) = splitCursor(after) ?: (Long.MIN_VALUE to "")
-        val rows = dump.marksPage(fromMs, toMs, key, id, limit.coerceIn(1, DumpSource.MAX_PAGE_ITEMS))
+    override suspend fun marks(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean): List<DumpItem> {
+        val n = limit.coerceIn(1, DumpSource.MAX_PAGE_ITEMS)
+        val rows = if (ascending) (splitCursor(after) ?: (Long.MIN_VALUE to "")).let { (k, i) -> dump.marksPage(fromMs, toMs, k, i, n) }
+        else (splitCursor(after) ?: (Long.MAX_VALUE to "\uffff")).let { (k, i) -> dump.marksPageDesc(fromMs, toMs, k, i, n) }
         if (rows.isEmpty()) return emptyList()
         val moments = rows.map { it.labelId }.chunked(CHUNK).flatMap { dump.momentsOfMarks(it) }.associate { it.refId to it.momentId }
         val liveFrames = rows.mapNotNull { it.frameId }.chunked(CHUNK).flatMap { dump.framesByIds(it) }.map { it.id }.toSet()

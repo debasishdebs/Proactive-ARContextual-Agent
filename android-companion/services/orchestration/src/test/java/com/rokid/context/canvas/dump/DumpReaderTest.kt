@@ -149,6 +149,18 @@ class DumpReaderTest {
         assertEquals(listOf(id(2), id(3)), r.moments((SEC + 2) * 1000, (SEC + 3) * 1000 + 999, null, 200).map { it.cursor })
     }
 
+    @Test fun descendingOrderPagesNewestFirstForMomentsAndMarks() = runBlocking {
+        seed(1, 2, 3, 4, 5)
+        fx.mark("mk:1:1", MS + 1000); fx.mark("mk:1:2", MS + 2000); fx.mark("mk:1:3", MS + 3000)
+        val r = reader()
+        val p1 = r.moments(0, Long.MAX_VALUE, null, 2, false); val p2 = r.moments(0, Long.MAX_VALUE, p1.last().cursor, 2, false); val p3 = r.moments(0, Long.MAX_VALUE, p2.last().cursor, 2, false)
+        assertEquals((5 downTo 1).map { id(it) }, (p1 + p2 + p3).map { it.cursor })
+        assertEquals(listOf(id(3), id(2)), r.moments((SEC + 2) * 1000, (SEC + 3) * 1000 + 999, null, 200, false).map { it.cursor })
+        val m1 = r.marks(0, Long.MAX_VALUE, null, 2, false); val m2 = r.marks(0, Long.MAX_VALUE, m1.last().cursor, 2, false)
+        assertEquals(listOf("mk:1:3", "mk:1:2", "mk:1:1"), (m1 + m2).map { it.json["id"]!!.jsonPrimitive.content })
+        assertTrue(r.scenes(0, Long.MAX_VALUE, null, 5, false).isEmpty())
+    }
+
     @Test fun scenesListLiveMembersAndClusterMedoids() = runBlocking {
         seed(1, 2)
         db.frameMetaDao().upsert(db.frameMetaDao().get("f1")!!.copy(clusterId = "c1"))

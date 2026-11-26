@@ -27,15 +27,18 @@ import org.junit.Test
 
 class DumpRoutesTest {
     private class Fake : DumpSource {
-        var moments: List<DumpItem> = (1..5).map { DumpItem("m$it", buildJsonObject { put("id", "m$it") }) }
+        var moments: List<DumpItem> = (1..5).map { DumpItem("m$it", buildJsonObject { put("id", "m$it"); put("startMs", it * 1000L) }) }
         var calls = 0
         var wipeOnRead: (() -> Unit)? = null
         val lastArgs = mutableListOf<String>()
         override suspend fun manifest(): JsonObject { calls++; wipeOnRead?.invoke(); return buildJsonObject { put("dump_id", "dump-x"); put("counts", buildJsonObject { put("moments", 5) }) } }
-        override suspend fun moments(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem> { calls++; lastArgs += "$fromMs|$toMs|$after|$limit"; wipeOnRead?.invoke(); return moments.filter { after == null || it.cursor > after }.take(limit) }
-        override suspend fun scenes(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem> = emptyList()
-        override suspend fun marks(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem> = emptyList()
-        override suspend fun pins(): List<JsonObject> = listOf(buildJsonObject { put("id", "p1"); put("lat", 1.5) })
+        override suspend fun moments(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean): List<DumpItem> { calls++; lastArgs += "$fromMs|$toMs|$after|$limit" + (if (ascending) "" else "|desc"); wipeOnRead?.invoke(); return moments.sortedBy { it.cursor }.let { if (ascending) it.filter { x -> after == null || x.cursor > after } else it.reversed().filter { x -> after == null || x.cursor < after } }.filter { ms(it) in fromMs..toMs }.take(limit) }
+        fun ms(x: DumpItem) = x.json["startMs"]?.jsonPrimitive?.content?.toLong() ?: 0L
+        var sceneList: List<DumpItem> = emptyList()
+        var markList: List<DumpItem> = emptyList()
+        override suspend fun scenes(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean): List<DumpItem> = sceneList.sortedBy { ms(it) }.let { if (ascending) it else it.reversed() }.filter { ms(it) in fromMs..toMs }.take(limit)
+        override suspend fun marks(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean): List<DumpItem> = markList.sortedBy { it.json["atMs"]!!.jsonPrimitive.content.toLong() }.let { if (ascending) it else it.reversed() }.filter { it.json["atMs"]!!.jsonPrimitive.content.toLong() in fromMs..toMs }.take(limit)
+        override suspend fun pins(): List<JsonObject> = listOf(buildJsonObject { put("id", "p1"); put("lat", 1.5); put("pinnedAt", 2500) }, buildJsonObject { put("id", "p2"); put("lat", 2.5) })
         override suspend fun photo(frameId: String): DumpPhoto? = if (frameId == "f1") DumpPhoto(byteArrayOf(1, 2, 3), "image/jpeg") else null
     }
 
@@ -65,7 +68,7 @@ class DumpRoutesTest {
         assertEquals(2, p1["count"]!!.jsonPrimitive.content.toInt()); assertEquals("m2", p1["next"]!!.jsonPrimitive.content)
         val p3 = json(get("/api/dump/moments", mapOf("after" to "m4", "limit" to "2")))
         assertEquals(1, p3["count"]!!.jsonPrimitive.content.toInt()); assertEquals(JsonNull, p3["next"])
-        assertEquals(1, json(get("/api/dump/pins"))["count"]!!.jsonPrimitive.content.toInt())
+        assertEquals(2, json(get("/api/dump/pins"))["count"]!!.jsonPrimitive.content.toInt())
     }
 
     @Test fun limitIsCappedAt200AndBadParametersAre400() {
@@ -193,5 +196,65 @@ class DumpRoutesTest {
         val t = auth.newWebViewToken()
         CanvasRouter(auth, hosts, routed, AssetSource { null }) { logs += it }.handle(HttpRequest("GET", "/api/dump/frames/f1/photo", mapOf("after" to "secret"), mapOf("host" to "127.0.0.1:8765", "authorization" to "Bearer $t"), ByteArray(0)))
         assertEquals(1, logs.size); assertFalse(logs[0].contains("f1")); assertFalse(logs[0].contains("secret"))
+    }
+
+    private fun ids(r: HttpResponse?) = json(r)["items"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }
+
+    @Test fun orderDescReadsNewestFirstAndPagesWithTheCursor() {
+        assertEquals(listOf("m5", "m4"), ids(get("/api/dump/moments", mapOf("order" to "desc", "limit" to "2"))))
+        assertEquals(listOf("m3", "m2"), ids(get("/api/dump/moments", mapOf("order" to "DESC", "after" to "m4", "limit" to "2"))))
+        assertEquals(listOf("m1", "m2"), ids(get("/api/dump/moments", mapOf("order" to "asc", "limit" to "2"))))
+        assertEquals(listOf("p2", "p1"), ids(get("/api/dump/pins", mapOf("order" to "desc"))))
+    }
+
+    @Test fun badOrderIs400OnEveryListRoute() {
+        listOf("moments", "scenes", "marks", "pins", "items").forEach { p -> listOf("up", "descending", "1").forEach { o -> assertEquals("$p $o", 400, get("/api/dump/$p", mapOf("order" to o))!!.status) } }
+    }
+
+    @Test fun batchSizeIsThePageSizeAliasAndABadOrConflictingOneIs400() {
+        assertEquals(2, json(get("/api/dump/moments", mapOf("batch_size" to "2")))["count"]!!.jsonPrimitive.content.toInt())
+        get("/api/dump/moments", mapOf("batch_size" to "9999")); assertTrue(src.lastArgs.last().endsWith("|200"))
+        assertEquals(200, get("/api/dump/moments", mapOf("batch_size" to "3", "limit" to "3"))!!.status)
+        listOf(mapOf("batch_size" to "0"), mapOf("batch_size" to "-1"), mapOf("batch_size" to "x"), mapOf("batch_size" to "3", "limit" to "4")).forEach { q -> assertEquals(q.toString(), 400, get("/api/dump/moments", q)!!.status) }
+    }
+
+    private fun withOthers() {
+        src.sceneList = listOf(DumpItem("s", buildJsonObject { put("id", "s1"); put("startMs", 2500) }))
+        src.markList = listOf(DumpItem("k", buildJsonObject { put("id", "k1"); put("atMs", 1500) }))
+    }
+
+    @Test fun itemsMergesTypesByTimeAndTagsEachWithItsObjectType() {
+        withOthers()
+        val r = get("/api/dump/items")!!; assertEquals(200, r.status)
+        assertEquals(listOf("m1", "k1", "m2", "m3", "s1", "p1", "m4", "m5", "p2").sorted(), ids(r).sorted())
+        assertEquals(listOf("p2", "m1", "k1", "m2", "s1"), ids(get("/api/dump/items", mapOf("limit" to "5", "to" to "3000")))) // p2 has no time: 0
+    }
+
+    @Test fun itemsFilterByObjectTypeAcceptsBothSpellingsAndOrderAndPages() {
+        withOthers()
+        assertEquals(listOf("m1", "m2", "k1").sorted(), ids(get("/api/dump/items", mapOf("object_type" to "moment,mark", "to" to "2000"))).sorted())
+        assertEquals(listOf("s1"), ids(get("/api/dump/items", mapOf("object_type[]" to "scene"))))
+        val tags = json(get("/api/dump/items", mapOf("object_type" to "mark")))["items"]!!.jsonArray.map { it.jsonObject["object_type"]!!.jsonPrimitive.content }
+        assertEquals(listOf("mark"), tags)
+        // desc paging walks every item exactly once through the composite cursor
+        val seen = ArrayList<String>(); var after: String? = null
+        for (n in 0 until 10) { if (n > 0 && after == null) break; val q = mutableMapOf("order" to "desc", "limit" to "2", "object_type" to "moment,scene,mark"); after?.let { q["after"] = it }
+            val j = json(get("/api/dump/items", q)); seen += j["items"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }; after = (j["next"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it !is JsonNull }?.content }
+        assertEquals(listOf("m5", "m4", "s1", "m3", "k1", "m2", "m1").let { it.sortedBy { x -> x } }, seen.sorted()); assertEquals(7, seen.size)
+        assertEquals(seen, seen.distinct())
+        // fields keeps id and object_type
+        val one = json(get("/api/dump/items", mapOf("object_type" to "mark", "fields" to "atMs")))["items"]!!.jsonArray[0].jsonObject
+        assertEquals(setOf("id", "atMs", "object_type"), one.keys)
+    }
+
+    @Test fun itemsBadObjectTypeCursorOrRangeIs400() {
+        listOf(mapOf("object_type" to "frame"), mapOf("object_type" to ""), mapOf("object_type" to "mark,mark"), mapOf("object_type" to "mark,"), mapOf("object_type" to "mark", "object_type[]" to "pin"),
+            mapOf("after" to "nonsense"), mapOf("after" to "x:moment:m1"), mapOf("after" to "5:vector:m1"), mapOf("from" to "2000", "to" to "1000"), mapOf("limit" to "0"))
+            .forEach { q -> assertEquals(q.toString(), 400, get("/api/dump/items", q)!!.status) }
+    }
+
+    @Test fun itemsAreDeveloperOnlyAndGetOnly() {
+        dev = false; assertEquals(403, get("/api/dump/items")!!.status); dev = true
+        assertEquals(405, get("/api/dump/items", m = "POST")!!.status)
     }
 }

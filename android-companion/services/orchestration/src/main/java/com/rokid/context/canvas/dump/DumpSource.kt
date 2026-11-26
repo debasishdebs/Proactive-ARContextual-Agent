@@ -11,12 +11,13 @@ class DumpItem(val cursor: String, val json: JsonObject)
  */
 interface DumpSource {
     suspend fun manifest(): JsonObject
+    /** With [ascending] false every page reads newest first and [after] is the last item of the previous page (the page holds the items BEFORE it). */
     /** Moments whose second lies in [fromMs, toMs], after the Moment id [after] (exclusive), at most [limit]. */
-    suspend fun moments(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem>
+    suspend fun moments(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean = true): List<DumpItem>
     /** Scenes starting in [fromMs, toMs], after the cursor [after] (`<startMs>:<sceneId>`). */
-    suspend fun scenes(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem>
+    suspend fun scenes(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean = true): List<DumpItem>
     /** Marks (not their intent rows) in [fromMs, toMs], after the cursor [after] (`<atMs>:<labelId>`). */
-    suspend fun marks(fromMs: Long, toMs: Long, after: String?, limit: Int): List<DumpItem>
+    suspend fun marks(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean = true): List<DumpItem>
     /** The user's pins (a small list: no paging). */
     suspend fun pins(): List<JsonObject>
     /** The stored JPEG (or PNG, WebP) bytes of a live photo and its content type, null when the photo is gone, forgotten, unreadable or over [MAX_PHOTO_BYTES]. */

@@ -31,6 +31,8 @@ abstract class DumpDao {
     // --- Moments ---
     @Query("SELECT * FROM moment WHERE momentId >= :fromId AND momentId <= :toId AND momentId > :afterId AND momentId NOT IN (SELECT momentId FROM moment_tombstone) ORDER BY momentId LIMIT :limit")
     abstract suspend fun momentsPage(fromId: String, toId: String, afterId: String, limit: Int): List<MomentEntity>
+    @Query("SELECT * FROM moment WHERE momentId >= :fromId AND momentId <= :toId AND momentId < :beforeId AND momentId NOT IN (SELECT momentId FROM moment_tombstone) ORDER BY momentId DESC LIMIT :limit")
+    abstract suspend fun momentsPageDesc(fromId: String, toId: String, beforeId: String, limit: Int): List<MomentEntity>
     @Query("SELECT * FROM moment_part WHERE momentId IN (:ids) ORDER BY momentId, kind, refId") abstract suspend fun partsOfMoments(ids: List<String>): List<MomentPartEntity>
     @Query("SELECT * FROM memory WHERE id IN (:ids) AND (frameId IS NULL OR frameId NOT IN (SELECT frameId FROM forget_tombstone)) ORDER BY id") abstract suspend fun memoriesByIds(ids: List<String>): List<MemoryEntity>
     @Query("SELECT * FROM frame WHERE id IN (:ids) AND id NOT IN (SELECT frameId FROM forget_tombstone) ORDER BY id") abstract suspend fun framesByIds(ids: List<String>): List<FrameEntity>
@@ -44,9 +46,14 @@ abstract class DumpDao {
     @Query("SELECT * FROM scene WHERE startMs >= :fromMs AND startMs <= :toMs AND (startMs > :afterKey OR (startMs = :afterKey AND sceneId > :afterId)) ORDER BY startMs, sceneId LIMIT :limit")
     abstract suspend fun scenesPage(fromMs: Long, toMs: Long, afterKey: Long, afterId: String, limit: Int): List<SceneEntity>
 
+    @Query("SELECT * FROM scene WHERE startMs >= :fromMs AND startMs <= :toMs AND (startMs < :beforeKey OR (startMs = :beforeKey AND sceneId < :beforeId)) ORDER BY startMs DESC, sceneId DESC LIMIT :limit")
+    abstract suspend fun scenesPageDesc(fromMs: Long, toMs: Long, beforeKey: Long, beforeId: String, limit: Int): List<SceneEntity>
+
     // --- Marks (kind MOMENT, never the `:i` intent row) ---
     @Query("SELECT * FROM canvas_label WHERE kind = 'MOMENT' AND labelId NOT LIKE '%:i' AND atMs >= :fromMs AND atMs <= :toMs AND (atMs > :afterKey OR (atMs = :afterKey AND labelId > :afterId)) ORDER BY atMs, labelId LIMIT :limit")
     abstract suspend fun marksPage(fromMs: Long, toMs: Long, afterKey: Long, afterId: String, limit: Int): List<CanvasLabelEntity>
+    @Query("SELECT * FROM canvas_label WHERE kind = 'MOMENT' AND labelId NOT LIKE '%:i' AND atMs >= :fromMs AND atMs <= :toMs AND (atMs < :beforeKey OR (atMs = :beforeKey AND labelId < :beforeId)) ORDER BY atMs DESC, labelId DESC LIMIT :limit")
+    abstract suspend fun marksPageDesc(fromMs: Long, toMs: Long, beforeKey: Long, beforeId: String, limit: Int): List<CanvasLabelEntity>
     @Query("SELECT * FROM canvas_label WHERE labelId IN (:ids) ORDER BY labelId") abstract suspend fun labelsByIds(ids: List<String>): List<CanvasLabelEntity>
     @Query("SELECT refId AS refId, momentId AS momentId FROM moment_part WHERE kind = 'MARK' AND refId IN (:labelIds) AND momentId NOT IN (SELECT momentId FROM moment_tombstone)")
     abstract suspend fun momentsOfMarks(labelIds: List<String>): List<DumpMarkMoment>
