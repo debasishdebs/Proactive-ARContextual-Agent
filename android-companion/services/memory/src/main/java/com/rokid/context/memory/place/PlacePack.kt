@@ -45,7 +45,10 @@ class BulkTooBig(why: String) : java.io.IOException(why)
 
 /** The pack as the budget screen shows it. [pinned] counts user pins; [seeded] and [fetched] exclude pinned rows. */
 /** The seeded places in one area's box (S5). */
-data class AreaStats(val places: Int, val bytes: Long)
+data class AreaStats(val places: Int, val bytes: Long, /** B2: reference photos of this area's seeded places: with a photo, and without one (none free, skipped or failed for good). The rest are still waiting. */ val photoOk: Int = 0, val photoNone: Int = 0)
+
+/** B2: seeded places [seeded], those with a photo [ok] and those without one for good [none]. */
+data class PhotoTotals(val seeded: Int, val ok: Int, val none: Int) { val waiting: Int get() = (seeded - ok - none).coerceAtLeast(0) }
 
 /** B1: the reference photos for the budget screen: all rows, rows with a photo state OK, bytes (thumbnails + vectors) and the cap. */
 data class ImageStats(val rows: Int, val ok: Int, val bytes: Long, val capBytes: Long)
@@ -147,7 +150,14 @@ class PlacePack(
     /** S5: per area id, how many seeded places lie in its box and their text bytes (read only, from places.db, no network). User pins are not counted. */
     suspend fun areaStats(): Map<String, AreaStats> = dao.areas().associate { a ->
         val ps = dao.inBox(a.south, a.north, a.west, a.east).filter { it.seeded && !it.id.startsWith("user:") }
-        a.blueZoneId to AreaStats(ps.size, ps.sumOf { it.bytes.toLong() })
+        val st = dao.imageStatusIn(a.south, a.north, a.west, a.east).associate { it.status to it.n }
+        a.blueZoneId to AreaStats(ps.size, ps.sumOf { it.bytes.toLong() }, st[ImageState.OK] ?: 0, (st[ImageState.NONE] ?: 0) + (st[ImageState.SKIPPED] ?: 0) + (st[ImageState.FAILED] ?: 0))
+    }
+
+    /** B2: all seeded places (never a user pin) and how many of them have a photo / have none, for the budget line and the phase's "N of M". Read only. */
+    suspend fun photoTotals(): PhotoTotals {
+        val st = dao.imageStatusAll().associate { it.status to it.n }
+        return PhotoTotals(dao.photoSeededCount(), st[ImageState.OK] ?: 0, (st[ImageState.NONE] ?: 0) + (st[ImageState.SKIPPED] ?: 0) + (st[ImageState.FAILED] ?: 0))
     }
 
     /** v18 WP11b: names (or, with null or blank, un-names) a seed area; trimmed and bounded. False when no such area. The rename screen is a later WP. */

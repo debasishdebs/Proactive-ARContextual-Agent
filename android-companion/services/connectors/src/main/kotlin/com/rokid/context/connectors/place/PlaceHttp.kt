@@ -24,7 +24,15 @@ class PlaceHttpException(val code: Int, /** The numeric Retry-After in seconds, 
 interface PlaceHttp {
     suspend fun get(url: String): String
     suspend fun postForm(url: String, form: Map<String, String>): String
+    /**
+     * B2 reference photos: the raw bytes of one thumbnail. https only, [PlaceImageRules.HOSTS] only, no redirect followed, at most [maxBytes] (a longer body throws [PlaceTooLarge]). The default refuses, so a test double that
+     * only serves text can never download a picture by accident.
+     */
+    suspend fun getBytes(url: String, maxBytes: Int): ByteArray = throw UnsupportedOperationException("no binary fetch")
 }
+
+/** The body of an answer was longer than the cap (a thumbnail over its size cap): not a network failure, the photo is skipped. */
+class PlaceTooLarge : IOException("response too large")
 
 /** Counts the bytes read from the wire (the compressed bytes when the answer is gzip). */
 internal class CountingInputStream(`in`: java.io.InputStream, private val count: java.util.concurrent.atomic.AtomicLong) : java.io.FilterInputStream(`in`) {
@@ -68,9 +76,16 @@ class UrlConnectionPlaceHttp(
     private val lock = Mutex()
     private val lastByHost = HashMap<String, Long>()
 
-    override suspend fun get(url: String): String = send(url, null)
+    override suspend fun get(url: String): String = String(send(url, null, maxBytes), Charsets.UTF_8)
 
-    override suspend fun postForm(url: String, form: Map<String, String>): String = send(url, formEncode(form))
+    override suspend fun postForm(url: String, form: Map<String, String>): String = String(send(url, formEncode(form), maxBytes), Charsets.UTF_8)
+
+    /** B2: a thumbnail. The host allow-list is checked HERE, before any wait or connection, so a hostile or changed URL never leaves the phone. */
+    override suspend fun getBytes(url: String, maxBytes: Int): ByteArray {
+        val u = URL(url)
+        require(u.protocol == "https" && u.host in PlaceImageRules.HOSTS && u.userInfo == null) { "place image host not allowed" }
+        return send(url, null, maxBytes.coerceAtMost(this.maxBytes), binary = true)
+    }
 
     private fun privacyGate() {
         val m = try { privacy() } catch (e: Exception) { ModelPrivacy.OFFLINE_ONLY }
@@ -81,6 +96,8 @@ class UrlConnectionPlaceHttp(
     private fun serviceOf(u: URL): String = when {
         u.host.contains("overpass") -> "overpass"
         u.host.contains("wikidata") -> "wikidata"
+        u.host == "upload.wikimedia.org" -> "wiki_image"
+        u.host == "commons.wikimedia.org" -> "wiki_commons"
         u.query?.contains("list=geosearch") == true -> "wiki_geosearch"
         else -> "wiki_extract"
     }
@@ -93,14 +110,14 @@ class UrlConnectionPlaceHttp(
     }
 
     /** Waits for the global pause, sends, and records the outcome (tokens and numbers only) in the shared guard. */
-    private suspend fun send(url: String, body: String?): String {
+    private suspend fun send(url: String, body: String?, cap: Int, binary: Boolean = false): ByteArray {
         val u = URL(url)
         require(u.protocol == "https") { "place fetch is https only" }
         val svc = serviceOf(u)
         guard.await(svc) // a 429/503 pauses every request of the same server group (Wikimedia or Overpass), whichever cell asks
         val t0 = clock()
         try {
-            val r = sendNow(u, url, body, svc)
+            val r = sendNow(u, url, body, svc, cap, binary)
             guard.ok(svc, clock() - t0)
             return r
         } catch (e: kotlinx.coroutines.CancellationException) { throw e
@@ -114,7 +131,7 @@ class UrlConnectionPlaceHttp(
     }
 
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class) // invokeOnCompletion(onCancelling = true): the only hook that runs when cancellation STARTS, while the blocking read is still stuck
-    private suspend fun sendNow(u: URL, url: String, body: String?, svc: String): String {
+    private suspend fun sendNow(u: URL, url: String, body: String?, svc: String, cap: Int, binary: Boolean): ByteArray {
         privacyGate()
         val ticket = currentZoneTicket()
         ticket?.check()
@@ -141,7 +158,7 @@ class UrlConnectionPlaceHttp(
                 c.connectTimeout = connectTimeoutMs; c.readTimeout = readTimeoutMs
                 c.instanceFollowRedirects = false
                 c.setRequestProperty("User-Agent", userAgent)
-                c.setRequestProperty("Accept", "application/json")
+                c.setRequestProperty("Accept", if (binary) "image/jpeg,image/png,image/webp" else "application/json")
                 c.setRequestProperty("Accept-Encoding", "gzip")
                 if (body != null) {
                     c.requestMethod = "POST"; c.doOutput = true
@@ -161,10 +178,10 @@ class UrlConnectionPlaceHttp(
                     val buf = ByteArray(16 * 1024)
                     while (true) {
                         val n = ins.read(buf); if (n < 0) break
-                        if (out.size() + n > maxBytes) throw IOException("response too large")
+                        if (out.size() + n > cap) throw PlaceTooLarge()
                         out.write(buf, 0, n)
                     }
-                    out.toString("UTF-8")
+                    out.toByteArray()
                 }
             } catch (e: IOException) {
                 if (tripped.get()) throw com.rokid.context.memory.place.ZoneFenced() else throw e
@@ -182,4 +199,17 @@ class UrlConnectionPlaceHttp(
          */
         const val DEFAULT_USER_AGENT = "ProactiveContextAgent/1.1 (https://github.com/debasishdebs/Proactive-ARContextual-Agent; contact: see repository)"
     }
+}
+
+/** B2: where a place photo may come from. Only these hosts are ever asked for a picture or its licence. */
+object PlaceImageRules {
+    const val UPLOAD_HOST = "upload.wikimedia.org"
+    const val COMMONS_HOST = "commons.wikimedia.org"
+    /** The hosts [PlaceHttp.getBytes] accepts (the thumbnail host only). The Commons file-info call goes through [PlaceHttp.get] on [COMMONS_HOST]. */
+    val HOSTS: Set<String> = setOf(UPLOAD_HOST)
+    /** Thumbnail width asked from Wikimedia and the largest side kept (design 4.1). */
+    const val THUMB_WIDTH = 330
+    const val MAX_SIDE = 336
+    /** Size cap of one downloaded thumbnail. */
+    const val MAX_BYTES = 150 * 1024
 }

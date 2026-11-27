@@ -118,6 +118,9 @@ class PlaceImageEntity(
     override fun hashCode() = placeId.hashCode()
 }
 
+/** A photo status and how many seeded places have it (a query result, not a table). */
+class ImageStatusCount(val status: String, val n: Int)
+
 /** The vector of one place's reference photo, as stored (decode with `VectorCodec`). */
 class PlaceImageVector(val placeId: String, val vector: ByteArray, val dim: Int?)
 
@@ -208,6 +211,10 @@ interface PlacesDao {
     @Query("SELECT placeId, vector, dim FROM place_image WHERE placeId IN (:ids) AND space = :space AND vector IS NOT NULL") suspend fun vectorsFor(ids: List<String>, space: String): List<PlaceImageVector>
     @Query("UPDATE place_image SET space = :space, dim = :dim, vector = :vector, vecVersion = :version, embeddedAt = :at, bytes = bytes - COALESCE(LENGTH(vector), 0) + :vecBytes WHERE placeId = :id AND status = 'OK'")
     suspend fun markEmbedded(id: String, space: String, dim: Int, vector: ByteArray, version: Int, at: Long, vecBytes: Int): Int
+    @Query("SELECT i.status AS status, COUNT(*) AS n FROM place p JOIN place_image i ON i.placeId = p.id WHERE p.seeded = 1 AND substr(p.id, 1, 5) <> 'user:' AND p.lat BETWEEN :south AND :north AND p.lon BETWEEN :west AND :east GROUP BY i.status")
+    suspend fun imageStatusIn(south: Double, north: Double, west: Double, east: Double): List<ImageStatusCount>
+    @Query("SELECT i.status AS status, COUNT(*) AS n FROM place p JOIN place_image i ON i.placeId = p.id WHERE p.seeded = 1 AND substr(p.id, 1, 5) <> 'user:' GROUP BY i.status") suspend fun imageStatusAll(): List<ImageStatusCount>
+    @Query("SELECT COUNT(*) FROM place WHERE seeded = 1 AND substr(id, 1, 5) <> 'user:'") suspend fun photoSeededCount(): Int
     @Query("DELETE FROM place_image WHERE placeId IN (:ids)") suspend fun deleteImages(ids: List<String>): Int
     /** Removes the reference photos whose place is gone. Run in the same transaction as every place delete (evict, clear fetched, area removal, pin removal). */
     @Query("DELETE FROM place_image WHERE placeId NOT IN (SELECT id FROM place)") suspend fun deleteOrphanImages(): Int
