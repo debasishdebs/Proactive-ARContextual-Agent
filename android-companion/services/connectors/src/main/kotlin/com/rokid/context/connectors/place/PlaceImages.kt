@@ -3,6 +3,11 @@ package com.rokid.context.connectors.place
 import com.rokid.context.memory.place.ImageState
 import com.rokid.context.memory.place.PlaceImageEntity
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -168,7 +173,20 @@ data class PhotoCandidate(val id: String, val priorTries: Int)
 class PhotoPhaseRetry(cause: Throwable) : java.io.IOException("photo phase: try later", cause)
 
 /**
- * One batch of the photo phase: places -> Wikidata -> Wikipedia lead image (P18 as fallback) -> Commons licence -> one thumbnail download each at 1 request per second. Each decided place is handed to [store] at once, so a stop (process death,
+ * How many thumbnails may download at once from the image host: up to [max] (4), and ONE after the server said 429/503 (the shared guard holds the Retry-After pause for every request of the group), then one more after every
+ * [CLEAN_BATCHES_PER_STEP] batches that went through without being slowed down. Counts only.
+ */
+class DownloadConcurrency(val max: Int = MAX) {
+    private var now = max
+    private var clean = 0
+    val limit: Int @Synchronized get() = now
+    @Synchronized fun onThrottle() { now = 1; clean = 0 }
+    @Synchronized fun onCleanBatch() { if (now < max && ++clean >= CLEAN_BATCHES_PER_STEP) { now++; clean = 0 } }
+    companion object { const val MAX = 4; const val CLEAN_BATCHES_PER_STEP = 2 }
+}
+
+/**
+ * One batch of the photo phase: places -> Wikidata -> Wikipedia lead image (P18 as fallback) -> Commons licence -> the thumbnail downloads of the places that have a free photo, [DownloadConcurrency] at a time (3-4 connections, one after a 429/503). Each decided place is handed to [store] at once, so a stop (process death,
  * Wi-Fi lost, Offline only) never loses what was done. Status per place: OK (photo stored), NONE (no free photo exists / no Wikidata item), SKIPPED (mime, licence, size), FAILED (this place's download or decode failed; [tries] counts, [MAX_TRIES] ends it).
  * A 429/503, a timeout or any other transport failure is NOT a place failure: it throws [PhotoPhaseRetry] without burning a try. Stops (cancellation, Offline only, the admission) propagate untouched.
  */
@@ -176,11 +194,8 @@ class PlaceImageFetcher(
     private val api: PlaceImageApi,
     private val codec: ThumbCodec,
     private val clock: () -> Long = System::currentTimeMillis,
-    private val pause: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
-    private val paceMs: Long = 1_000,
+    private val concurrency: DownloadConcurrency = DownloadConcurrency(),
 ) {
-    private var lastDownloadAt = Long.MIN_VALUE
-
     suspend fun fetch(batch: List<PhotoCandidate>, store: suspend (PlaceImageEntity) -> Unit): Counts {
         require(batch.size <= WikidataHttpSource.BATCH)
         var ok = 0; var none = 0; var skipped = 0; var failed = 0
@@ -206,15 +221,25 @@ class PlaceImageFetcher(
                 if (f == null) put(c, ImageState.NONE) else fileOf[c] = f
             }
             val info = fileOf.values.distinct().chunked(PlaceImageApi.COMMONS_BATCH).fold(emptyMap<String, CommonsFile>()) { acc, n -> acc + api.commonsFiles(n) }
+            val todo = ArrayList<Pair<PhotoCandidate, CommonsFile>>()
             for ((c, file) in fileOf) {
                 val f = info[file]
                 when {
                     f == null -> put(c, ImageState.NONE) // the file is gone on Commons
                     !f.free -> put(c, ImageState.SKIPPED)
                     f.mime != "image/jpeg" || f.thumbUrl == null -> put(c, ImageState.SKIPPED) // maps, flags and logos are SVG or PNG: JPEG photos only
-                    else -> download(c, f, ::put)
+                    else -> todo += c to f
                 }
             }
+            val lock = Mutex() // the store and the counters are used by one download at a time
+            val locked: suspend (PhotoCandidate, String, Int, Thumb?, CommonsFile?) -> Unit = { c, st, t, th, f -> lock.withLock { put(c, st, t, th, f) } }
+            var rest: List<Pair<PhotoCandidate, CommonsFile>> = todo
+            while (rest.isNotEmpty()) {
+                val wave = rest.take(concurrency.limit.coerceAtLeast(1)); rest = rest.drop(wave.size)
+                try { coroutineScope { wave.map { (c, f) -> async { download(c, f, locked) } }.awaitAll() } }
+                catch (e: PlaceHttpException) { if (e.code == 429 || e.code == 503) concurrency.onThrottle(); throw e }
+            }
+            concurrency.onCleanBatch()
         } catch (e: CancellationException) { throw e
         } catch (e: PhotoPhaseRetry) { throw e
         } catch (e: com.rokid.context.memory.place.PlaceOfflineOnly) { throw e
@@ -225,9 +250,6 @@ class PlaceImageFetcher(
     }
 
     private suspend fun download(c: PhotoCandidate, f: CommonsFile, put: suspend (PhotoCandidate, String, Int, Thumb?, CommonsFile?) -> Unit) {
-        val wait = lastDownloadAt + paceMs - clock()
-        if (lastDownloadAt != Long.MIN_VALUE && wait > 0) pause(wait)
-        lastDownloadAt = clock()
         val raw = try { api.thumbnail(f.thumbUrl!!) } catch (e: PlaceTooLarge) { return put(c, ImageState.SKIPPED, c.priorTries, null, null)
         } catch (e: PlaceHttpException) {
             if (e.code in intArrayOf(404, 403, 410, 400)) return put(c, ImageState.FAILED, c.priorTries + 1, null, null)

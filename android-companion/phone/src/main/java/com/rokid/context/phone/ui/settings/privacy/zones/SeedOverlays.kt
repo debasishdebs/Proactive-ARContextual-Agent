@@ -46,9 +46,12 @@ data class SeedAreaInfo(val id: String, val south: Double, val west: Double, val
 }
 
 /** B2: [ok] places with a photo, [none] without one (none free, skipped or failed for good) of [total] seeded places; [note] = why the rest waits (null = nothing to say). */
-data class AreaPhotos(val ok: Int, val none: Int, val total: Int, val note: String? = null) {
+data class AreaPhotos(val ok: Int, val none: Int, val total: Int, val note: String? = null, /** Downloaded photos already matched, of all downloaded photos on the phone (counts only). */ val matched: Int = 0, val toMatch: Int = 0) {
     val done: Int get() = (ok + none).coerceAtMost(total)
     val complete: Boolean get() = total <= 0 || done >= total
+    val matching: Boolean get() = complete && toMatch > 0 && matched < toMatch
+    /** Work is going on right now (photos downloading, or matching), so the list keeps refreshing; false while it waits for free Wi-Fi. */
+    val busy: Boolean get() = (!complete && note == null) || matching
 }
 
 /** A user pin as the map needs it: a dot (no name, no note). */
@@ -338,7 +341,10 @@ object SeedAreaList {
     fun name(index: Int, a: SeedAreaInfo): String = a.name?.takeIf { it.isNotBlank() } ?: "Seeded area ${index + 1}"
     fun cellCount(a: SeedAreaInfo): Long = SeedEstimate.boxOf(a.box)?.let { SeedEstimate.cells(it) } ?: 0L
     /** "Photos: 412 of 980, 37 without a photo" (+ " (waiting for free Wi-Fi)"): counts only; null when the area has no places or nothing is known. */
-    fun photosText(a: SeedAreaInfo): String? = a.photos?.takeIf { it.total > 0 }?.let { "Photos: ${it.done} of ${it.total}, ${it.none} without a photo" + (if (!it.complete) it.note?.let { n -> " ($n)" } ?: "" else "") }
+    fun photosText(a: SeedAreaInfo): String? = a.photos?.takeIf { it.total > 0 }?.let {
+        com.rokid.context.phone.place.PhotoStageText.line(a.seed != null, it.done, it.total, it.matched, it.toMatch, it.note)
+            ?: "Photos: ${it.done} of ${it.total}, ${it.none} without a photo"
+    }
     /** True while some area still has places without a decided photo: the list then offers "Retry photos". */
     fun photosIncomplete(areas: List<SeedAreaInfo>): Boolean = areas.any { it.photos?.complete == false }
     fun row(index: Int, a: SeedAreaInfo, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
@@ -449,7 +455,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             _state.update { it.copy(showPlaces = show) }
             _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, photoRetry = SeedAreaList.photosIncomplete(a), rates = r, pins = p, progress = SeedAreaList.progress(a)).keepSelection(a) }
             loadDots()
-            if (a.any { it.seed != null }) startPoll()
+            if (a.any { it.seed != null || it.photos?.busy == true }) startPoll()
         }
     }
 
@@ -467,7 +473,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
                 val a = runCatching { control.areas() }.getOrDefault(emptyList())
                 infos = a
                 _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, photoRetry = SeedAreaList.photosIncomplete(a), progress = SeedAreaList.progress(a)).keepSelection(a) }
-                a.any { it.seed != null }
+                a.any { it.seed != null || it.photos?.busy == true }
             }.collect {}
             loadDots() // the seed ended: its new places show
         }

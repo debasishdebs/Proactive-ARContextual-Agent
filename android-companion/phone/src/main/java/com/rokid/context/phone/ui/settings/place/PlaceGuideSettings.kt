@@ -196,8 +196,6 @@ interface PlaceGuideControl {
     var layerRefPhotos: Boolean
         get() = true
         set(@Suppress("UNUSED_PARAMETER") v) {}
-    /** B2 Developer button "Embed seed photos now": embeds the fetched photos once without the charging rule (heat still stops it). */
-    fun embedPhotosNow() {}
     /** Developer switches (all ON by default except best-of-k and show-all-attempts): Layer 1 (kill switch), Layer 2, Layer 3, several frames per glance, best-of-k instead of the mean, show NO_MATCH rows in Activity. */
     var layerPhoto: Boolean
         get() = true
@@ -415,8 +413,6 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     /** The nine numbers: stored clamped, the screen shows what was stored. */
     fun setPhotoMatch(c: com.rokid.context.memory.retrieval.PhotoMatchConfig) { control.photoMatch = c; _state.update { it.copy(photoMatch = control.photoMatch) } }
     fun resetPhotoMatch() { control.resetPhotoMatch(); _state.update { it.copy(photoMatch = control.photoMatch) } }
-    /** Developer: embeds the fetched seed photos once, without the charging rule. */
-    fun embedPhotosNow() { control.embedPhotosNow() }
     fun setLayer(which: String, on: Boolean) {
         when (which) { "refphotos" -> control.layerRefPhotos = on; "photo" -> control.layerPhoto = on; "online" -> control.layerOnline = on; "offline" -> control.layerOffline = on; "multi" -> control.multiFrame = on; "bestk" -> control.bestOfK = on; "all" -> control.showAllAttempts = on }
         _state.update { it.copy(layerRefPhotos = control.layerRefPhotos, layerPhoto = control.layerPhoto, layerOnline = control.layerOnline, layerOffline = control.layerOffline, multiFrame = control.multiFrame, bestOfK = control.bestOfK, showAllAttempts = control.showAllAttempts) }
@@ -921,7 +917,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
     PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, setLabel = vm::setLabel, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setExtraType = vm::setExtraType, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius, openManual = vm::openManual, updateManual = vm::updateManual, saveManual = vm::saveManual, cancelManual = vm::cancelManual, pickManualPhoto = vm::pickManualPhoto, fetchManualPhoto = vm::fetchManualPhoto, removeManualPhoto = vm::removeManualPhoto, saveManualWithoutPhoto = vm::saveManualWithoutPhoto, openPinPhoto = vm::openPinPhoto, updatePinPhoto = vm::updatePinPhoto, pickPinPhoto = vm::pickPinPhoto, fetchPinPhoto = vm::fetchPinPhoto, removePinPhoto = vm::removePinPhoto, savePinPhoto = vm::savePinPhoto, cancelPinPhoto = vm::cancelPinPhoto,
-        setConfirmedOnly = vm::setConfirmedOnly, setPinCardsNearby = vm::setPinCardsNearby, setCheckMode = vm::setCheckMode, embedPhotosNow = vm::embedPhotosNow, setPhotoMatch = vm::setPhotoMatch, resetPhotoMatch = vm::resetPhotoMatch, setLayer = vm::setLayer))
+        setConfirmedOnly = vm::setConfirmedOnly, setPinCardsNearby = vm::setPinCardsNearby, setCheckMode = vm::setCheckMode, setPhotoMatch = vm::setPhotoMatch, resetPhotoMatch = vm::resetPhotoMatch, setLayer = vm::setLayer))
 }
 
 /**
@@ -975,7 +971,7 @@ class PlaceGuideActions(
     val openPinPhoto: (String) -> Unit = {}, val updatePinPhoto: ((PinPhotoState) -> PinPhotoState) -> Unit = {}, val pickPinPhoto: (String?) -> Unit = {}, val fetchPinPhoto: () -> Unit = {}, val removePinPhoto: () -> Unit = {}, val savePinPhoto: () -> Unit = {}, val cancelPinPhoto: () -> Unit = {},
     /** Layered confirmation: the user switches, the check mode, the nine numbers and the Developer layer switches. */
     val setConfirmedOnly: (Boolean) -> Unit = {}, val setPinCardsNearby: (Boolean) -> Unit = {}, val setCheckMode: (com.rokid.context.work.frames.place.CheckMode) -> Unit = {},
-    val embedPhotosNow: () -> Unit = {}, val setPhotoMatch: (com.rokid.context.memory.retrieval.PhotoMatchConfig) -> Unit = {}, val resetPhotoMatch: () -> Unit = {}, val setLayer: (String, Boolean) -> Unit = { _, _ -> },
+    val setPhotoMatch: (com.rokid.context.memory.retrieval.PhotoMatchConfig) -> Unit = {}, val resetPhotoMatch: () -> Unit = {}, val setLayer: (String, Boolean) -> Unit = { _, _ -> },
 )
 
 @Composable
@@ -1021,9 +1017,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
         if (state.developerMode) item {
             SettingsCard {
                 Text("Photo check layers (Developer)", style = MaterialTheme.typography.titleMedium)
-                SwitchRow("Reference photos of seeded places", "On: photos are fetched on free Wi-Fi only and prepared while charging and not hot. Off: neither runs.", state.layerRefPhotos, { on.setLayer("refphotos", it) }, tag = "place_layer_refphotos")
-                SecondaryAction("Embed seed photos now", on.embedPhotosNow, tag = "place_embed_photos_now")
-                EmbedNowStatus()
+                SwitchRow("Reference photos of seeded places", "On: photos are downloaded on free Wi-Fi only, then matched on the phone unless it is too hot. Off: neither runs.", state.layerRefPhotos, { on.setLayer("refphotos", it) }, tag = "place_layer_refphotos")
                 SwitchRow("Layer 1: photo vs reference photos", "On the phone. Off = kill switch: the photo is never compared with reference photos.", state.layerPhoto, { on.setLayer("photo", it) }, tag = "place_layer_photo")
                 SwitchRow("Layer 2: online vision check", "Off = the online vision model is never called for places.", state.layerOnline, { on.setLayer("online", it) }, tag = "place_layer_online")
                 SwitchRow("Layer 3: offline guess", "Off = no offline guess (Maybe). The user switch above and the downloaded model still apply.", state.layerOffline, { on.setLayer("offline", it) }, tag = "place_layer_offline")
@@ -1361,23 +1355,4 @@ private fun PhotoMatchFields(cfg: com.rokid.context.memory.retrieval.PhotoMatchC
         TextFieldRow("Floor (0 = off)", f, { f = it; commit(h, it, m) }, tag = "place_thr_${key}_floor", number = true)
         TextFieldRow("Margin", m, { m = it; commit(h, f, it) }, tag = "place_thr_${key}_margin", number = true)
     }
-}
-
-/** Status line and determinate bar under "Embed seed photos now": the work state plus counts of embedded vs fetched photos. */
-@Composable
-private fun EmbedNowStatus() {
-    val ctx = androidx.compose.ui.platform.LocalContext.current.applicationContext
-    val wm = remember { runCatching { androidx.work.WorkManager.getInstance(ctx) }.getOrNull() } ?: return
-    val infos by remember { wm.getWorkInfosForUniqueWorkFlow(com.rokid.context.phone.place.PlaceEmbedWorker.UNIQUE_NOW) }.collectAsState(initial = emptyList())
-    val info = infos.firstOrNull()
-    var counts by remember { mutableStateOf(0 to 0) }
-    LaunchedEffect(info?.state) {
-        do {
-            counts = runCatching { com.rokid.context.phone.place.PlacePhotoWork(ctx).embedCounts() }.getOrDefault(counts)
-            if (info?.state == androidx.work.WorkInfo.State.RUNNING) kotlinx.coroutines.delay(2_000)
-        } while (info?.state == androidx.work.WorkInfo.State.RUNNING)
-    }
-    val line = com.rokid.context.phone.place.EmbedNowText.line(info?.state, info?.runAttemptCount ?: 0, counts.second, counts.first) ?: return
-    Text(line.text, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("place_embed_status"))
-    line.progress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth().testTag("place_embed_progress")) }
 }

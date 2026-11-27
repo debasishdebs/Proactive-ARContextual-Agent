@@ -83,7 +83,6 @@ class AndroidPlaceGuideControl(
             if (v) { PlacePhotoWork(app).ensure(); PlacePhotoWork(app).ensureEmbed() } else PlacePhotoWork(app).cancelAll()
         }
 
-    override fun embedPhotosNow() { PlacePhotoWork(app).embedNow() }
 
     override var layerPhoto: Boolean
         get() = com.rokid.context.orchestration.forget.DeveloperFlags.placeL1Photo(app)
@@ -244,6 +243,7 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
         val states = runCatching { seedWork.states(pack, seedAdmission(app)() != null) }.getOrDefault(emptyMap())
         val stats = runCatching { pack.areaStats() }.getOrDefault(emptyMap())
         val photoNote = PlacePhotoText.note(PhotoPhaseStore(app).get())
+        val matchCounts = runCatching { PlacePhotoWork(app).embedCounts() }.getOrDefault(0 to 0) // (downloaded, matched): one line for every area while matching runs
         return pack.areas().map {
             val st = states[it.blueZoneId]
             val live = st?.takeIf { s -> s.active }
@@ -257,7 +257,7 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
             val stored = if (check) runCatching { pack.cellStatuses(box) }.getOrNull() else null
             val t = com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaList.truth(status, live != null, st?.phase, failed, wanted, stored)
             val noOsm = if (t.status == com.rokid.context.memory.place.AREA_DONE && stored == null) (st?.counts?.noOsm ?: 0) else t.noOsm
-            com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, t.status, it.name, live, stats[it.blueZoneId]?.places, stats[it.blueZoneId]?.bytes ?: 0, it.seededAt, t.failed, t.cancelled, noOsm, savedColour = colours.get(it.blueZoneId), photos = stats[it.blueZoneId]?.let { x -> com.rokid.context.phone.ui.settings.privacy.zones.AreaPhotos(x.photoOk, x.photoNone, x.places, photoNote) })
+            com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, t.status, it.name, live, stats[it.blueZoneId]?.places, stats[it.blueZoneId]?.bytes ?: 0, it.seededAt, t.failed, t.cancelled, noOsm, savedColour = colours.get(it.blueZoneId), photos = stats[it.blueZoneId]?.let { x -> com.rokid.context.phone.ui.settings.privacy.zones.AreaPhotos(x.photoOk, x.photoNone, x.places, photoNote, matchCounts.second, matchCounts.first) })
         }
     }
     override suspend fun rates(): com.rokid.context.phone.ui.settings.privacy.zones.SeedRates {

@@ -78,8 +78,7 @@ class PlaceImagesTest {
     private fun file(n: String, free: Boolean = true, mime: String = "image/jpeg") = CommonsFile(n, "https://upload.wikimedia.org/t/$n", mime, "https://commons.wikimedia.org/wiki/File:$n", "Ann", "CC BY 4.0", "https://creativecommons.org/licenses/by/4.0/", free)
     private val codec = ThumbCodec { Thumb(it, 330, 220) }
     private var now = 1_000L
-    private val slept = mutableListOf<Long>()
-    private fun fetcher(api: Api, c: ThumbCodec = codec) = PlaceImageFetcher(api, c, { now }, { now += it; slept += it }, 1_000)
+    private fun fetcher(api: Api, c: ThumbCodec = codec, conc: DownloadConcurrency = DownloadConcurrency()) = PlaceImageFetcher(api, c, { now }, conc)
     private fun cands(vararg ids: String) = ids.map { PhotoCandidate(it, 0) }
 
     @Test fun leadImageIsPreferredP18IsTheFallbackAndNoImageIsNone() = runBlocking {
@@ -117,8 +116,37 @@ class PlaceImagesTest {
         val c = fetcher(a).fetch(cands("wd:Q1", "wd:Q2", "wd:Q3", "wd:Q4")) { rows += it }
         assertEquals(PlaceImageFetcher.Counts(ok = 2, none = 0, skipped = 1, failed = 1), c)
         assertEquals("FAILED", rows.single { it.placeId == "wd:Q2" }.status); assertEquals(1, rows.single { it.placeId == "wd:Q2" }.tries)
-        assertEquals(3, slept.size); assertTrue("gap of one second between downloads", slept.all { it in 1L..1_000L })
         assertTrue(rows.none { it.placeId == "wd:Q2" && it.jpeg != null })
+    }
+
+    @Test fun downloadsRunSeveralAtOnceButNeverMoreThanTheLimit() = runBlocking {
+        val a = Api(); for (i in 1..10) { a.refs["Q$i"] = WikidataImageRef(null, "f$i.jpg"); a.files["f$i.jpg"] = file("f$i.jpg"); a.bytes["https://upload.wikimedia.org/t/f$i.jpg"] = jpeg }
+        val live = java.util.concurrent.atomic.AtomicInteger(); val peak = java.util.concurrent.atomic.AtomicInteger()
+        val slow = object : PlaceImageApi by a {
+            override suspend fun thumbnail(url: String): ByteArray { val n = live.incrementAndGet(); peak.updateAndGet { maxOf(it, n) }; kotlinx.coroutines.delay(20); live.decrementAndGet(); return a.thumbnail(url) }
+        }
+        val rows = mutableListOf<com.rokid.context.memory.place.PlaceImageEntity>()
+        val c = PlaceImageFetcher(slow, codec, { now }, DownloadConcurrency(4)).fetch(cands(*Array(10) { "wd:Q${it + 1}" })) { rows += it }
+        assertEquals(10, c.ok); assertEquals(10, rows.size)
+        assertEquals(4, peak.get())
+    }
+
+    @Test fun a429DropsToOneConnectionAndItClimbsBackSlowly() {
+        val conc = DownloadConcurrency(4)
+        assertEquals(4, conc.limit)
+        conc.onThrottle(); assertEquals(1, conc.limit)
+        conc.onCleanBatch(); assertEquals(1, conc.limit)
+        conc.onCleanBatch(); assertEquals(2, conc.limit)
+        repeat(6) { conc.onCleanBatch() }; assertEquals(4, conc.limit)
+        conc.onCleanBatch(); conc.onCleanBatch(); assertEquals(4, conc.limit)
+    }
+
+    @Test fun aThrottledDownloadSetsTheLimitToOneAndAsksTheCallerToRetry() {
+        val a = Api(); for (i in 1..3) { a.refs["Q$i"] = WikidataImageRef(null, "f$i.jpg"); a.files["f$i.jpg"] = file("f$i.jpg"); a.bytes["https://upload.wikimedia.org/t/f$i.jpg"] = jpeg }
+        a.thumbError = { if (it.endsWith("f2.jpg")) PlaceHttpException(503, 9) else null }
+        val conc = DownloadConcurrency(4)
+        try { runBlocking { fetcher(a, conc = conc).fetch(cands("wd:Q1", "wd:Q2", "wd:Q3")) { } }; throw AssertionError("no retry") } catch (e: PhotoPhaseRetry) { }
+        assertEquals(1, conc.limit)
     }
 
     @Test fun pngAndWebpMagicPassTheCheckAndAnUndecodableOneFailsOnlyThatPlace() = runBlocking {
@@ -149,7 +177,8 @@ class PlaceImagesTest {
         a.thumbError = { if (boom && it.endsWith("f3.jpg")) PlaceHttpException(503) else null }
         val phase = PlaceImagePhase(p, fetcher(a), { "sp" })
         try { phase.run(); throw AssertionError("no stop") } catch (e: PhotoPhaseRetry) { }
-        assertEquals(setOf("wd:Q1", "wd:Q2"), p.imagesOf((1..5).map { "wd:Q$it" }).map { it.placeId }.toSet())
+        val kept = p.imagesOf((1..5).map { "wd:Q$it" }).map { it.placeId }.toSet()
+        assertTrue("what finished before the stop is kept, the stopped place has no row", "wd:Q1" in kept && "wd:Q3" !in kept)
         boom = false
         assertEquals(PhotoEnd.DONE, phase.run())
         val t = p.photoTotals(); assertEquals(6, t.seeded); assertEquals(5, t.ok); assertEquals(1, t.none); assertEquals(0, t.waiting) // osm place = none; the pin is not counted

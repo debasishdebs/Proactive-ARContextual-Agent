@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -185,7 +186,7 @@ fun MapCanvas(
     var lastTap by remember { mutableStateOf<Triple<Long, Float, Float>?>(null) }
     var preview by remember { mutableStateOf<Pair<Offset, Offset>?>(null) }
 
-    Box(Modifier.then(modifier).onSizeChanged { view.size = Size(it.width.toFloat(), it.height.toFloat()); view.vp = view.vp?.resized(view.size.width, view.size.height) }.semantics {
+    Box(Modifier.then(modifier).clipToBounds().onSizeChanged { view.size = Size(it.width.toFloat(), it.height.toFloat()); view.vp = view.vp?.resized(view.size.width, view.size.height) }.semantics {
         contentDescription = summary
         access?.let { a ->
             val acts = ArrayList<CustomAccessibilityAction>()

@@ -17,7 +17,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
-/** B2: embedding of stored place photos: gates (switch, thermal, charging), the Developer force that ignores charging only, resume, and a re-embed after a vector-space change from the STORED thumbnail. Fake embedder, synthetic bytes. */
+/** B2: embedding of stored place photos: gates (switch, thermal; no charging rule), resume, and a re-embed after a vector-space change from the STORED thumbnail. Fake embedder, synthetic bytes. */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class PlacePhotoEmbedderTest {
@@ -34,8 +34,8 @@ class PlacePhotoEmbedderTest {
     private fun place(id: String) = PlaceEntity(id, null, "N $id", "monument", 17.0, 78.0, 50, "s", "wikipedia:en", "p", 1L, true, false, 0, 10)
     private fun img(id: String, n: Byte = 1) = PlaceImageEntity(id, "OK", 0, byteArrayOf(n, 2, 3), 330, 220, "s", "f", "a", "l", null, null, null, null, null, null, 5, 3)
     private suspend fun seed(p: PlacePack, n: Int) { db.dao().putPlaces((1..n).map { place("wd:Q$it") }); p.putImages((1..n).map { img("wd:Q$it", it.toByte()) }) }
-    private fun embedder(p: PlacePack, e: Emb?, charging: Boolean = true, cool: Boolean = true, on: Boolean = true, batch: Int = 25, pauses: MutableList<Long> = mutableListOf()) =
-        PlacePhotoEmbedder(p, { e }, { charging }, { cool }, { on }, { 9L }, { pauses += it }, batch, 2_000)
+    private fun embedder(p: PlacePack, e: Emb?, cool: Boolean = true, on: Boolean = true, batch: Int = 25, pauses: MutableList<Long> = mutableListOf()) =
+        PlacePhotoEmbedder(p, { e }, { cool }, { on }, { 9L }, { pauses += it }, batch, 2_000)
 
     @Test fun embedsEveryStoredThumbnailAndMarksSpaceDimAndVersion() = runBlocking {
         val p = pack(); seed(p, 3); val e = Emb("sp1")
@@ -45,16 +45,10 @@ class PlacePhotoEmbedderTest {
         assertEquals(EmbedEnd.DONE, embedder(p, e).run()); assertEquals(3, e.calls) // nothing is embedded twice
     }
 
-    @Test fun notChargingWaitsButTheDeveloperButtonIgnoresChargingOnly() = runBlocking {
+    @Test fun heatStopsItAndTheSwitchOffStopsEverything() = runBlocking {
         val p = pack(); seed(p, 2); val e = Emb("sp1")
-        assertEquals(EmbedEnd.NOT_CHARGING, embedder(p, e, charging = false).run()); assertEquals(0, e.calls)
-        assertEquals(EmbedEnd.DONE, embedder(p, e, charging = false).run(ignoreCharging = true)); assertEquals(2, e.calls)
-    }
-
-    @Test fun heatStopsEvenTheDeveloperButtonAndTheSwitchOffStopsEverything() = runBlocking {
-        val p = pack(); seed(p, 2); val e = Emb("sp1")
-        assertEquals(EmbedEnd.HOT, embedder(p, e, cool = false).run(ignoreCharging = true)); assertEquals(EmbedEnd.HOT, embedder(p, e, cool = false).run())
-        assertEquals(EmbedEnd.OFF, embedder(p, e, on = false).run(ignoreCharging = true)); assertEquals(0, e.calls)
+        assertEquals(EmbedEnd.HOT, embedder(p, e, cool = false).run()); assertEquals(0, e.calls)
+        assertEquals(EmbedEnd.OFF, embedder(p, e, on = false).run()); assertEquals(0, e.calls)
     }
 
     @Test fun noActiveSpaceMeansNoVectorsAndNoCrash() = runBlocking {

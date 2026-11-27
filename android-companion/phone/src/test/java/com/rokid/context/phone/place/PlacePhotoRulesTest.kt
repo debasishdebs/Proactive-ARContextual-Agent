@@ -33,7 +33,7 @@ class PlacePhotoRulesTest {
 
     @Test fun theEmbedWorkerRetriesTheWaitsInsteadOfFinishingWithWorkLeft() {
         val c = code(named("PlacePhotoWorker.kt"))
-        assertTrue(c.contains("EmbedEnd.NOT_CHARGING, EmbedEnd.NO_SPACE -> if (runAttemptCount < MAX_WAITS) Result.retry()"))
+        assertTrue(c.contains("EmbedEnd.NO_SPACE -> if (runAttemptCount < MAX_WAITS) Result.retry()"))
         assertTrue("a finished embed run asks the fetch phase again (budget may be free)", c.contains("if (end == EmbedEnd.DONE) runCatching { PlacePhotoWork(applicationContext).ensureIfNeeded(pack) }"))
     }
 
@@ -52,18 +52,19 @@ class PlacePhotoRulesTest {
 
     @Test fun everyPhotoRequestIsAskedThroughTheFreeWifiGateAndTheUniqueWorkRequiresUnmetered() {
         val w = code(named("PlacePhotoWorker.kt"))
-        assertTrue(w.contains("SeedAdmission(admit)")); assertTrue(w.contains("NetworkType.UNMETERED")); assertTrue(w.contains("setRequiresCharging(true)"))
-        assertTrue("the Developer button does not set the charging constraint", w.substringAfter("fun embedNow()").substringBefore("fun cancelAll").let { !it.contains("setRequiresCharging") })
+        assertTrue(w.contains("SeedAdmission(admit)")); assertTrue(w.contains("NetworkType.UNMETERED"))
+        assertFalse("matching has no charging rule", w.contains("setRequiresCharging")); assertFalse("the Embed now button is gone", w.contains("embedNow"))
     }
 
     private fun area(photos: AreaPhotos?, places: Int? = 980) = SeedAreaInfo("a", 1.0, 2.0, 3.0, 4.0, "done", places = places, photos = photos)
 
     @Test fun theListLineIsCountsOnlyAndNamesTheWaitOnlyWhileIncomplete() {
-        assertEquals("Photos: 412 of 980, 37 without a photo (waiting for free Wi-Fi)", SeedAreaList.photosText(area(AreaPhotos(375, 37, 980, "waiting for free Wi-Fi"))))
+        assertEquals("Photos 412 of 980 (waiting for free Wi-Fi)", SeedAreaList.photosText(area(AreaPhotos(375, 37, 980, "waiting for free Wi-Fi"))))
         assertEquals("Photos: 980 of 980, 100 without a photo", SeedAreaList.photosText(area(AreaPhotos(880, 100, 980, "waiting for free Wi-Fi"))))
         assertNull(SeedAreaList.photosText(area(null))); assertNull(SeedAreaList.photosText(area(AreaPhotos(0, 0, 0))))
         assertTrue(SeedAreaList.photosIncomplete(listOf(area(AreaPhotos(1, 0, 5))))); assertFalse(SeedAreaList.photosIncomplete(listOf(area(AreaPhotos(5, 0, 5)))))
-        assertTrue(SeedAreaList.row(0, area(AreaPhotos(1, 0, 5))).contains("Photos: 1 of 5, 0 without a photo"))
+        assertTrue(SeedAreaList.row(0, area(AreaPhotos(1, 0, 5))).contains("Photos 1 of 5"))
+        assertEquals("Matching 3 of 10", SeedAreaList.photosText(area(AreaPhotos(880, 100, 980, null, matched = 3, toMatch = 10))))
     }
 
     @Test fun thePlaceGuideLineAndTheCreditLineAreSmallAndHonest() {
@@ -72,6 +73,15 @@ class PlacePhotoRulesTest {
         assertTrue(PlaceGuideModel.refPhotoLine(1, 1, capped = true).contains("storage is full"))
         assertEquals("Reference photo: Ann, CC BY-SA 4.0, Wikimedia Commons", PlaceHistoryModel.creditLine("Ann", "CC BY-SA 4.0"))
         assertEquals("Reference photo: Wikimedia Commons", PlaceHistoryModel.creditLine(null, " "))
+    }
+
+    @Test fun oneStageTextForPlacesPhotosAndMatching() {
+        assertEquals("Places", PhotoStageText.line(true, 0, 10, 0, 0, null))
+        assertEquals("Photos 4 of 10", PhotoStageText.line(false, 4, 10, 0, 0, null))
+        assertEquals("Photos 4 of 10 (waiting for free Wi-Fi)", PhotoStageText.line(false, 4, 10, 0, 0, "waiting for free Wi-Fi"))
+        assertEquals("Matching 2 of 8", PhotoStageText.line(false, 10, 10, 2, 8, "waiting for free Wi-Fi")) // all photos decided: the Wi-Fi note no longer applies
+        assertNull(PhotoStageText.line(false, 10, 10, 8, 8, null)); assertNull(PhotoStageText.line(false, 0, 0, 0, 0, null))
+        assertTrue(AreaPhotos(1, 0, 5).busy); assertFalse(AreaPhotos(1, 0, 5, "waiting for free Wi-Fi").busy); assertTrue(AreaPhotos(5, 0, 5, null, 1, 4).busy); assertFalse(AreaPhotos(5, 0, 5, null, 4, 4).busy)
     }
 
     @Test fun phaseNotesAreFixedPhrases() {

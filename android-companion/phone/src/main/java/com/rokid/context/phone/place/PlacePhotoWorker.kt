@@ -14,7 +14,6 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.rokid.context.connectors.place.PhotoEnd
@@ -115,9 +114,9 @@ class PlacePhotoWorker(appContext: Context, params: WorkerParameters) : Coroutin
         PcLog.i(TAG, "photo work run attempt=${runAttemptCount + 1}")
         return try {
             val pack = packOf(applicationContext)
-            val phase = PlaceImagePhase(pack, PlaceImageFetcher(apiOf(applicationContext), AndroidThumbCodec), { PlaceRefPhotos.activeSpace(applicationContext) ?: "-" })
+            val phase = PlaceImagePhase(pack, PlaceImageFetcher(apiOf(applicationContext), AndroidThumbCodec, concurrency = concurrency), { PlaceRefPhotos.activeSpace(applicationContext) ?: "-" })
             val end = withContext(Dispatchers.IO + SeedAdmission(admit)) {
-                phase.run { t -> runCatching { setProgress(Data.Builder().putInt("ok", t.ok).putInt("of", t.seeded).build()); setForeground(info(t.ok + t.none, t.seeded)) } }
+                phase.run { t -> runCatching { PlacePhotoWork(applicationContext).ensureEmbed() }; runCatching { setProgress(Data.Builder().putInt("ok", t.ok).putInt("of", t.seeded).build()); setForeground(info(t.ok + t.none, t.seeded)) } }
             }
             val t = packOf(applicationContext).photoTotals()
             val how = end.name; val n = t.seeded; val ok = t.ok; val failed = t.none; val left = t.waiting
@@ -156,6 +155,8 @@ class PlacePhotoWorker(appContext: Context, params: WorkerParameters) : Coroutin
         const val UNIQUE = "place_photos"
         const val MAX_ATTEMPTS = 8
         private const val TAG = "PcPlacePhotos"
+        /** One per process: after a 429/503 the next run (WorkManager retry) still starts with a single connection. */
+        private val concurrency = com.rokid.context.connectors.place.DownloadConcurrency()
         private const val CHANNEL = "place_photos"
         private const val NOTIFICATION_ID = 7312
         @androidx.annotation.VisibleForTesting internal var packOf: suspend (Context) -> com.rokid.context.memory.place.PlacePack = { PlaceGraph.readyPack(it) }
@@ -163,23 +164,22 @@ class PlacePhotoWorker(appContext: Context, params: WorkerParameters) : Coroutin
     }
 }
 
-/** Embeds the stored thumbnails (B2, owner D4): charging and not hot; the Developer button runs it once without the charging rule (`force`). */
+/** Embeds ("matching") the stored thumbnails right after they are downloaded (B2, owner decision): no charging rule; it stops only when the phone is thermally MODERATE or hotter and resumes later. */
 class PlaceEmbedWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
-        val force = inputData.getBoolean(FORCE, false)
         val pack = PlaceGraph.readyPack(applicationContext)
         val e = PlaceRefPhotos.embedder(applicationContext, pack)
-        val end = withContext(Dispatchers.Default) { e.run(ignoreCharging = force) }
-        val how = end.name; val ok = e.embedded; val failed = e.failed; val n = if (force) 1 else 0
-        PcLog.i(TAG, "photo embed how=$how ok=$ok failed=$failed force=$n")
-        // Waits are retried (WorkManager brings the charging constraint back; a model not ready yet is asked again with backoff), a few times; the app start queues it again too. A finished run may have freed budget for the fetch.
+        val end = withContext(Dispatchers.Default) { e.run() }
+        val how = end.name; val ok = e.embedded; val failed = e.failed
+        PcLog.i(TAG, "photo embed how=$how ok=$ok failed=$failed")
+        // A hot phone is asked again with backoff; a model not ready yet is retried a few times (the app start queues it again too). A finished run may have freed budget for the fetch.
         if (end == EmbedEnd.DONE) runCatching { PlacePhotoWork(applicationContext).ensureIfNeeded(pack) }
-        return when (end) { EmbedEnd.HOT -> Result.retry(); EmbedEnd.NOT_CHARGING, EmbedEnd.NO_SPACE -> if (runAttemptCount < MAX_WAITS) Result.retry() else Result.success(); else -> Result.success() }
+        return when (end) { EmbedEnd.HOT -> Result.retry(); EmbedEnd.NO_SPACE -> if (runAttemptCount < MAX_WAITS) Result.retry() else Result.success(); else -> Result.success() }
     }
-    companion object { const val FORCE = "force"; const val UNIQUE = "place_photo_embed"; const val MAX_WAITS = 6; const val UNIQUE_NOW = "place_photo_embed_now"; private const val TAG = "PcPlacePhotos" }
+    companion object { const val UNIQUE = "place_photo_embed"; const val MAX_WAITS = 6; private const val TAG = "PcPlacePhotos" }
 }
 
-/** Queues and cancels the two photo works. Every call is cheap and idempotent (KEEP). */
+/** Queues and cancels the two photo works (fetch, then matching). Every call is cheap and idempotent (KEEP). */
 class PlacePhotoWork(private val app: Context, private val wm: () -> WorkManager = { WorkManager.getInstance(app) }) {
     /** Photo phase: queued after a seed, at app start (catch-up for areas seeded earlier) and by Retry. Free Wi-Fi only (the constraint; the gate asks again per request). */
     fun ensure(replace: Boolean = false) {
@@ -201,17 +201,11 @@ class PlacePhotoWork(private val app: Context, private val wm: () -> WorkManager
     /** The "Retry" button: starts the phase again (failed places with tries left included). */
     fun retry() = ensure(replace = true)
 
-    /** Embed: only while charging (WorkManager constraint, plus the worker's own gate) and not hot. */
+    /** Embed ("matching"): queued as soon as photos are stored; no charging or network constraint (the worker stops itself when the phone is too hot). */
     fun ensureEmbed() {
         if (!DeveloperFlags.placeRefPhotos(app)) return
-        val req = OneTimeWorkRequestBuilder<PlaceEmbedWorker>().setConstraints(Constraints.Builder().setRequiresCharging(true).build()).setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 2, TimeUnit.MINUTES).build()
+        val req = OneTimeWorkRequestBuilder<PlaceEmbedWorker>().setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 2, TimeUnit.MINUTES).build()
         wm().enqueueUniqueWork(PlaceEmbedWorker.UNIQUE, ExistingWorkPolicy.KEEP, req)
-    }
-
-    /** Developer "Embed seed photos now": ignores the charging rule only (heat still stops it). */
-    fun embedNow() {
-        val req = OneTimeWorkRequestBuilder<PlaceEmbedWorker>().setInputData(Data.Builder().putBoolean(PlaceEmbedWorker.FORCE, true).build()).build()
-        wm().enqueueUniqueWork(PlaceEmbedWorker.UNIQUE_NOW, ExistingWorkPolicy.REPLACE, req)
     }
 
     /** Counts only: (photos fetched, of those already embedded in the active space). */
@@ -222,25 +216,7 @@ class PlacePhotoWork(private val app: Context, private val wm: () -> WorkManager
         return fetched to (fetched - pack.needsEmbed(space, 100_000).size).coerceAtLeast(0)
     }
 
-    fun cancelAll() { wm().cancelUniqueWork(PlacePhotoWorker.UNIQUE); wm().cancelUniqueWork(PlaceEmbedWorker.UNIQUE); wm().cancelUniqueWork(PlaceEmbedWorker.UNIQUE_NOW); PhotoPhaseStore(app).clear() }
-}
-
-/** The status line under "Embed seed photos now": plain words from the work state and counts (no names). */
-object EmbedNowText {
-    data class Line(val text: String, val progress: Float? = null)
-    const val NO_PHOTOS = "No seed photos fetched yet; they download on free Wi-Fi first"
-    /** [state] null = never started. [attempts] = retries so far (a wait: hot phone or the model not ready). */
-    fun line(state: WorkInfo.State?, attempts: Int, embedded: Int, fetched: Int): Line? = when {
-        state == null -> null
-        state == WorkInfo.State.ENQUEUED && attempts > 0 -> Line("Waiting: the phone is too hot or the model is not ready; it tries again soon")
-        state == WorkInfo.State.ENQUEUED || state == WorkInfo.State.BLOCKED -> Line("Queued")
-        state == WorkInfo.State.RUNNING -> if (fetched <= 0) Line(NO_PHOTOS) else Line("Embedding photos: $embedded of $fetched", (embedded.toFloat() / fetched).coerceIn(0f, 1f))
-        state == WorkInfo.State.SUCCEEDED -> if (fetched <= 0) Line(NO_PHOTOS) else Line("Done: $embedded embedded" + if (embedded < fetched) " of $fetched fetched" else "")
-        state == WorkInfo.State.FAILED -> Line("Stopped: embedding failed")
-        else -> Line("Cancelled")
-    }
-    /** The fetch phase in one line, counts only (for the seeded-area list). */
-    fun photosLine(fetched: Int, embedded: Int, seeded: Int): String = "photos: $fetched of $seeded fetched, $embedded embedded"
+    fun cancelAll() { wm().cancelUniqueWork(PlacePhotoWorker.UNIQUE); wm().cancelUniqueWork(PlaceEmbedWorker.UNIQUE); PhotoPhaseStore(app).clear() }
 }
 
 /** The words of the photo phase for the lists (fixed phrases, no names). */
@@ -253,5 +229,17 @@ object PlacePhotoText {
         PhotoPhase.FAILED -> "failed, tap Retry photos"
         PhotoPhase.CAP -> "photo storage is full"
         PhotoPhase.IDLE, PhotoPhase.WAITING_WIFI -> "waiting for free Wi-Fi"
+    }
+}
+
+/** The ONE overall progress of an area's photos, in words (counts only): "Places", "Photos x of y", "Matching x of y". */
+object PhotoStageText {
+    /** [placesLive]: the area's places are still being seeded. [matched]/[toMatch]: downloaded photos already matched, of all downloaded photos (whole phone). [note]: why photos wait, null while they run. */
+    fun line(placesLive: Boolean, done: Int, total: Int, matched: Int, toMatch: Int, note: String?): String? = when {
+        placesLive -> "Places"
+        total <= 0 -> null
+        done < total -> "Photos $done of $total" + (note?.let { " ($it)" } ?: "")
+        toMatch > 0 && matched < toMatch -> "Matching $matched of $toMatch"
+        else -> null
     }
 }

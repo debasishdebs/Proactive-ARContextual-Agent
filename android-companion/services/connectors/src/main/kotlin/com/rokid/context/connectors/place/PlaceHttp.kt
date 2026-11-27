@@ -87,6 +87,9 @@ class UrlConnectionPlaceHttp(
         return send(url, null, maxBytes.coerceAtMost(this.maxBytes), binary = true)
     }
 
+    /** The image host is asked by up to four downloads at once, so its start gap is short; every other host keeps [minGapMs]. */
+    private fun gapFor(host: String): Long = if (host in PlaceImageRules.HOSTS) minOf(minGapMs, PlaceImageRules.IMAGE_GAP_MS) else minGapMs
+
     private fun privacyGate() {
         val m = try { privacy() } catch (e: Exception) { ModelPrivacy.OFFLINE_ONLY }
         if (m != ModelPrivacy.AUTO) throw PlaceOfflineOnly()
@@ -136,7 +139,7 @@ class UrlConnectionPlaceHttp(
         val ticket = currentZoneTicket()
         ticket?.check()
         lock.withLock {
-            val wait = (lastByHost[u.host] ?: Long.MIN_VALUE).let { if (it == Long.MIN_VALUE) 0L else it + minGapMs - clock() }
+            val wait = (lastByHost[u.host] ?: Long.MIN_VALUE).let { if (it == Long.MIN_VALUE) 0L else it + gapFor(u.host) - clock() }
             if (wait > 0) pause(wait)
             lastByHost[u.host] = clock()
         }
@@ -212,4 +215,6 @@ object PlaceImageRules {
     const val MAX_SIDE = 336
     /** Size cap of one downloaded thumbnail. */
     const val MAX_BYTES = 150 * 1024
+    /** The shortest gap between two downloads STARTING on the image host (up to 4 connections at once). */
+    const val IMAGE_GAP_MS = 100L
 }
