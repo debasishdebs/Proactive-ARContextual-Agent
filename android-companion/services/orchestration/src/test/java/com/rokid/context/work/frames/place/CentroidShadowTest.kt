@@ -19,7 +19,7 @@ class CentroidShadowTest {
         val l = lines.single()
         assertTrue(l, l.startsWith("place shadow3 v=1 thrV=${MatchThresholds.VERSION} space=nomic pins=3 withCentroid=2 noCentroid=1 ranked=2 "))
         assertTrue(l, l.contains("band=borderline")); assertFalse(l, l.contains("user:"))
-        assertEquals(0, MatchThresholds.VERSION)
+        assertEquals(1, MatchThresholds.VERSION)
     }
 
     @Test fun aFencedAttemptLogsNothing() = runBlocking { shadow(true).observe(floatArrayOf(1f, 0f), "nomic-v1", listOf("user:a"), { false }); assertTrue(lines.isEmpty()) }

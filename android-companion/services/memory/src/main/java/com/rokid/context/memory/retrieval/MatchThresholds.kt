@@ -10,8 +10,24 @@ package com.rokid.context.memory.retrieval
  * and bump [VERSION]. Ranking never skips the model call while the shadow flags are the only consumers (this object is read by the shadow log only).
  */
 object MatchThresholds {
-    /** Bump whenever any constant below changes; the shadow compare line prints it as `thrV`. 0 = nothing calibrated. */
-    const val VERSION = 0
+    /**
+     * Bump whenever any constant below changes; the shadow compare line prints it as `thrV`. 0 = nothing calibrated. 1 = the EXAMPLE photo-confirm numbers below (Layer 1, [PhotoMatchConfig]) exist; the per-space accept / reject
+     * constants of the shadow bands are still NOT SET.
+     */
+    const val VERSION = 1
+
+    /**
+     * Layer 1 example values per reference kind (design 2026-11-27 section 3.1), milli: example, NOT calibrated. From the Mac run of 26 Nov (98 percent precision accept, reject-below); the margins are first guesses.
+     * WEB has no data at all: its FLOOR is off. Step A3 replaces them by the 95 percent values; the owner edits them in Settings > Place Guide (Developer mode).
+     */
+    const val OWN_HIGH_MILLI = 945
+    const val OWN_FLOOR_MILLI = 846
+    const val OWN_MARGIN_MILLI = 20
+    const val CENTROID_HIGH_MILLI = 967
+    const val CENTROID_FLOOR_MILLI = 879
+    const val CENTROID_MARGIN_MILLI = 20
+    const val WEB_HIGH_MILLI = 945
+    const val WEB_MARGIN_MILLI = 20
 
     const val NOT_SET_ACCEPT = Int.MAX_VALUE
     const val NOT_SET_REJECT = Int.MIN_VALUE

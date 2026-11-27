@@ -51,7 +51,7 @@ class SiglipShadowCompareTest {
         val r = Rig(scope, true, { _, _, _ -> n }, { _, _, _ -> s })
         assertSame("Nomic's outcome is returned as it is", n, r.c.score("frame-secret", hits) { true })
         val line = r.waitLine()
-        assertTrue(line, line.startsWith("place shadow2 v=1 thrV=0 cand=2 nomic=ok sig=ok"))
+        assertTrue(line, line.startsWith("place shadow2 v=1 thrV=1 cand=2 nomic=ok sig=ok"))
         assertTrue(line, line.contains("chN=text chS=text top1Same=true top3Overlap=2 topN=2/2"))
         assertTrue(line, line.contains("scoreN=ge900") && line.contains("scoreS=lt400"))
         assertTrue(line, line.contains("bandN=borderline bandS=borderline"))

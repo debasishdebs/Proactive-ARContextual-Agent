@@ -9,7 +9,7 @@ import org.junit.Test
 
 class MatchThresholdsTest {
     @Test fun `uncalibrated defaults never accept and never reject`() {
-        assertEquals(0, MatchThresholds.VERSION)
+        assertEquals(1, MatchThresholds.VERSION) // 1 = the example photo-confirm numbers exist; the per-space bands below are still NOT SET
         for (s in Space.values()) for (c in listOf(Channel.IMAGE, Channel.TEXT, Channel.NONE)) for (m in listOf(-1000, 0, 500, 1000, null))
             assertEquals("$s $c $m", Band.BORDERLINE, MatchThresholds.band(s, c, m, 100))
     }
