@@ -221,12 +221,12 @@ diag_state() {
       printf "Y %d %d %s\n", hb, tdiff(st, last), (hbt < 0 ? "-" : tdiff(hbt, last))
     }'
 }
-# forbidden shapes in the message text of a log (stdin): "latlon http at" line counts; the timestamp is not scanned
+# forbidden shapes in the message text of a log (stdin): "latlon url at" line counts (url = a real http:// or https:// link; the bare word http, e.g. the class name PlaceHttpException, is not one); the timestamp is not scanned
 forbidden_counts() {
   awk '
     { l = $0; sub(/^[0-9][0-9]-[0-9][0-9] [0-9:.]+ /, "", l)
       if (l ~ /-?[0-9][0-9]?[0-9]?\.[0-9][0-9][0-9][0-9]*[ ,;:\/=]+-?[0-9][0-9]?[0-9]?\.[0-9][0-9][0-9][0-9]*/) a++
-      if (tolower(l) ~ /http/) b++
+      if (tolower(l) ~ /https?:\/\//) b++
       if (index(l, "@") > 0) c++ }
     END { printf "%d %d %d\n", a + 0, b + 0, c + 0 }'
 }
@@ -488,7 +488,8 @@ run_fixtures() {
   eq "forbidden: clean" "0 0 0" "$(printf '11-20 08:00:00.000 I PcDiag heapMb=12.5 batt=80\n11-20 08:00:01.000 I PlaceSampler place attempt outcome=NONE distB=12\n' | forbidden_counts)"
   eq "forbidden: lat lon pair" "1 0 0" "$(printf '11-20 08:00:00.000 I X at 17.385044, 78.486671 ok\n' | forbidden_counts)"
   eq "forbidden: negative pair slash" "1 0 0" "$(printf '11-20 08:00:00.000 I X -33.8688/151.2093\n' | forbidden_counts)"
-  eq "forbidden: http either case" "0 2 0" "$(printf '11-20 08:00:00.000 I X https://a\n11-20 08:00:00.000 I X HTTP/1.1\n' | forbidden_counts)"
+  eq "forbidden: url either case" "0 2 0" "$(printf '11-20 08:00:00.000 I X https://a\n11-20 08:00:00.000 I X HTTP://B\n' | forbidden_counts)"
+  eq "forbidden: class name PlaceHttpException is not a url" "0 0 0" "$(printf '11-20 08:00:00.000 I PlaceSeed cell failed (PlaceHttpException)\n11-20 08:00:00.000 I X HTTP/1.1 200\n11-20 08:00:00.000 I X httpcode=429\n' | forbidden_counts)"
   eq "forbidden: at sign" "0 0 1" "$(printf '11-20 08:00:00.000 I X a@b\n' | forbidden_counts)"
   eq "forbidden: timestamp alone is not a pair" "0 0 0" "$(printf '11-20 08:00:00.123 I X 10.500 only\n' | forbidden_counts)"
   eq "forbidden: empty" "0 0 0" "$(printf '' | forbidden_counts)"
@@ -775,7 +776,7 @@ check_trip_log_content() {
   elif [ "$ran" -gt "$HB_MAX_MIN" ]; then res PASS "detailed log" "OFF inferred: no heartbeat in ${ran} min of running (milestones only)"
   else res UNKNOWN "detailed log" "app ran only ${ran} min: too short to see a heartbeat (wait > ${HB_MAX_MIN} min)"; fi
   set -- $(forbidden_counts < "$TMP/main.log"); lat="$1"; http="$2"; at="$3"
-  if [ "$lat" != 0 ] || [ "$http" != 0 ]; then res FAIL "log forbidden shapes" "pca.log lines with coordinate-like pairs=$lat, 'http'=$http, '@'=$at (counts only)"
+  if [ "$lat" != 0 ] || [ "$http" != 0 ]; then res FAIL "log forbidden shapes" "pca.log lines with coordinate-like pairs=$lat, 'http(s)://'=$http, '@'=$at (counts only)"
   elif [ "$at" != 0 ]; then res WARN "log forbidden shapes" "pca.log lines with '@'=$at (no coordinates/http)"
   else res PASS "log forbidden shapes" "pca.log: coordinate-like pairs=0 http=0 @=0"; fi
   pc="$(pcdata_counts < "$TMP/main.log")"; cost="$(pcdata_last_cost < "$TMP/main.log")"
