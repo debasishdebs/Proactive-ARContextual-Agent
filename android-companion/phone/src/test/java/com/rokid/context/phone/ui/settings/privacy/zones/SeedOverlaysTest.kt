@@ -220,6 +220,33 @@ class SeedMapViewModelTest {
         v.focusArea("nope"); assertEquals(2, v.state.value.focusSeq)
     }
 
+    @Test fun theDraftBoxIsClearedWhenAnySeedStartsAndNeverComesBackFromRefresh() = runTest {
+        val v = vm(); v.refresh()
+        val s0 = v.state.value.clearDraftSeq
+        v.requestSeed(small) // new seed
+        val s1 = v.state.value.clearDraftSeq; assertTrue(s1 > s0)
+        v.refresh(); v.refresh(); assertEquals(s1, v.state.value.clearDraftSeq) // an area refresh or recomposition does not clear or reload anything
+        assertNull(v.state.value.editBox); assertEquals(0, v.state.value.editSeq)
+        v.editArea("seed:1"); val s2 = v.state.value.clearDraftSeq
+        v.requestSeed(small) // reseed from Edit box
+        assertTrue(v.state.value.clearDraftSeq > s2); assertNull(v.state.value.editBox)
+        val s3 = v.state.value.clearDraftSeq
+        v.requestSeedAgain(small) // Seed again
+        assertTrue(v.state.value.clearDraftSeq > s3)
+        val s4 = v.state.value.clearDraftSeq
+        v.retryFailed("seed:1"); assertTrue(v.state.value.clearDraftSeq > s4) // Retry failed cells
+    }
+
+    @Test fun aLargeSeedClearsTheDraftOnlyOnceItIsConfirmedAndCancelOrClearBoxClearIt() = runTest {
+        val v = vm(); v.refresh(); val s0 = v.state.value.clearDraftSeq
+        v.requestSeed(large); assertEquals(s0, v.state.value.clearDraftSeq) // waiting for the yes
+        v.confirmSeed(); assertTrue(v.state.value.clearDraftSeq > s0)
+        val w = vm(); w.refresh(); w.editArea("seed:1"); val c0 = w.state.value.clearDraftSeq
+        w.endEdit(); assertTrue(w.state.value.clearDraftSeq > c0) // Cancel edit
+        val c1 = w.state.value.clearDraftSeq; w.clearDraft(); assertTrue(w.state.value.clearDraftSeq > c1) // Clear box / leaving
+        assertEquals(0, vm().state.value.clearDraftSeq) // a fresh screen starts with no draft clear pending and no draft: only Draw a box / Edit box make one
+    }
+
     @Test fun editBoxLoadsTheAreaIntoTheDraftAndSeedThisBoxReseedsThatSameArea() = runTest {
         val v = vm(); v.refresh()
         assertNull(v.state.value.editingId)

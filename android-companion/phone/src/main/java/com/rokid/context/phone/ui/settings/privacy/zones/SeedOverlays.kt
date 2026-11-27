@@ -261,6 +261,8 @@ data class SeedMapUiState(
     /** Counts up on every "Edit box" tap; the screen loads [editBox] into its draft box when it changes. */
     val editSeq: Int = 0,
     val editBox: DoubleArray? = null,
+    /** Counts up whenever the draft box must go (a seed was queued or started, a retry, Cancel edit): both screens drop their draft box when it changes. The box only comes back from "Draw a box" / "Edit box". */
+    val clearDraftSeq: Int = 0,
     /** Seeded places as dots: the stored places in view (at most [SeedDots.CAP]) when the view is close enough. */
     val dots: List<com.rokid.context.memory.place.PlaceDot> = emptyList(),
     /** More places than [SeedDots.CAP] are in view: the map says to zoom in. */
@@ -409,7 +411,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
     }
 
     /** Leaves "Edit box" (Cancel, Clear box): the area is untouched. */
-    fun endEdit() = _state.update { if (it.editingId == null) it else it.copy(editingId = null, editBox = null) }
+    fun endEdit() = _state.update { it.copy(editingId = null, editBox = null, clearDraftSeq = it.clearDraftSeq + 1) }
 
     /** A tap on the map background clears the highlight (the map keeps its view). */
     fun clearFocus() = _state.update { if (it.selectedId == null) it else it.copy(selectedId = null, focusBox = null) }
@@ -459,10 +461,13 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
     fun retryFailed(id: String) {
         viewModelScope.launch(work) {
             val r = runCatching { control.retry(id) }.getOrElse { Result.failure(it) }
-            _state.update { it.copy(message = r.fold({ o -> o.message }, { t -> seedFailureText(t) }), messageIsError = r.isFailure) }
+            _state.update { it.copy(message = r.fold({ o -> o.message }, { t -> seedFailureText(t) }), messageIsError = r.isFailure, clearDraftSeq = it.clearDraftSeq + 1) }
             refresh()
         }
     }
+
+    /** The draft box is dropped (Clear box, leaving): the screens watch [SeedMapUiState.clearDraftSeq]. */
+    fun clearDraft() = _state.update { it.copy(clearDraftSeq = it.clearDraftSeq + 1) }
 
     fun cancelSeed(id: String) { viewModelScope.launch(work) { runCatching { control.cancelSeed(id) }; refresh() } }
 
@@ -498,7 +503,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
 
     private fun start(box: GeoBox, edit: String? = null) {
         if (_state.value.seeding) return
-        _state.update { it.copy(seeding = true, message = "Starting…", messageIsError = false) }
+        _state.update { it.copy(seeding = true, message = "Starting…", messageIsError = false, clearDraftSeq = it.clearDraftSeq + 1) }
         viewModelScope.launch(work) {
             val r = if (edit != null) control.reseed(edit, box) else control.seed(box)
             if (r.isSuccess && edit != null) _state.update { it.copy(editingId = null, editBox = null) }
