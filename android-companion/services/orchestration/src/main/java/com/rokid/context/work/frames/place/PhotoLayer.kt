@@ -38,6 +38,8 @@ internal class PhotoLayer(
     private val storedVector: suspend (frameId: String, spaceId: String) -> FloatArray? = { _, _ -> null },
     /** B1: seeded place id -> the vector of its public reference photo in [spaceId] (kind WEB, `place_image`). A place without a photo, or with a vector of another space, is simply absent: it stays in the list. */
     private val webRefs: suspend (spaceId: String, placeIds: List<String>) -> Map<String, FloatArray> = { _, _ -> emptyMap() },
+    /** B3 loop guard: place id -> the stored vectors of its live REF Moments in [spaceId] (confirmed glances, scored with the OWN numbers). A frame without a vector is simply absent. */
+    private val glanceRefs: suspend (spaceId: String, placeIds: List<String>) -> Map<String, List<FloatArray>> = { _, _ -> emptyMap() },
     private val glance: suspend (frameId: String, spaceId: String, windowMs: Long) -> Glance? = { _, _, _ -> null },
     private val config: () -> PhotoMatchConfig = { PhotoMatchConfig.DEFAULT },
     /** Null = multi-frame OFF (only the dwell frame); else the settings (window, frames, similarity, mean or best-of-k). */
@@ -60,9 +62,10 @@ internal class PhotoLayer(
         val cent: Map<String, FloatArray> = if (pins.isEmpty()) emptyMap() else centroids(e.spaceId, pins.map { it.id })
         val seededIds = ids.filter { !UserPlace.isUserId(it) }.distinct()
         val web: Map<String, FloatArray> = if (seededIds.isEmpty()) emptyMap() else webRefs(e.spaceId, seededIds)
+        val glanced: Map<String, List<FloatArray>> = glanceRefs(e.spaceId, ids.distinct())
         if (!live()) return PhotoLayerOutcome.Skipped("fenced")
         // No candidate has a reference: nothing to compare with, and no embed is spent.
-        if (own.values.all { it.isEmpty() } && cent.isEmpty() && web.isEmpty()) return PhotoLayerOutcome.Decided(PhotoConfirm.noReferences(ids), 0)
+        if (own.values.all { it.isEmpty() } && cent.isEmpty() && web.isEmpty() && glanced.values.all { it.isEmpty() }) return PhotoLayerOutcome.Decided(PhotoConfirm.noReferences(ids), 0)
         val dwell = storedVector(frameId, e.spaceId) ?: run {
             if (!mayEmbed()) return PhotoLayerOutcome.Skipped("hot")
             val jpeg = photo(frameId) ?: return PhotoLayerOutcome.Skipped("no_photo")
@@ -76,6 +79,7 @@ internal class PhotoLayer(
         val places = ids.distinct().map { id ->
             val refs = ArrayList<PhotoConfirm.Ref>()
             own[id].orEmpty().forEach { refs += PhotoConfirm.Ref(RefKind.OWN, it) }
+            glanced[id].orEmpty().forEach { refs += PhotoConfirm.Ref(RefKind.OWN, it) } // a confirmed glance is the owner's own photo of the place
             cent[id]?.let { refs += PhotoConfirm.Ref(RefKind.OWN_CENTROID, it) }
             web[id]?.let { refs += PhotoConfirm.Ref(RefKind.WEB, it) }
             PhotoConfirm.PlaceRefs(id, refs)

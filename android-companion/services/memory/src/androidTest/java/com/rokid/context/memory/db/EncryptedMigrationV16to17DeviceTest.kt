@@ -83,9 +83,9 @@ class EncryptedMigrationV16to17DeviceTest {
         repeat(2) {
             val db = Room.databaseBuilder(ctx, ContextDatabase::class.java, name)
                 .openHelperFactory(DatabaseFactory.ensureOpenParams({ key.copyOf() }))
-                .addMigrations(MIGRATION_16_17, MIGRATION_17_18).build()
+                .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19).build()
             try {
-                assertEquals(18, db.openHelper.writableDatabase.version) // the app opens at the latest version: the v17 file takes MIGRATION_17_18 on its first reopen
+                assertEquals(19, db.openHelper.writableDatabase.version) // the app opens at the latest version: the v17 file takes MIGRATION_17_18 on its first reopen
                 before.forEach { (t, n) -> assertEquals("reopen rows of $t", n, count(db.openHelper.writableDatabase, t)) }
                 assertEquals(1, MemoryRepository(db.memoryDao()).search("walrus", 5).size)
                 assertEquals(1, MemoryRepository(db.memoryDao()).search("दूध", 5).size)
@@ -106,7 +106,7 @@ class EncryptedMigrationV16to17DeviceTest {
         } catch (e: Exception) { /* expected: not a database / file is not a database */ } finally { runCatching { db.close() } }
         // and the right key still opens it: nothing was rewritten or dropped to plaintext
         assertEncryptedOnDisk()
-        val ok = Room.databaseBuilder(ctx, ContextDatabase::class.java, name).openHelperFactory(SupportOpenHelperFactory(key.copyOf())).addMigrations(MIGRATION_17_18).build()
+        val ok = Room.databaseBuilder(ctx, ContextDatabase::class.java, name).openHelperFactory(SupportOpenHelperFactory(key.copyOf())).addMigrations(MIGRATION_17_18, MIGRATION_18_19).build()
         try { assertEquals(2, count(ok.openHelper.writableDatabase, "ask")) } finally { ok.close() }
     }
 }

@@ -115,6 +115,6 @@ class ActivityKeysetDaoTest {
     }
 
     @Test fun theDatabaseVersionIsEighteen() {
-        assertEquals("pagination adds queries only; the migrations since v16 are the ruled v17 (ask.sourceStates, Forget M5) and v18 (place_card_log, moment_location, scene_centroid, model_attribution)", 18, db.openHelper.readableDatabase.version)
+        assertEquals("pagination adds queries only; the migrations since v16 are the ruled v17 (ask.sourceStates, Forget M5) v18 (place_card_log, moment_location, scene_centroid, model_attribution) and v19 (place_card_log eval, label, labelAt)", 19, db.openHelper.readableDatabase.version)
     }
 }

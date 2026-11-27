@@ -22,7 +22,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MomentSensorEntity::class,
         PlaceCardLogEntity::class, MomentLocationEntity::class, SceneCentroidEntity::class, ModelAttributionEntity::class, PlaceLinkEntity::class,
     ],
-    version = 18,
+    version = 19,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -383,5 +383,17 @@ val MIGRATION_17_18: Migration = object : Migration(17, 18) {
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_place_link_momentId` ON `place_link` (`momentId`)")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_place_link_atMs` ON `place_link` (`atMs`)")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_place_link_anchorId` ON `place_link` (`anchorId`)")
+    }
+}
+
+/**
+ * v18 -> v19 (layered place confirmation B3, decision D9): three nullable columns on `place_card_log`, nothing else. `eval` = the per-attempt layer record (JSON, numbers, place ids and tokens only); `label` = the owner's
+ * RIGHT / WRONG / NOT_A_PLACE tap; `labelAt` = when. Additive: no row is read or rewritten, no default, no index, no destructive fallback. The SQL equals the exported `19.json`.
+ */
+val MIGRATION_18_19: Migration = object : Migration(18, 19) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `place_card_log` ADD COLUMN `eval` TEXT")
+        db.execSQL("ALTER TABLE `place_card_log` ADD COLUMN `label` TEXT")
+        db.execSQL("ALTER TABLE `place_card_log` ADD COLUMN `labelAt` INTEGER")
     }
 }

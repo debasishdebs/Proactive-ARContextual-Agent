@@ -106,6 +106,8 @@ data class PlacePolicy(
     /** Developer layer switches (default ON). */
     val l1: Boolean = true,
     val l2: Boolean = true,
+    /** The nine Layer 1 numbers in force: only the FLOOR of a kind is read here (the loop guard of B3: L2 confirmed AND the Layer 1 score at or above a real floor makes a glance a reference). */
+    val photoMatch: com.rokid.context.memory.retrieval.PhotoMatchConfig = com.rokid.context.memory.retrieval.PhotoMatchConfig.DEFAULT,
 ) {
     /** A pin-first (location only) card is held instead of shown. */
     val holdPins: Boolean get() = confirmedOnly && !pinCardsNearby
@@ -282,6 +284,8 @@ class PlaceSampler(
         var mode = "-"; var backend = "-"; var resolve = "-"; var label = "-"
         /** Layered confirmation (counts and fixed tokens only; null l1 = Layer 1 not asked and the `place layers` line is not written). */
         val layersCard: String get() = if (card == "shown") "shown" else if (held != "-") "held_${held.removePrefix("held_")}" else "none"
+        /** B3 eval record inputs: the Layer 1 decision (scores, margin), the check mode token, the Layer 2 answer token, confidence and picked place id. Never logged; they only go into the history row's eval. */
+        var l1Res: com.rokid.context.memory.retrieval.PhotoConfirm.Result? = null; var checkMode = "-"; var photoMatch = com.rokid.context.memory.retrieval.PhotoMatchConfig.DEFAULT; var l2Conf: Int? = null; var l2Pick: String? = null; var evalCand: List<String> = emptyList()
         var l1: String? = null; var l1k = 0; var l1With = 0; var l1No = 0; var l1Score = "na"; var l1Margin = "na"; var l1Cand = 0; var l2 = "-"; var l3 = "-"; var held = "-"; var l1Skip = "-"
         /** F7 fields (default "-"): where the fix came from, how old a reused fix really was, the pin-first decision, the weak back-off window, the retry reason, the history write, the text hit. */
         /** The place ids this attempt chose (a model pick, a pin card, a cluster, the nearest): handed to [chosenSink] ONLY; user-pin ids are never written to the log. */
@@ -486,6 +490,7 @@ class PlaceSampler(
         }
         tr.pinFirst = "off"
         val pol = try { policy() } catch (c: CancellationException) { throw c } catch (_: Exception) { PlacePolicy() }
+        tr.checkMode = pol.checkMode.name; tr.photoMatch = pol.photoMatch
         val layered = pol.confirmedOnly || (photoLayer != null && pol.l1)
         if (layered) tr.l1 = "off"
         var pinHeld = false
@@ -516,6 +521,7 @@ class PlaceSampler(
         val pool = if (pinHeld) (found.places + found.nearbyPins).distinctBy { it.id } else found.places
         val hits = cutKeepingPins(pool.map { it to Geo.distanceM(fx.lat, fx.lon, it.lat, it.lon) })
         tr.cand = hits.size; tr.ids = idList(hits.map { it.first.id }.filter { !UserPlace.isUserId(it) }); tr.pinCand = hits.count { UserPlace.isUserId(it.first.id) }
+        tr.evalCand = hits.map { it.first.id }
         // ---- LAYER 1: the photo against the reference photos of the candidates (on the phone, any network state) ----
         var list = hits
         val l1 = photoLayer
@@ -527,6 +533,7 @@ class PlaceSampler(
                 is PhotoLayerOutcome.Skipped -> { tr.l1 = "skip"; tr.l1Skip = out.token }
                 is PhotoLayerOutcome.Decided -> {
                     val r = out.result
+                    tr.l1Res = r
                     tr.l1 = r.outcome.name.lowercase(); tr.l1k = out.frames; tr.l1With = r.withRef; tr.l1No = r.noRef
                     tr.l1Score = com.rokid.context.memory.retrieval.PhotoConfirm.scoreBucket(r.accepted?.milli ?: r.topMilli); tr.l1Margin = com.rokid.context.memory.retrieval.PhotoConfirm.marginBucket(r.margin)
                     val acc = r.accepted
@@ -594,9 +601,10 @@ class PlaceSampler(
         }
         if (!res.delivered) { tr.reason = "photo_not_delivered"; tr.l2 = "not_delivered"; if (pol.confirmedOnly) held(hits, CardDelivery.HELD_CALL_FAILED, f.frameId, gen, ticket); return PlaceOutcome.FAILED } // the photo was not proven to have reached the model: not a photo match, not a nearby guess either
         val choice = res.output.choice
-        tr.confPct = (res.output.confidence * 100).toInt()
+        tr.confPct = (res.output.confidence * 100).toInt(); tr.l2Conf = tr.confPct
         if (choice.equals(NONE, ignoreCase = true)) { tr.reason = "model_none"; tr.l2 = "none"; if (pol.confirmedOnly) heldNoMatch(CardDelivery.HELD_NOT_CONFIRMED, f.frameId); return weak(PlaceOutcome.NONE) }
         val idx = choice.toIntOrNull()?.takeIf { it in 1..list.size && it.toString() == choice } ?: run { tr.reason = "choice_out_of_range"; tr.l2 = "contract"; if (pol.confirmedOnly) heldNoMatch(CardDelivery.HELD_NOT_CONFIRMED, f.frameId); return weak(PlaceOutcome.CONTRACT) }
+        tr.l2Pick = list[idx - 1].first.id
         setChosen(list[idx - 1].first); tr.distB = bucketM(list[idx - 1].second)
         tr.shadowChoice = tr.chosenIds.firstOrNull() // P3-7: the private id stays internal for the scorer's ranking; the log only ever prints the redacted `chosen` token
         val floor = picked.backend ?: Backend.ONLINE // the floor of the backend that made the call
@@ -814,7 +822,7 @@ class PlaceSampler(
 
     /** A single pin the fix is inside: its card, with no model call, no photo and no memory. Fenced like every card; the visit/card claim is atomic with the other card paths. */
     private suspend fun pinFirstCard(pin: PlaceEntity, distanceM: Double, frameId: String, gen: Long, epoch: Long, ticket: ZoneTicket, now: Long): PlaceOutcome {
-        setChosen(pin); tr.distB = bucketM(distanceM)
+        setChosen(pin); tr.distB = bucketM(distanceM); tr.evalCand = listOf(pin.id)
         val ids = listOf(pin.id)
         if (!flight.reserve(ids, now)) return reservedElsewhere()
         try {
@@ -830,7 +838,7 @@ class PlaceSampler(
     /** The "several pins" card of a cluster, returned AT ONCE (no photo, no model call): never a guessed room. The line says `pinFirst=cluster(n)` and `card=shown`. */
     private suspend fun clusterCard(c: PinFirst.Decision.Cluster, parents: List<String?>, frameId: String, gen: Long, epoch: Long, ticket: ZoneTicket, now: Long): PlaceOutcome {
         tr.chosenIds = c.members.map { it.id }
-        val ids = c.members.map { it.id }
+        val ids = c.members.map { it.id }; tr.evalCand = ids
         if (!flight.reserve(ids, now) { id, cd -> id == c.inside.id && shownHere(cd) }) return reservedElsewhere()
         try {
             val card = PlaceCards.cluster(c.members, parents, frameId)
@@ -849,8 +857,28 @@ class PlaceSampler(
     private suspend fun record(kind: HistoryKind, placeId: String, title: String, members: List<String>, frameId: String?, confPct: Int?, delivery: String? = null) {
         if (!historyOn()) { tr.hist = "off"; return }
         val auth = tr.authority ?: run { tr.hist = "fail"; return }
-        try { history(PlaceHistoryEvent(kind, placeId, title, members, frameId, if (kind == HistoryKind.POSSIBLE || delivery != null) null else tr.cardId, confPct, delivery, auth)); tr.hist = "ok" }
+        val ref = glanceRefOk(kind, placeId)
+        val ev = try { evalOf(kind, delivery, ref) } catch (c: CancellationException) { throw c } catch (_: Exception) { null } // the record must never block the row
+        try { history(PlaceHistoryEvent(kind, placeId, title, members, frameId, if (kind == HistoryKind.POSSIBLE || delivery != null) null else tr.cardId, confPct, delivery, auth, eval = ev, glanceRef = ref)); tr.hist = "ok" }
         catch (c: CancellationException) { throw c } catch (_: Exception) { tr.hist = "fail" }
+    }
+
+    /** B3: the per-attempt layer record of the row about to be written (place ids, numbers and fixed tokens only). */
+    /** Loop guard D14, the second signal: Layer 2 confirmed THIS place AND Layer 1 scored it at or above a real floor (a kind whose floor is off never counts, so no web photo alone makes a reference). */
+    private fun glanceRefOk(kind: HistoryKind, placeId: String): Boolean {
+        val t = tr
+        if (kind != HistoryKind.PHOTO || t.l2 != "confirmed" || t.l2Pick != placeId) return false
+        val s = t.l1Res?.scores?.firstOrNull { it.placeId == placeId } ?: return false
+        val m = s.milli ?: return false
+        val k = s.kind ?: return false
+        val floor = t.photoMatch.of(k).floor
+        return floor > 0 && m >= floor
+    }
+
+    private fun evalOf(kind: HistoryKind, delivery: String?, ref: Boolean): String {
+        val t = tr
+        val l1 = t.l1?.let { st -> PlaceEval.L1(st, t.l1k, t.l1Res?.scores.orEmpty(), t.l1Res?.margin, t.l1Skip.takeIf { it != "-" }) }
+        return PlaceEval.build(PlaceEval.Input(kind, delivery, t.checkMode, com.rokid.context.memory.retrieval.MatchThresholds.VERSION, l1, t.evalCand, t.l2, t.l2Conf, t.l2Pick, t.l3, ref))
     }
 
     // ---- F2 fix reuse ----

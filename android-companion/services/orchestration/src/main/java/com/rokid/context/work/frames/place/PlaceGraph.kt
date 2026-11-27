@@ -239,7 +239,7 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
     fun resetPhotoMatch() { val e = prefs.edit(); for (n in listOf("own", "centroid", "web")) for (f in listOf("high", "floor", "margin")) e.remove("pm.$n.$f"); e.apply() }
 
     /** The policy of one attempt, read per attempt (so a switch applies at once). [layers] = the Developer layer switches. */
-    fun policy(l1: Boolean, l2: Boolean): PlacePolicy = PlacePolicy(confirmedOnly, checkMode, pinCardsNearby, l1, l2)
+    fun policy(l1: Boolean, l2: Boolean): PlacePolicy = PlacePolicy(confirmedOnly, checkMode, pinCardsNearby, l1, l2, photoMatch)
 
     /** One "Extra place type" switch (Settings > Place Guide; [com.rokid.context.connectors.place.ExtraPlaceTypes]): ON by default (owner decision 27 Nov night), an unreadable pref reads as the default. Stored places are never purged by switching one off. */
     fun extraType(key: String): Boolean {

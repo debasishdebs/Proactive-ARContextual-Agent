@@ -32,6 +32,13 @@ abstract class PlaceLinkDao {
     /** The capture time of a photo (phone clock), or null when the photo row or its time is absent. */
     @Query("SELECT capturedAtMs FROM frame_meta WHERE frameId = :frameId") abstract suspend fun capturedAtOf(frameId: String): Long?
 
+    /** B3 loop guard: REF links (a confirmed glance used as an extra reference photo). `CARD_REF` = a pin's CARD link that was also made a REF (restored to CARD when the REF goes). */
+    @Query("SELECT * FROM place_link WHERE placeId = :placeId AND role IN ('REF', 'CARD_REF') ORDER BY linkedAt, momentId") abstract suspend fun refLinksOf(placeId: String): List<PlaceLinkEntity>
+    @Query("SELECT * FROM place_link WHERE placeId IN (:ids) AND role IN ('REF', 'CARD_REF') ORDER BY linkedAt, momentId") abstract suspend fun refLinks(ids: List<String>): List<PlaceLinkEntity>
+    @Query("SELECT role FROM place_link WHERE placeId = :placeId AND momentId = :momentId") abstract suspend fun roleOf(placeId: String, momentId: String): String?
+    @Query("UPDATE place_link SET role = :role WHERE placeId = :placeId AND momentId = :momentId") abstract suspend fun setRole(placeId: String, momentId: String, role: String): Int
+    @Query("DELETE FROM place_link WHERE placeId = :placeId AND momentId = :momentId AND role = 'REF'") abstract suspend fun deleteRefLink(placeId: String, momentId: String): Int
+
     @Query("SELECT COUNT(*) FROM moment_tombstone WHERE momentId = :id") abstract suspend fun momentTombstoned(id: String): Int
 
     @Query("DELETE FROM place_link WHERE anchorId IN (:ids)") protected abstract suspend fun deleteAnchorChunk(ids: List<String>): Int

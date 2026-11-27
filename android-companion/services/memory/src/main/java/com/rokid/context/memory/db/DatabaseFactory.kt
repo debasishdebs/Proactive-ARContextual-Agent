@@ -10,7 +10,7 @@ object DatabaseFactory {
 
     /** Fixed mode, for instrumented tests and tools; the app uses [buildDeferred]. */
     fun build(context: Context, encrypted: Boolean, passphrase: () -> ByteArray): ContextDatabase {
-        val builder = Room.databaseBuilder(context.applicationContext, ContextDatabase::class.java, NAME).addCallback(MemoryMaintenance.openCheck).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18)
+        val builder = Room.databaseBuilder(context.applicationContext, ContextDatabase::class.java, NAME).addCallback(MemoryMaintenance.openCheck).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19)
         if (encrypted) builder.openHelperFactory(ensureOpenParams(passphrase))
         return builder.build()
     }
@@ -20,7 +20,7 @@ object DatabaseFactory {
         Room.databaseBuilder(context.applicationContext, ContextDatabase::class.java, NAME)
             .openHelperFactory(DeferredOpenHelperFactory(encryptedAtOpen, passphrase))
             .addCallback(MemoryMaintenance.openCheck)
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19)
             .build()
 
     /**

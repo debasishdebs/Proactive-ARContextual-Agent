@@ -265,4 +265,79 @@ class PlaceSamplerLayersTest {
         assertFalse(all.contains("Alpha")); assertFalse(Regex("""\d+\.\d{4,}""").containsMatchIn(all))
         assertTrue(logs.last { it.startsWith("place layers ") }.length < 300)
     }
+
+    // ---- B3: the per-attempt eval record on every history row ----
+
+    private fun evalJson(i: Int = events.lastIndex): kotlinx.serialization.json.JsonObject =
+        kotlinx.serialization.json.Json.parseToJsonElement(requireNotNull(events[i].eval) { "every history row carries an eval" }) as kotlinx.serialization.json.JsonObject
+    private fun kotlinx.serialization.json.JsonObject.s(k: String) = (get(k) as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+    private fun kotlinx.serialization.json.JsonObject.o(k: String) = get(k) as kotlinx.serialization.json.JsonObject
+    private fun kotlinx.serialization.json.JsonObject.b(k: String) = (get(k) as kotlinx.serialization.json.JsonPrimitive).content.toBoolean()
+    private fun kotlinx.serialization.json.JsonObject.n(k: String) = (get(k) as kotlinx.serialization.json.JsonPrimitive).content.toInt()
+
+    @Test fun evalOfALayer1AcceptHasTheScoresAndNoNames() = runTest {
+        places = listOf(pl("wd:Q1", "Alpha"), pl("wd:Q2", "Beta"))
+        layer = result(PhotoConfirm.Outcome.ACCEPT, "wd:Q2", listOf("wd:Q2"))
+        poke()
+        val e = evalJson(); val raw = events.single().eval!!
+        assertEquals("L1", e.s("layer")); assertTrue(e.b("shown")); assertEquals("AUTOMATIC", e.s("mode")); assertEquals(1, e.n("thr"))
+        assertEquals("accept", e.o("l1").s("state")); assertEquals(3, e.o("l1").n("frames")); assertEquals(900, e.o("l1").n("top"))
+        assertEquals("wd:Q2", (e.o("l1")["scores"] as kotlinx.serialization.json.JsonArray).map { (it as kotlinx.serialization.json.JsonObject).s("id") }.single())
+        assertTrue(raw.contains("wd:Q1") && raw.contains("wd:Q2"))
+        assertFalse("no name", raw.contains("Alpha") || raw.contains("Beta")); assertFalse("no frame id", raw.contains("f1")); assertTrue(raw.length <= PlaceEval.MAX_BYTES)
+    }
+
+    @Test fun evalOfAnOnlineConfirmationHasTheAnswerAndTheConfidence() = runTest {
+        poke()
+        val e = evalJson()
+        assertEquals("L2", e.s("layer")); assertTrue(e.b("shown")); assertEquals("confirmed", e.o("l2").s("answer")); assertEquals(90, e.o("l2").n("conf")); assertEquals("wd:Q1", e.o("l2").s("pick"))
+        assertEquals(false, e.get("held")?.let { it !is kotlinx.serialization.json.JsonNull })
+    }
+
+    @Test fun evalOfAHeldRowHasTheReasonToken() = runTest {
+        photoOk = false
+        poke()
+        val e = evalJson()
+        assertEquals("NONE", e.s("layer")); assertFalse(e.b("shown")); assertEquals(CardDelivery.HELD_DATA_SAVER, e.s("held")); assertEquals("skipped_data_saver", e.o("l2").s("answer"))
+    }
+
+    @Test fun evalOfANoMatchRowAndAPossibleRow() = runTest {
+        reply = PlaceMatchResult(PlaceMatchOutput("NONE", 0.9f), true)
+        poke()
+        evalJson().let { assertEquals("L2", it.s("layer")); assertFalse(it.b("shown")); assertEquals("none", it.o("l2").s("answer")); assertEquals(90, it.o("l2").n("conf")) }
+        events.clear(); outcomes.clear()
+        reply = PlaceMatchResult(PlaceMatchOutput("1", 0.2f), true)
+        poke()
+        evalJson().let { assertEquals("L2", it.s("layer")); assertFalse(it.b("shown")); assertEquals("low", it.o("l2").s("answer")); assertEquals(20, it.o("l2").n("conf")) }
+    }
+
+    @Test fun evalOfAnOfflineGuessAndOfALocationOnlyCard() = runTest {
+        online = false; guessAvailable = true; guess = OfflineTierResult.maybe(places[0], "lt70", "lt06", 1)
+        poke()
+        evalJson().let { assertEquals("L3", it.s("layer")); assertTrue(it.b("shown")); assertEquals("maybe", it.s("l3")) }
+        events.clear(); outcomes.clear(); cards.clear(); online = true; thrown = java.io.IOException("x"); guess = null; guessAvailable = false
+        pol = PlacePolicy(confirmedOnly = false)
+        poke()
+        evalJson().let { assertEquals("LOC", it.s("layer")); assertTrue(it.b("shown")) }
+    }
+
+    @Test fun anOldFloorOnlyL1ScorePlusAnOnlineConfirmationMakesAGlanceReference() = runTest {
+        layer = result(PhotoConfirm.Outcome.MEDIUM, null, listOf("wd:Q1"), withRef = 1) // score 900 of kind OWN, FLOOR 846
+        poke()
+        assertEquals(HistoryKind.PHOTO, events.single().kind); assertTrue(events.single().glanceRef); assertTrue(evalJson().b("ref"))
+    }
+
+    @Test fun noGlanceReferenceBelowTheFloorOrWithoutAFloorOrWithoutL2() = runTest {
+        // below the OWN floor
+        layer = PhotoLayerOutcome.Decided(PhotoConfirm.Result(PhotoConfirm.Outcome.MEDIUM, null, listOf("wd:Q1"), listOf(PhotoConfirm.PlaceScore("wd:Q1", 800, com.rokid.context.memory.retrieval.RefKind.OWN, PhotoConfirm.Level.MID)), 5), 1)
+        poke(); assertFalse(events.last().glanceRef)
+        // a web reference whose floor is off never counts
+        events.clear(); outcomes.clear(); cards.clear()
+        layer = PhotoLayerOutcome.Decided(PhotoConfirm.Result(PhotoConfirm.Outcome.MEDIUM, null, listOf("wd:Q1"), listOf(PhotoConfirm.PlaceScore("wd:Q1", 990, com.rokid.context.memory.retrieval.RefKind.WEB, PhotoConfirm.Level.MID)), 5), 1)
+        poke(); assertFalse(events.last().glanceRef)
+        // L1 accept alone is no reference (no second signal)
+        events.clear(); outcomes.clear(); cards.clear()
+        layer = result(PhotoConfirm.Outcome.ACCEPT, "wd:Q1", listOf("wd:Q1")); poke()
+        assertEquals(HistoryKind.IMAGE, events.last().kind); assertFalse(events.last().glanceRef)
+    }
 }

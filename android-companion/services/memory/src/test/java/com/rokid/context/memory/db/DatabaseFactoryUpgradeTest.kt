@@ -23,7 +23,7 @@ class DatabaseFactoryUpgradeTest {
 
     private fun assertUpgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(18, raw.version)
+        assertEquals(19, raw.version)
         V1Fixture.tables(1).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertTrue(V1Fixture.tableNames(raw).containsAll(V1Fixture.FRAME_TABLES))
         assertNullCols(raw)
@@ -53,7 +53,7 @@ class DatabaseFactoryUpgradeTest {
     /** A real v3 file (frame_*, canvas_* and every other table seeded) through the production builders: canvas rows survive. */
     private fun assertV3Upgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(18, raw.version)
+        assertEquals(19, raw.version)
         V1Fixture.tables(3).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertEquals("CLOSED", raw.query("SELECT state FROM frame_cluster").use { it.moveToFirst(); it.getString(0) })
         assertTrue(raw.query("SELECT routedAt FROM frame_meta").use { it.moveToFirst(); it.isNull(0) })
@@ -66,7 +66,7 @@ class DatabaseFactoryUpgradeTest {
     /** A real v5 file (every table seeded): the nearest-lineage upgrade, canvas rows survive with defaults. */
     private fun assertV5Upgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(18, raw.version)
+        assertEquals(19, raw.version)
         V1Fixture.tables(5).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertEquals("v5", raw.query("SELECT intentLabel FROM frame_meta").use { it.moveToFirst(); it.getString(0) })
         assertV6Shape(raw, canvasRows = true)
@@ -77,7 +77,7 @@ class DatabaseFactoryUpgradeTest {
     /** A real v6 file (every table seeded): the nearest-lineage upgrade to v8, the slice 2 rows survive untouched. */
     private fun assertV6Upgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(18, raw.version)
+        assertEquals(19, raw.version)
         V1Fixture.tables(6).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertEquals("v6", raw.query("SELECT kind FROM canvas_publish").use { it.moveToFirst(); it.getString(0) })
         assertV7Shape(raw, publishRows = true)
@@ -164,7 +164,7 @@ class DatabaseFactoryUpgradeTest {
             val db = if (deferred) DatabaseFactory.buildDeferred(ctx, { false }) { error("plain") } else DatabaseFactory.build(ctx, encrypted = false) { error("plain") }
             try {
                 val raw = db.openHelper.writableDatabase
-                assertEquals(18, raw.version)
+                assertEquals(19, raw.version)
                 V1Fixture.tables(7).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
                 assertEquals("v7", raw.query("SELECT state FROM canvas_helper_job").use { it.moveToFirst(); it.getString(0) })
                 assertV8Shape(raw)

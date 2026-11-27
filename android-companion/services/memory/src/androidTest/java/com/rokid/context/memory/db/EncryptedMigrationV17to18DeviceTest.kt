@@ -62,9 +62,9 @@ class EncryptedMigrationV17to18DeviceTest {
         repeat(2) {
             val db = Room.databaseBuilder(ctx, ContextDatabase::class.java, name)
                 .openHelperFactory(DatabaseFactory.ensureOpenParams({ key.copyOf() }))
-                .addMigrations(MIGRATION_17_18).build()
+                .addMigrations(MIGRATION_17_18, MIGRATION_18_19).build()
             try {
-                assertEquals(18, db.openHelper.writableDatabase.version)
+                assertEquals(19, db.openHelper.writableDatabase.version)
                 before.forEach { (t, n) -> assertEquals("reopen rows of $t", n, V1Fixture.count(db.openHelper.writableDatabase, t)) }
                 runBlocking {
                     db.momentLocationDao().insertIfAbsent(MomentLocationEntity("m1", 1, "FRAME", "f1", 1.0, 2.0, 5.0, 10, "ZONE_STREAM", null, null, 3))

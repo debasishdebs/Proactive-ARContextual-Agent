@@ -92,7 +92,7 @@ class MigrationV17to18Test {
         var d: File? = File(System.getProperty("user.dir")).absoluteFile
         while (d != null && !File(d, "src/main/java/com/rokid/context/memory/db/ContextDatabase.kt").isFile) d = d.parentFile
         val src = File(requireNotNull(d), "src/main/java/com/rokid/context/memory/db/ContextDatabase.kt").readText()
-        val sql = Regex("execSQL\\(\"([^\"]*)\"\\)").findAll(src.substring(src.indexOf("val MIGRATION_17_18"))).map { it.groupValues[1] }.toList()
+        val sql = Regex("execSQL\\(\"([^\"]*)\"\\)").findAll(src.substring(src.indexOf("val MIGRATION_17_18"), src.indexOf("val MIGRATION_18_19"))).map { it.groupValues[1] }.toList()
         assertEquals(12, sql.size)
         assertEquals(5, sql.count { it.startsWith("CREATE TABLE IF NOT EXISTS `") })
         assertEquals(7, sql.count { it.startsWith("CREATE INDEX IF NOT EXISTS `") })

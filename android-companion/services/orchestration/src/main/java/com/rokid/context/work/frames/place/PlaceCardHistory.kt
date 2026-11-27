@@ -1,6 +1,7 @@
 package com.rokid.context.work.frames.place
 
 import androidx.room.withTransaction
+import com.rokid.context.memory.db.CardLabel
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.PlaceCardLogEntity
 import com.rokid.context.memory.db.PlaceLinkEntity
@@ -46,7 +47,14 @@ data class PlaceHistoryEvent(
     val importedAt: Long? = null,
     /** Developer IMPORT only: asked INSIDE the add transaction (after the authority fences); false refuses the row (`reason=moment`), so a Moment Forget cannot land between the check and the write. */
     val momentGuard: (suspend () -> Boolean)? = null,
+    /** v19: the per-attempt layer record (JSON, see [PlaceEval]); null = none (import of an older row, a test card). Written with the row. */
+    val eval: String? = null,
+    /** B3 loop guard: Layer 2 confirmed this place and Layer 1 scored it at or above a real floor, so this glance may become a REF link (set by the sampler only). */
+    val glanceRef: Boolean = false,
 )
+
+/** The counts line of the label screen: how many rows carry each label and how many attempts showed a card. Counts only. */
+data class LabelSummary(val right: Int, val wrong: Int, val notPlace: Int, val shown: Int)
 
 /**
  * The phone-only place card history over `place_card_log` in `context.db` (Room v18). It is independent of the memory tiers: nudges and answers expire with SHORT 24 h and place memories with LONG 30 d, history
@@ -115,9 +123,11 @@ class PlaceCardHistory(
                     id = e.importedId ?: newId(), at = e.importedAt ?: clock(), placeId = e.placeId, title = e.title.take(TITLE_MAX), kind = e.kind.name,
                     members = e.members.takeIf { it.isNotEmpty() }?.joinToString(","), frameId = e.frameId, confPct = e.confPct?.coerceIn(0, 100),
                     cardId = e.cardId, delivery = delivery, photoGone = photoGone,
+                    eval = e.eval?.takeIf { it.length <= PlaceEval.MAX_BYTES },
                 )
                 dao.put(row)
                 linkMoment(e, photoGone)
+                if (e.glanceRef) addRef(row, "signal") // loop guard, second signal: Layer 2 confirmed and Layer 1 at or above a real floor
                 count = dao.cardLogCount()
                 pruneNow(onlyOncePerDay = true)
                 log("place history add kind=${e.kind.name} delivery=$delivery rows=$count")
@@ -138,7 +148,69 @@ class PlaceCardHistory(
         val at = links.capturedAtOf(frame) ?: return
         val moment = try { com.rokid.context.memory.moment.MomentId.ofMs(at) } catch (_: IllegalArgumentException) { return }
         if (links.momentTombstoned(moment) != 0) return
-        links.insertIfAbsent(PlaceLinkEntity(e.placeId, moment, Math.floorDiv(at, 1000L) * 1000L, frame, "CARD", clock()))
+        links.insertIfAbsent(PlaceLinkEntity(e.placeId, moment, Math.floorDiv(at, 1000L) * 1000L, frame, ROLE_CARD, clock()))
+    }
+
+    /**
+     * B3 loop guard (design D14): [row]'s Moment becomes an extra reference photo of its place by a `place_link` row with role `REF` (a pin that already has a CARD link for the Moment gets `CARD_REF`, restored to CARD when
+     * the REF goes). Only a single place with a live Moment (the photo present and not tombstoned, not expired), at most [REF_CAP] per place (the oldest goes first). Runs inside the caller's transaction. Returns whether a link was written.
+     */
+    private suspend fun addRef(row: PlaceCardLogEntity, why: String): Boolean {
+        val frame = row.frameId ?: return false
+        if (row.photoGone != 0 || row.members != null || row.placeId == NO_PLACE || row.kind == HistoryKind.NO_MATCH.name) return false
+        if (gate.goneFrames(setOf(frame), requirePresent = true).isNotEmpty()) return false
+        val at = links.capturedAtOf(frame) ?: return false
+        val moment = try { com.rokid.context.memory.moment.MomentId.ofMs(at) } catch (_: IllegalArgumentException) { return false }
+        if (links.momentTombstoned(moment) != 0) return false
+        when (links.roleOf(row.placeId, moment)) {
+            null -> links.insertIfAbsent(PlaceLinkEntity(row.placeId, moment, Math.floorDiv(at, 1000L) * 1000L, frame, ROLE_REF, clock()))
+            ROLE_CARD -> links.setRole(row.placeId, moment, ROLE_CARD_REF)
+            else -> return true // already a reference
+        }
+        val all = links.refLinksOf(row.placeId)
+        if (all.size > REF_CAP) all.take(all.size - REF_CAP).filter { it.momentId != moment }.forEach { dropRefLink(it) }
+        log("place history ref added why=$why")
+        return true
+    }
+
+    private suspend fun dropRefLink(l: PlaceLinkEntity) { if (l.role == ROLE_CARD_REF) links.setRole(l.placeId, l.momentId, ROLE_CARD) else links.deleteRefLink(l.placeId, l.momentId) }
+
+    /** The label was removed or changed away from RIGHT: the REF of this row's Moment goes, unless another RIGHT row of the same place and Moment still holds it. */
+    private suspend fun dropRef(row: PlaceCardLogEntity) {
+        val frame = row.frameId ?: return
+        val at = links.capturedAtOf(frame) ?: return
+        val moment = try { com.rokid.context.memory.moment.MomentId.ofMs(at) } catch (_: IllegalArgumentException) { return }
+        val stillRight = dao.rightFramesOf(row.placeId).any { f -> f != frame && links.capturedAtOf(f)?.let { t -> try { com.rokid.context.memory.moment.MomentId.ofMs(t) == moment } catch (_: IllegalArgumentException) { false } } == true }
+        if (stillRight) return
+        links.refLinksOf(row.placeId).firstOrNull { it.momentId == moment }?.let { dropRefLink(it); log("place history ref dropped") }
+    }
+
+    /**
+     * The owner's one-tap label of a history row: [label] is one of [CardLabel] or null to clear it. ONE transaction: the label and its time, and the REF link of the loop guard (RIGHT on a row whose Moment is live adds
+     * it; changing or clearing the label drops it; WRONG and NOT_A_PLACE never make a reference). Returns false for an unknown label or a row that is gone (a Forget deleted it). Nothing is logged but a count line.
+     */
+    suspend fun setLabel(id: String, label: String?): Boolean {
+        if (label != null && label !in CardLabel.ALL) return false
+        return safe("label", false) {
+            val ok = db.withTransaction {
+                val row = dao.cardLog(id) ?: return@withTransaction false
+                if (dao.setCardLabel(id, label, if (label == null) null else clock()) == 0) return@withTransaction false
+                if (label == CardLabel.RIGHT) addRef(row, "label") else if (label != null || row.label == CardLabel.RIGHT) dropRef(row) // WRONG / NOT_A_PLACE never leave a reference (also one the L2 + L1 signal made); clearing only undoes a RIGHT
+                true
+            }
+            if (ok) { bump(); log("place history label set=${label ?: "none"}") }
+            ok
+        }
+    }
+
+    /** Counts for the label line: right, wrong, not a place, and how many attempts showed a card. */
+    suspend fun labelSummary(): LabelSummary = safe("read", LabelSummary(0, 0, 0, 0)) {
+        LabelSummary(dao.cardLabelCount(CardLabel.RIGHT), dao.cardLabelCount(CardLabel.WRONG), dao.cardLabelCount(CardLabel.NOT_A_PLACE), dao.shownCount())
+    }
+
+    /** B3: the frame ids (anchors) of the live REF links of [placeIds], oldest first. The matcher reads their stored vectors as extra OWN references. */
+    suspend fun refFrames(placeIds: Collection<String>): Map<String, List<String>> = if (placeIds.isEmpty()) emptyMap() else safe("read", emptyMap()) {
+        placeIds.distinct().chunked(500).flatMap { links.refLinks(it) }.groupBy({ it.placeId }, { it.anchorId })
     }
 
     /** Place object S2: the Moment ids a pin is linked to by cards (for the delete confirmation's count). */
@@ -212,6 +284,12 @@ class PlaceCardHistory(
         val changes: StateFlow<Long> get() = _changes
         /** Tells the screens to re-read (a Forget deleted rows inside its own transaction). */
         fun notifyChanged() { _changes.value = _changes.value + 1 }
+        const val ROLE_REF = "REF"
+        const val ROLE_CARD = "CARD"
+        const val ROLE_CARD_REF = "CARD_REF"
+        /** At most this many REF links per place; the oldest is dropped first. */
+        const val REF_CAP = 5
+        private const val NO_PLACE = "none"
         const val TITLE_MAX = 80
         const val MAX_ROWS = 500
         const val RETAIN_MS = 90L * 24 * 3_600_000

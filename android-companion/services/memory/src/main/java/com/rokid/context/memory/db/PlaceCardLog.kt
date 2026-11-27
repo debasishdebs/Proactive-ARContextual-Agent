@@ -30,7 +30,20 @@ data class PlaceCardLogEntity(
     val cardId: String?,
     val delivery: String,
     @ColumnInfo(defaultValue = "0") val photoGone: Int = 0,
+    /** v19: per-attempt layer record (JSON object, numbers, place ids and tokens only; no name, caption or position). Null on rows written before v19. */
+    val eval: String? = null,
+    /** v19: the owner's label, one of [CardLabel]; null = not labelled. */
+    val label: String? = null,
+    val labelAt: Long? = null,
 )
+
+/** The owner's one-tap label of a history row (v19). Stored as the enum name. */
+object CardLabel {
+    const val RIGHT = "RIGHT"
+    const val WRONG = "WRONG"
+    const val NOT_A_PLACE = "NOT_A_PLACE"
+    val ALL = setOf(RIGHT, WRONG, NOT_A_PLACE)
+}
 
 @Dao
 abstract class PlaceCardLogDao {
@@ -43,6 +56,11 @@ abstract class PlaceCardLogDao {
     @Query("SELECT COUNT(*) FROM place_card_log") abstract suspend fun cardLogCount(): Int
     @Query("UPDATE place_card_log SET delivery = :state WHERE cardId = :cardId") abstract suspend fun setCardDelivery(cardId: String, state: String): Int
     @Query("UPDATE place_card_log SET delivery = :state WHERE cardId = :cardId AND delivery = 'PENDING'") abstract suspend fun setCardDeliveryIfPending(cardId: String, state: String): Int
+    @Query("UPDATE place_card_log SET label = :label, labelAt = :at WHERE id = :id") abstract suspend fun setCardLabel(id: String, label: String?, at: Long?): Int
+    @Query("SELECT COUNT(*) FROM place_card_log WHERE label = :label") abstract suspend fun cardLabelCount(label: String): Int
+    /** Rows a card was sent for: not a held row, not POSSIBLE, not NO_MATCH (the "attempts shown" of the label summary). */
+    @Query("SELECT COUNT(*) FROM place_card_log WHERE delivery NOT LIKE 'HELD\\_%' ESCAPE '\\' AND kind NOT IN ('POSSIBLE', 'NO_MATCH')") abstract suspend fun shownCount(): Int
+    @Query("SELECT frameId FROM place_card_log WHERE placeId = :placeId AND label = 'RIGHT' AND frameId IS NOT NULL") abstract suspend fun rightFramesOf(placeId: String): List<String>
     @Query("DELETE FROM place_card_log WHERE id = :id") abstract suspend fun deleteCardLog(id: String): Int
     /** Quota eviction (K6): the photos a card of the history is about (explicit importance). */
     @Query("SELECT DISTINCT frameId FROM place_card_log WHERE frameId IS NOT NULL") abstract suspend fun cardLogFrameIds(): List<String>

@@ -29,8 +29,8 @@ class PhotoLayerTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private fun layer(own: Map<String, List<FloatArray>> = emptyMap(), cent: Map<String, FloatArray> = emptyMap(), stored: FloatArray? = null, glance: Glance? = null, hot: Boolean = false,
-                      multi: MultiFrameConfig? = MultiFrameConfig(), photo: ByteArray? = ByteArray(1), budget: Long = 3_000L, slow: Boolean = false, web: Map<String, FloatArray> = emptyMap(), webCalls: MutableList<List<String>>? = null) = PhotoLayer(
-        embedder = { embedder }, photo = { photo }, ownRefs = { _, _, _ -> own }, centroids = { _, _ -> cent }, storedVector = { _, _ -> stored }, webRefs = { sp, ids -> webCalls?.add(ids); assertEquals("sp", sp); web.filterKeys { it in ids } }, glance = { _, _, _ -> if (slow) kotlinx.coroutines.delay(5_000); glance },
+                      multi: MultiFrameConfig? = MultiFrameConfig(), photo: ByteArray? = ByteArray(1), budget: Long = 3_000L, slow: Boolean = false, web: Map<String, FloatArray> = emptyMap(), webCalls: MutableList<List<String>>? = null, glanced: Map<String, List<FloatArray>> = emptyMap()) = PhotoLayer(
+        embedder = { embedder }, photo = { photo }, ownRefs = { _, _, _ -> own }, centroids = { _, _ -> cent }, storedVector = { _, _ -> stored }, webRefs = { sp, ids -> webCalls?.add(ids); assertEquals("sp", sp); web.filterKeys { it in ids } }, glanceRefs = { _, ids -> glanced.filterKeys { it in ids } }, glance = { _, _, _ -> if (slow) kotlinx.coroutines.delay(5_000); glance },
         multiFrame = { multi }, mayEmbed = { !hot }, scope = scope, budgetMs = budget,
     )
 
@@ -108,5 +108,20 @@ class PhotoLayerTest {
     @Test fun aPlaceWithAPhotoDoesNotRemoveAPlaceWithoutOne() {
         val o = run(layer(web = mapOf("wd:Q1" to at(500)))) as PhotoLayerOutcome.Decided
         assertEquals("the pin has no reference and stays", 2, o.result.candidates.size)
+    }
+
+    // ---- B3: a confirmed glance is an extra reference (kind OWN numbers) ----
+    @Test fun aGlanceReferenceOfASeededPlaceIsScoredWithTheOwnNumbers() {
+        val o = run(layer(glanced = mapOf("wd:Q1" to listOf(at(960))))) as PhotoLayerOutcome.Decided
+        assertEquals(PhotoConfirm.Outcome.ACCEPT, o.result.outcome); assertEquals("wd:Q1", o.result.accepted!!.placeId); assertEquals(com.rokid.context.memory.retrieval.RefKind.OWN, o.result.accepted!!.kind); assertEquals(1, embeds)
+    }
+
+    @Test fun theBestOfSeveralReferencesDecidesAndAGlanceReferenceNeverLowersAPlace() {
+        val o = run(layer(own = mapOf(pin to listOf(at(960))), glanced = mapOf(pin to listOf(at(500), at(700))))) as PhotoLayerOutcome.Decided
+        assertEquals("the best reference counts (the multi-reference max rule)", pin, o.result.accepted!!.placeId)
+    }
+
+    @Test fun noReferenceAtAllStillMeansNoEmbedWithEmptyGlanceReferences() {
+        run(layer(glanced = mapOf("wd:Q1" to emptyList()))); assertEquals(0, embeds)
     }
 }
