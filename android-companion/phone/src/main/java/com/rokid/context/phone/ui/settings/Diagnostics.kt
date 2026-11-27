@@ -362,6 +362,10 @@ fun DiagnosticsScreen(
     onOfflineTier: (Boolean) -> Unit = {},
     /** WP8: the Developer "test place and test photos" section (null = not available). Shown only with [developerMode]. */
     testPlace: (@Composable () -> Unit)? = null,
+    /** Developer only: "Send test card to glasses" (one canned generic card over the real card path). Enabled only while [glassesConnected]; [testCardResult] is the one-line answer of the last tap (no content). */
+    glassesConnected: Boolean = false,
+    onSendTestCard: () -> Unit = {},
+    testCardResult: String? = null,
     /** Room v16 suspect descriptions: mark one, mark every one, undo the last marking. */
     onMarkSuspect: (String) -> Unit = {},
     onMarkAllSuspects: () -> Unit = {},
@@ -553,6 +557,13 @@ fun DiagnosticsScreen(
                     }
                     NoticeText(CanvasSessionCopy.note(devSessionHours), tag = "dev_session_note")
                     testPlace?.invoke()
+                    val testCard = com.rokid.context.work.frames.place.DevTestCard.row(developerMode, glassesConnected)
+                    if (testCard.visible) Column(Modifier.fillMaxWidth().testTag("dev_test_card"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Test card on the glasses", style = MaterialTheme.typography.titleSmall)
+                        Text(testCard.note, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft, modifier = Modifier.testTag("dev_test_card_note"))
+                        SecondaryAction("Send test card to glasses", onSendTestCard, "dev_test_card_button", enabled = testCard.enabled)
+                        testCardResult?.let { NoticeText(it, tag = "dev_test_card_result") }
+                    }
                 }
             }
             if (onOpenPhotoDimTest != null) {

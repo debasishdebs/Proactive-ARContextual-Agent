@@ -339,6 +339,8 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         var offlineTierOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.offlineTier(app)) }
         var canvasModelNodesOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.canvasModelNodes(app)) }
         var canvasTestRunOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.canvasTestRun(app)) }
+        val glassesLink = deps.glasses.status.collectAsStateWithLifecycle().value.link
+        var testCardResult by remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
         val ctxDecision by s.contextSources.decision.collectAsStateWithLifecycle()
         val ctxStats = s.contextSources.stats
         var ctxTick by remember { androidx.compose.runtime.mutableIntStateOf(0) }
@@ -363,6 +365,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
                     ?.let { p -> com.rokid.context.phone.devtest.DevTestImport.create(app, p) }
                     ?.let { c -> @androidx.compose.runtime.Composable { com.rokid.context.phone.devtest.DevTestPlaceSection(c) } }
             } else null,
+            glassesConnected = glassesLink.carriesData, onSendTestCard = { testCardResult = com.rokid.context.phone.devtest.DevTestCardGraph.get(app, deps.glasses).sendNow() }, testCardResult = testCardResult,
             retentionP2 = retentionP2On, onRetentionP2 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setRetentionP2(app, on); retentionP2On = on },
             mapZonesV2 = mapZonesV2On, onMapZonesV2 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setMapZonesV2(app, on); mapZonesV2On = on },
             mapZonesP23 = mapZonesP23On, onMapZonesP23 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setMapZonesP23(app, on); mapZonesP23On = on },
