@@ -7,6 +7,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -157,7 +158,7 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
         val seedState by seedVm.state.collectAsStateWithLifecycle()
         LaunchedEffect(seedVm) { seedVm.refresh() }
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
-        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed)
+        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour)
     }
     if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back), null, online, seedPanel, networkOnline); return }
     val mapVm = viewModel(key = "offline_map") { OfflineMapViewModel(offline.files, offline.store) }
@@ -247,6 +248,12 @@ class SeedPanel(
     val rename: (String, String) -> Unit = { _, _ -> },
     /** "Retry failed cells": queues only the cells of the area that did not seed. */
     val retryFailed: (String) -> Unit = {},
+    /** A tap on a row: selects the area (highlight, name on the map) and asks the screen to scroll to the map and fit it. */
+    val focus: (String) -> Unit = {},
+    /** A tap on the map background: the highlight goes away. */
+    val clearFocus: () -> Unit = {},
+    /** The owner's colour choice for an area (a [SeedPalette] index). */
+    val setColour: (String, Int) -> Unit = { _, _ -> },
 )
 
 /** The remove-area dialog (both map screens): "the area and its places" is preselected; the other choice keeps the places as ordinary fetched places. */
@@ -290,14 +297,17 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
     LaunchedEffect(networkOnline, state.drawing) { if (!networkOnline && state.drawing) on.setDrawing(false) }
     val mapState = if (networkOnline) state else state.copy(drawing = false)
     // Tap on a seeded-area row: the map above fits that area (works with no network: the blank grid is drawn from the phone's own data).
-    var focusBox by remember { mutableStateOf<DoubleArray?>(null) }
-    var focusSeq by remember { mutableStateOf(0) }
-    SettingsPage(if (seedMode) "Pick an area on the map" else "Pause zones", on.back, tag = "zones_screen") {
+    // The tap is the view-model's (selection, margin box, sequence); the screen scrolls to the map card (animated) and the map fits the box.
+    val focusSeq = seed?.ui?.focusSeq ?: 0
+    val focusBox = seed?.ui?.focusBox
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    LaunchedEffect(focusSeq) { if (focusSeq > 0) listState.animateScrollToItem(MAP_ITEM_INDEX) }
+    SettingsPage(if (seedMode) "Pick an area on the map" else "Pause zones", on.back, tag = "zones_screen", listState = listState) {
         item {
             SettingsCard {
                 Text((if (seedMode) "Draw a box, then seed places for it. Seeded areas are blue, your pins purple, pause zones red. " else "Capture pauses inside a red box and in the ring around it. ") + if (offline?.reader != null) "The map is drawn from your offline file." else if (online?.source != null) "The map is drawn from online street tiles; the grid shows where they are missing." else "The map has no tiles; the grid shows latitude and longitude.", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
                 if (!networkOnline) NoNetworkBanner()
-                ZoneMap(mapState, on, offline?.reader, online, seed?.ui, blank = !networkOnline, focusBox = focusBox, focusSeq = focusSeq)
+                ZoneMap(mapState, on, offline?.reader, online, seed?.ui, blank = !networkOnline, focusBox = focusBox, focusSeq = focusSeq, clearFocus = seed?.clearFocus ?: {})
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     SecondaryAction(if (state.drawing) "Cancel drawing" else "Draw a box", { on.setDrawing(!state.drawing) }, tag = "zone_draw", enabled = networkOnline && (seedMode || !state.protectedMode))
                     if (online?.canCentre == true) SecondaryAction("Centre on me", online.centreOnMe, tag = "zone_centre", enabled = !online.centreBusy)
@@ -322,7 +332,7 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
         online?.let { p -> item { OnlineMapCard(p) } }
         offline?.let { p -> item { OfflineMapCard(p) } }
         if (!seedMode) item { NewZoneCard(state, on, networkOnline) }
-        seed?.let { p -> if (p.ui.areas.isNotEmpty()) item { SeededAreasCard(p) { a -> focusSeq++; focusBox = a.box } } }
+        seed?.let { p -> if (p.ui.areas.isNotEmpty()) item { SeededAreasCard(p) { a -> p.focus(a.id) } } }
         item {
             SettingsCard {
                 Text("Your zones", style = MaterialTheme.typography.titleMedium)
@@ -478,7 +488,7 @@ internal fun StateChip(chip: ZoneChip, modifier: Modifier = Modifier) {
 
 /** The tile-less map: plain background, a latitude/longitude grid, red boxes with their buffer ring, the draft box and (only with a fresh fix) a blue dot for the user. */
 @Composable
-private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null, online: OnlineMapPanel? = null, seed: SeedMapUiState? = null, blank: Boolean = false, focusBox: DoubleArray? = null, focusSeq: Int = 0) {
+private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null, online: OnlineMapPanel? = null, seed: SeedMapUiState? = null, blank: Boolean = false, focusBox: DoubleArray? = null, focusSeq: Int = 0, clearFocus: () -> Unit = {}) {
     val measurer = rememberTextMeasurer()
     var size by remember { mutableStateOf(Size.Zero) }
     var vp by remember { mutableStateOf<MapViewport?>(null) }
@@ -531,6 +541,7 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
     ) {
         Canvas(
             Modifier.fillMaxWidth().height(300.dp).background(if (blank) Color.White else MapBackground)
+                .pointerInput(seed?.selectedId, areas) { detectTapGestures { p -> if (seed?.selectedId != null && vp.let { v -> v == null || areas.none { a -> SeedOverlays.screenRect(v, a.box, 0f).let { r -> p.x in r[0]..(r[0] + r[2]) && p.y in r[1]..(r[1] + r[3]) } } }) clearFocus() } } // a tap on the map background clears the highlight
                 .pointerInput(state.drawing) {
                     if (state.drawing) {
                         detectDragGestures(
@@ -557,7 +568,8 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
                 painted = true
             }
             if (!painted) drawGrid(v, measurer)
-            for (a in areas) drawSeedArea(v, a)
+            for (a in areas) if (a.id != seed?.selectedId) drawSeedArea(v, a)
+            areas.firstOrNull { it.id == seed?.selectedId }?.let { drawSeedArea(v, it, measurer, selected = true) } // the tapped area on top, with its name
             for (r in state.rows) drawZone(v, r.zone, measurer, active = r.zone.enabled)
             for (p in pins) drawPin(v, p)
             state.draft.box()?.let { drawBox(v, it, ZoneRed, filled = false, dashed = true) }
@@ -601,6 +613,8 @@ internal fun DrawScope.drawLabel(tm: TextMeasurer, text: String, at: Offset, sty
 }
 
 private const val LABEL_MAX_WIDTH_DP = 160
+/** The map card is the second item of the Pause zones list (after the header): the tap scrolls here. */
+private const val MAP_ITEM_INDEX = 1
 private const val ONLINE_PARALLEL = 4
 /** "Centre on me": the box is 2 x this around the fix, so the view is about 500 m across. */
 private const val CENTRE_HALF_SPAN_M = 250.0
@@ -666,18 +680,23 @@ internal fun DrawScope.drawZone(v: MapViewport, z: PauseZone, tm: TextMeasurer, 
     drawLabel(tm, z.name, Offset(p.x + 4f, p.y + 2f), TextStyle(fontSize = 11.sp, color = Color(0xFF7A1010)), shift = true)
 }
 
-private val SeedBlue = Color(0xFF1E6FD9)
 private val SeedAmber = Color(0xFFE08A00)
 private val PinPurple = Color(0xFF7B3FC4)
 
-/** A seeded area: blue 15 % fill with a dotted edge (amber with a "!" when some cells failed, a long dash while seeding). Tiny on screen = a 16 dp chip so it still shows zoomed out. */
-internal fun DrawScope.drawSeedArea(v: MapViewport, a: SeedOverlay) {
-    val c = if (a.look == AreaLook.PARTIAL) SeedAmber else SeedBlue
+/**
+ * A seeded area in ITS OWN colour ([SeedOverlay.colour], a palette index): a translucent fill and an outline (dotted when done, a long dash while seeding), so it reads zoomed out and stays apart from the red pause zones and
+ * purple pins. [selected] (the tapped row): a thicker solid outline, a stronger fill and its name label ([tm] given). A partial area keeps its amber "!" badge. Tiny on screen = a 16 dp chip so it still shows zoomed out.
+ */
+internal fun DrawScope.drawSeedArea(v: MapViewport, a: SeedOverlay, tm: TextMeasurer? = null, selected: Boolean = false) {
+    val c = Color(SeedPalette.argb(a.colour))
     val r = SeedOverlays.screenRect(v, a.box, SeedOverlays.MIN_SHAPE_DP.dp.toPx())
+    if (!r.all { it.isFinite() }) return
     val tl = Offset(r[0], r[1]); val sz = Size(r[2], r[3])
-    drawRect(c.copy(alpha = 0.15f), tl, sz)
-    val dash = if (a.look == AreaLook.SEEDING) floatArrayOf(24f, 8f) else floatArrayOf(2f, 8f)
-    drawRect(c, tl, sz, style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(dash)))
+    drawRect(c.copy(alpha = if (selected) 0.35f else 0.22f), tl, sz)
+    val dash = if (selected) null else if (a.look == AreaLook.SEEDING) floatArrayOf(24f, 8f) else floatArrayOf(2f, 8f)
+    drawRect(c, tl, sz, style = Stroke((if (selected) 5 else 2).dp.toPx(), pathEffect = dash?.let { PathEffect.dashPathEffect(it) }))
+    if (selected) drawRect(Color.White.copy(alpha = 0.9f), Offset(tl.x - 1.dp.toPx(), tl.y - 1.dp.toPx()), Size(sz.width + 2.dp.toPx(), sz.height + 2.dp.toPx()), style = Stroke(1.dp.toPx()))
+    if (selected && tm != null) drawLabel(tm, a.label, Offset(tl.x + 6.dp.toPx(), tl.y + 6.dp.toPx()), TextStyle(fontSize = 12.sp, color = Color(0xFF15181D), background = Color.White.copy(alpha = 0.85f)), shift = true)
     if (a.look == AreaLook.PARTIAL) { // the badge: a filled amber disc with a white bar and dot
         val cx = tl.x + sz.width - 8.dp.toPx(); val cy = tl.y + 8.dp.toPx()
         drawCircle(SeedAmber, 7.dp.toPx(), Offset(cx, cy))

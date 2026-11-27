@@ -129,7 +129,7 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
         LaunchedEffect(seedState?.seeding) { if (seedState?.seeding == true) mapVm.cancelDraw() } // the sheet closes once the seed has really started
     }
-    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed) else null
+    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour) else null
     val view = remember { MapViewState() }
     val zoneCb = ZonesCallbacks.of(zonesVm, back)
     val offlinePanel = offline?.let { o ->

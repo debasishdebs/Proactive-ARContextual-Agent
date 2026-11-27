@@ -46,8 +46,8 @@ import com.rokid.context.core.ui.theme.PcColors
 
 /** One settings screen: header + scrolling cards (spec §2.3 spacing). */
 @Composable
-fun SettingsPage(title: String, onBack: () -> Unit, tag: String, actions: @Composable () -> Unit = {}, content: LazyListScope.() -> Unit) {
-    LazyColumn(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).testTag(tag)) {
+fun SettingsPage(title: String, onBack: () -> Unit, tag: String, actions: @Composable () -> Unit = {}, listState: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(), content: LazyListScope.() -> Unit) {
+    LazyColumn(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).testTag(tag), state = listState) {
         item { ScreenHeader(title, onBack, actions) }
         content()
         item { Spacer(Modifier.height(24.dp)) }

@@ -1,7 +1,18 @@
 package com.rokid.context.phone.ui.settings.privacy.zones
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import com.rokid.context.core.ui.theme.PcColors
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -40,15 +51,43 @@ fun SeededAreasContent(p: SeedPanel, onFocus: (SeedOverlay) -> Unit) {
 @Composable
 fun SeedAreaRowContent(p: SeedPanel, a: SeedOverlay, onFocus: () -> Unit) {
     var renaming by remember { mutableStateOf(false) }
+    var picking by remember { mutableStateOf(false) }
+    val selected = p.ui.selectedId == a.id
     Column {
-        Text(p.ui.rows.firstOrNull { it.id == a.id }?.text ?: a.label,
-            Modifier.fillMaxWidth().clickable { onFocus() }.testTag("seed_area_${a.id}"), style = MaterialTheme.typography.bodyMedium)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // The colour chip: the colour this area has on the map; tap to choose another.
+            Box(Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)).background(Color(SeedPalette.argb(a.colour))).border(if (selected) 3.dp else 1.dp, PcColors.Ink, RoundedCornerShape(6.dp))
+                .clickable { picking = true }.semantics { contentDescription = "Map colour: ${SeedPalette.name(a.colour)}. Tap to change." }.testTag("seed_swatch_${a.id}"))
+            Text(p.ui.rows.firstOrNull { it.id == a.id }?.text ?: a.label,
+                Modifier.weight(1f).clickable { onFocus() }.testTag("seed_area_${a.id}"), style = MaterialTheme.typography.bodyMedium, fontWeight = if (selected) FontWeight.Bold else null)
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
             SecondaryAction("Rename", { renaming = true }, tag = "seed_rename_${a.id}")
             SecondaryAction("Seed again", { p.seedBox(SeedEstimate.boxOf(a.box)) }, tag = "seed_again_${a.id}", enabled = !p.ui.seeding)
             if (a.failedCells > 0) SecondaryAction("Retry failed cells", { p.retryFailed(a.id) }, tag = "seed_retry_${a.id}", enabled = !p.ui.seeding)
             SecondaryAction("Remove", { p.askRemove(a.id) }, tag = "seed_remove_${a.id}")
         }
+    }
+    if (picking) {
+        AlertDialog(
+            onDismissRequest = { picking = false }, modifier = Modifier.testTag("seed_palette_dialog"),
+            title = { Text("Map colour") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SeedPalette.colours.chunked(5).forEachIndexed { r, row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            row.forEachIndexed { c, col ->
+                                val i = r * 5 + c
+                                Box(Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)).background(Color(col.argb)).border(if (i == a.colour) 3.dp else 1.dp, PcColors.Ink, RoundedCornerShape(8.dp))
+                                    .clickable { p.setColour(a.id, i); picking = false }.semantics { contentDescription = col.name }.testTag("seed_palette_$i"))
+                            }
+                        }
+                    }
+                    Text("Now: ${SeedPalette.name(a.colour)}", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                }
+            },
+            confirmButton = { TextButton({ picking = false }, Modifier.testTag("seed_palette_close")) { Text("Close") } },
+        )
     }
     if (renaming) {
         var text by remember { mutableStateOf(a.label.takeUnless { it.startsWith("Seeded area ") } ?: "") }

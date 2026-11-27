@@ -1,6 +1,7 @@
 package com.rokid.context.phone.ui.settings.privacy.zones
 
 import android.app.Application
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -103,6 +104,38 @@ class SeedAreasSectionTest {
         compose.onNodeWithTag("seed_remove_seed:2").performClick()
         compose.onNodeWithTag("seed_rename_seed:1").assertExists()
         assertEquals(listOf("retry:seed:2", "seed", "remove:seed:2"), log)
+    }
+
+    private val on0 get() = ZonesCallbacks({}, {}, { _, _ -> }, {}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {})
+
+    @Test fun everyRowHasItsColourChipAndThePaletteSavesTheChoice() {
+        val log = mutableListOf<String>()
+        val panel = SeedPanel(ui(), false, {}, {}, {}, {}, {}, {}, {}, setColour = { id, i -> log += "colour:$id:$i" })
+        compose.setContent { PcTheme { ZonesScreen(ZonesUiState(), on0, null, null, panel, networkOnline = false) } }
+        compose.onNodeWithTag("zones_screen").performScrollToNode(hasTestTag("seed_swatch_seed:2"))
+        compose.onNodeWithTag("seed_swatch_seed:1").assertExists()
+        compose.onNodeWithTag("seed_swatch_seed:2").performClick()
+        compose.onNodeWithTag("seed_palette_dialog").assertExists()
+        compose.onNodeWithTag("seed_palette_4").performClick()
+        assertEquals(listOf("colour:seed:2:4"), log)
+        compose.onNodeWithTag("seed_palette_dialog").assertDoesNotExist()
+    }
+
+    @Test fun tapOnARowSelectsItAndTheScreenScrollsBackToTheMapCardWhileOffline() {
+        val state = androidx.compose.runtime.mutableStateOf(ui())
+        val log = mutableListOf<String>()
+        fun panel(u: SeedMapUiState) = SeedPanel(u, false, {}, {}, {}, {}, {}, {}, {}, focus = { id -> log += "focus:$id"; state.value = state.value.copy(selectedId = id, focusSeq = state.value.focusSeq + 1, focusBox = SeedFocus.fitBox(doubleArrayOf(27.0, 88.0, 27.05, 88.05))) }, clearFocus = { log += "clear" })
+        compose.setContent { PcTheme { ZonesScreen(ZonesUiState(), on0, null, null, panel(state.value), networkOnline = false) } }
+        compose.onNodeWithTag("zones_screen").performScrollToNode(hasTestTag("seed_area_seed:2"))
+        compose.onNodeWithTag("seed_area_seed:2").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("focus:seed:2"), log)
+        assertEquals("seed:2", state.value.selectedId)
+        compose.onNodeWithTag("zone_map").assertIsDisplayed() // scrolled up to the map card
+        compose.onNodeWithTag("zones_screen").performScrollToNode(hasTestTag("seed_area_seed:2")); compose.onNodeWithTag("seed_area_seed:2").performClick() // a second tap on the same row keeps it focused
+        compose.waitForIdle()
+        assertEquals(listOf("focus:seed:2", "focus:seed:2"), log); assertEquals(2, state.value.focusSeq)
+        compose.onNodeWithTag("zone_map").assertIsDisplayed()
     }
 
     @Test fun theSectionIsOneComposableForBothScreens() {

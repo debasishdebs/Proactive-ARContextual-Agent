@@ -289,7 +289,7 @@ fun MapCanvas(
                 val col = Color(MomentDensity.colorOf(b.level)); val rad = (20f + 24f * b.level).dp.toPx()
                 drawCircle(androidx.compose.ui.graphics.Brush.radialGradient(listOf(col.copy(alpha = 0.6f), col.copy(alpha = 0f)), Offset(p.x, p.y), rad), rad, Offset(p.x, p.y))
             }
-            if (MapLayer.SEED in layers) for (a in seedAreas) if (!SeedOverlays.isTiny(v, a.box, minPx)) { drawSeedArea(v, a); drawDots(v, a.box, TypeLooks.SEED) }
+            if (MapLayer.SEED in layers) for (a in seedAreas) if (!SeedOverlays.isTiny(v, a.box, minPx)) { drawSeedArea(v, a, measurer, selected = selected?.kind == SelectionKind.SEED && selected.id == a.id); drawDots(v, a.box, TypeLooks.SEED) }
             if (MapLayer.PAUSE in layers) for (r in zones) {
                 val z = r.zone
                 val box = doubleArrayOf(z.south, z.west, z.north, z.east)
