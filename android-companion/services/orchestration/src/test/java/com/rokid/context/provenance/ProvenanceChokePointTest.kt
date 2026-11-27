@@ -35,6 +35,7 @@ class ProvenanceChokePointTest {
         "services/orchestration/src/main/java/com/rokid/context/canvas/moment/DaoMomentSource.kt" to 1, // MOMENT tombstones, not photo tombstones
         "services/orchestration/src/main/java/com/rokid/context/canvas/dumpimport/ImportCore.kt" to 4, // developer import: MOMENT tombstones (not photo tombstones), asked before it recreates or restores cards for a Moment
         "services/orchestration/src/main/java/com/rokid/context/canvas/dumpimport/ImportStores.kt" to 2, // developer import: the request's Delete all generation compare (no photo is derived from; the fence of its file write and its frame commit)
+        "services/orchestration/src/main/java/com/rokid/context/canvas/dumpimport/ReferenceMoment.kt" to 1, // developer reference photo: MOMENT tombstones (not photo tombstones), asked before it takes a free second for a new Moment
         "services/orchestration/src/main/java/com/rokid/context/canvas/moment/MomentBuilder.kt" to 1, // MOMENT tombstones, not photo tombstones
     )
 
