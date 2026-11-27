@@ -152,6 +152,8 @@ object PlaceSamplers {
         )
         ShadowCaches.registerKept(ShadowCaches.DERIVED_ITEMS[0], refs::clear)
         val centroids = PinSceneCentroids(db(), pinMoments)
+        // The layer speaks in space FINGERPRINTS (centroids, place_image); frame_vector rows are keyed by the space row id.
+        suspend fun frameSpace(fingerprint: String): String = frameSpaceId(spaces.targets(), fingerprint)
         return PhotoLayer(
             embedder = { spaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } },
             photo = { id ->
@@ -160,21 +162,25 @@ object PlaceSamplers {
             },
             ownRefs = refs::vectorsForAll, refsStillValid = refs::stillValid,
             centroids = { space, ids -> centroids.read(space, ids).byPin },
-            storedVector = { id, space -> db().frameVectorDao().get(id, space)?.let { runCatching { com.rokid.context.memory.retrieval.VectorCodec.decode(it.blob) }.getOrNull() } },
+            storedVector = { id, space -> db().frameVectorDao().get(id, frameSpace(space))?.let { runCatching { com.rokid.context.memory.retrieval.VectorCodec.decode(it.blob) }.getOrNull() } },
             webRefs = { space, ids -> PlaceGraph.pack(app).imageVectorsFor(ids, space) },
             glanceRefs = { space, ids ->
                 PlaceGraph.history(app).refFrames(ids).mapValues { (_, frames) ->
                     frames.filter { gate().goneFrames(setOf(it), requirePresent = false).isEmpty() }
-                        .mapNotNull { f -> db().frameVectorDao().get(f, space)?.let { runCatching { com.rokid.context.memory.retrieval.VectorCodec.decode(it.blob) }.getOrNull() } }
+                        .mapNotNull { f -> db().frameVectorDao().get(f, frameSpace(space))?.let { runCatching { com.rokid.context.memory.retrieval.VectorCodec.decode(it.blob) }.getOrNull() } }
                 }
             },
-            glance = { id, space, windowMs -> glanceOf(db(), gate(), id, space, windowMs) },
+            glance = { id, space, windowMs -> glanceOf(db(), gate(), id, frameSpace(space), windowMs) },
             config = { PlaceGuideSettings.of(app).photoMatch },
             multiFrame = { if (!DeveloperFlags.placeMultiFrame(app)) null else com.rokid.context.memory.retrieval.MultiFrameConfig(mode = if (PlaceGuideSettings.of(app).bestOfK) com.rokid.context.memory.retrieval.QueryMode.BEST_OF_K else com.rokid.context.memory.retrieval.QueryMode.MEAN) },
             mayEmbed = { KeyframeGraph.get(app).power.mayRunBackground(com.rokid.context.work.budget.BackgroundWork.IMAGE_VECTORS) },
             scope = refScope,
         )
     }
+
+    /** frame_vector is keyed by the embedding-space row id; the photo layer knows the fingerprint. Unknown fingerprint: kept as is (finds nothing, never a wrong space). */
+    internal fun frameSpaceId(targets: List<com.rokid.context.work.frames.scene.ImageSpaceTarget>, fingerprint: String): String =
+        targets.firstOrNull { it.fingerprint == fingerprint }?.spaceId ?: fingerprint
 
     /** The recent frames of the dwell frame's glasses session that already have a vector in [space] (no extra embed), and whether the glasses moved meanwhile. Forgotten frames are never used. */
     internal suspend fun glanceOf(db: com.rokid.context.memory.db.ContextDatabase, gate: com.rokid.context.provenance.ProvenanceGate, frameId: String, space: String, windowMs: Long): Glance? {
