@@ -56,16 +56,16 @@ object DeveloperFlags {
      * Offline photo captions (V1, owner decision 2026-11-26 round 5): lets the on-device SmolVLM2 captioner (`:services:vision-local`) run. In V1 the only caller is the Developer "Caption a photo" test (nothing stored, nothing sent,
      * no network); V2 will rank captions as text. OFF by default (also OFF when the prefs cannot be read); the model files are a separate catalog download and nothing loads at app start. Turning it OFF releases the model.
      */
-    const val OFFLINE_CAPTION = "offlineCaption"
-    fun offlineCaption(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(OFFLINE_CAPTION, false) }.getOrDefault(false)
+    const val OFFLINE_CAPTION = "offlineCaption" // ON by default since 27 Nov (layered confirmation, D13): nothing loads until a caption is asked for and the model files are downloaded
+    fun offlineCaption(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(OFFLINE_CAPTION, true) }.getOrDefault(false)
     fun setOfflineCaption(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(OFFLINE_CAPTION, on).apply() }
 
     /**
      * V2b offline place tier (owner round 6, 26 Nov): with this ON, no accepted place and an offline model path, the photo is captioned on the phone and ranked against the nearby places for ONE "Maybe <place>" card. Needs the
      * user switch "Offline place guess (Maybe)" (Settings > Place Guide, default OFF) AND the `offlineCaption` flag AND the captioner download. OFF by default (also OFF when the prefs cannot be read).
      */
-    const val OFFLINE_TIER = "offlineTier"
-    fun offlineTier(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(OFFLINE_TIER, false) }.getOrDefault(false)
+    const val OFFLINE_TIER = "offlineTier" // ON by default since 27 Nov (layered confirmation, D13)
+    fun offlineTier(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(OFFLINE_TIER, true) }.getOrDefault(false)
     fun setOfflineTier(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(OFFLINE_TIER, on).apply() }
 
     /**
@@ -107,6 +107,17 @@ object DeveloperFlags {
     const val CANVAS_MODEL_NODES = "canvasModelNodes"
     fun canvasModelNodes(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(CANVAS_MODEL_NODES, false) }.getOrDefault(false)
     fun setCanvasModelNodes(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(CANVAS_MODEL_NODES, on).apply() }
+
+    /** Layered place confirmation (design 2026-11-27 section 5), one Developer switch per layer, all ON by default. [PLACE_L1_PHOTO] is also the kill switch of Layer 1. Layer 3 is [OFFLINE_TIER] + [OFFLINE_CAPTION]. */
+    const val PLACE_L1_PHOTO = "placeL1Photo"
+    const val PLACE_L2_VISION = "placeL2Vision"
+    const val PLACE_MULTI_FRAME = "placeMultiFrame"
+    fun placeL1Photo(context: Context) = flag(context, PLACE_L1_PHOTO)
+    fun setPlaceL1Photo(context: Context, on: Boolean) = setFlag(context, PLACE_L1_PHOTO, on)
+    fun placeL2Vision(context: Context) = flag(context, PLACE_L2_VISION)
+    fun setPlaceL2Vision(context: Context, on: Boolean) = setFlag(context, PLACE_L2_VISION, on)
+    fun placeMultiFrame(context: Context) = flag(context, PLACE_MULTI_FRAME)
+    fun setPlaceMultiFrame(context: Context, on: Boolean) = setFlag(context, PLACE_MULTI_FRAME, on)
 
     /** Place fixes (spec 2026-11-24 section 2): each is ON by default and has no UI; OFF restores the older behaviour. */
     const val PLACE_PIN_FIRST = "placePinFirst"

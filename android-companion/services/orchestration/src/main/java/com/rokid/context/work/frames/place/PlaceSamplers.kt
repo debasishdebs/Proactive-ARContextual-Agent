@@ -102,6 +102,7 @@ object PlaceSamplers {
         clearTierPhoto(app.cacheDir)
         val share = SharedPhoto { id -> FramePhotos.load(app, listOf(id)).photos.singleOrNull() } // ONE loaded photo for the model call and the shadow
         val shadowOf by lazy { shadowCompareFor(app, zoneBlocked, share::get) }
+        val layer1 by lazy { photoLayerFor(app, zoneBlocked, share::get) } // Layer 1 of the layered confirmation: ON by default (Developer switch placeL1Photo, the kill switch)
         val tier = offlineCaptioner?.let { cap -> offlineTierFor(app, cap, offlineModelReady) }
         return PlaceSampler(
             scope = scope, store = RoomPlaceFrameStore { MemoryGraph.get(app).db }, fix = fix,
@@ -120,14 +121,70 @@ object PlaceSamplers {
             log = { PcLog.i(TAG, it) }, // literal text and an outcome name only
             // LAZY: with the flag off the shadow, its caches and the reference-vector cache are never allocated (the lambda is only reached behind shadowEnabled()).
             shadow = { id, hits, live -> shadowOf.score(id, hits, live) }, // Nomic, plus SigLIP 2 beside it only behind its own Developer flag (default OFF)
-            shadowEnabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowScore(app).also { on -> if (!on) ShadowCaches.clearAll() } }, // the flag going OFF empties the in-memory vectors at the next attempt (the setter does it at once)
+            shadowEnabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowScore(app).also { on -> if (!on) ShadowCaches.clearShadow() } }, // the flag going OFF empties the SHADOW's in-memory vectors at the next attempt (the setter does it at once); Layer 1's reference vectors are kept (their own switch)
             onAttemptEnd = share::clear,
             history = { e -> PlaceGraph.history(app).add(e) }, historyOn = { DeveloperFlags.placeCardHistory(app) }, historyAuthority = { PlaceGraph.history(app).capture() },
             seedRecent = { since -> PlaceGraph.existingHistory(app)?.seedRecent(since)?.map { PlaceSeed(it.placeId, it.at, it.kind, it.members?.split(',')?.filter { m -> m.isNotEmpty() }.orEmpty(), it.delivery) }.orEmpty() },
             pinFirstOn = { DeveloperFlags.placePinFirst(app) }, fixReuseOn = { DeveloperFlags.placeFixReuse(app) },
             dedupeV2On = { DeveloperFlags.placeDedupeV2(app) }, retryOn = { DeveloperFlags.placeRetryOnPin(app) },
             offlineGuess = tier?.let { t -> { id, hits -> offlineGuessOf(app, t, id, hits, zoneBlocked, share::get) } },
+            photoLayer = { id, hits, live -> layer1.score(id, hits, live) },
+            policy = { PlaceGuideSettings.of(app).policy(l1 = DeveloperFlags.placeL1Photo(app), l2 = DeveloperFlags.placeL2Vision(app)) },
+            offlineAvailable = { tier?.isEnabled() == true },
         )
+    }
+
+    /**
+     * Layer 1 (design 2026-11-27): the dwell photo against the reference vectors of the candidates. ONE [PinReferenceVectors] (in memory, registered as a KEPT cache so every deletion path empties it, the shadow flag does not),
+     * the centroid reader of the centroid shadow as the OWN_CENTROID source, the stored frame vectors for the other frames of the glance. Settings and Developer switches are read per attempt.
+     */
+    internal fun photoLayerFor(app: Context, zoneBlocked: suspend () -> Boolean, photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?): PhotoLayer {
+        val db = { MemoryGraph.get(app).db }
+        val gate = { com.rokid.context.provenance.ProvenanceGate(db()) }
+        val spaces by lazy { com.rokid.context.work.frames.scene.SpaceImageSpaces(MemoryGraph.get(app).spaces, AiGraph.get(app).embedders) }
+        val pinMoments = { PlaceGraph.pins(app).pins().mapNotNull { p -> p.momentId?.let { p.id to it } }.toMap() }
+        val refs = PinReferenceVectors(
+            pinMoments = pinMoments,
+            momentFrame = { momentId -> db().momentDao().photoFrameOf(momentId)?.id?.takeIf { gate().goneFrames(setOf(it), requirePresent = false).isEmpty() } },
+            photo = { id -> FramePhotos.load(app, listOf(id)).photos.singleOrNull()?.let { android.util.Base64.decode(it.image.base64Data, android.util.Base64.DEFAULT) } },
+            mayEmbed = { KeyframeGraph.get(app).power.mayRunBackground(com.rokid.context.work.budget.BackgroundWork.IMAGE_VECTORS) },
+            zoneBlocked = zoneBlocked, generation = { MemoryWipe.generation.get() }, scope = refScope, elapsed = android.os.SystemClock::elapsedRealtime,
+        )
+        ShadowCaches.registerKept(ShadowCaches.DERIVED_ITEMS[0], refs::clear)
+        val centroids = PinSceneCentroids(db(), pinMoments)
+        return PhotoLayer(
+            embedder = { spaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } },
+            photo = { id ->
+                if (zoneBlocked() || gate().goneFrames(setOf(id), requirePresent = false).isNotEmpty()) null
+                else photoOf(id)?.let { android.util.Base64.decode(it.image.base64Data, android.util.Base64.DEFAULT) }
+            },
+            ownRefs = refs::vectorsForAll, refsStillValid = refs::stillValid,
+            centroids = { space, ids -> centroids.read(space, ids).byPin },
+            storedVector = { id, space -> db().frameVectorDao().get(id, space)?.let { runCatching { com.rokid.context.memory.retrieval.VectorCodec.decode(it.blob) }.getOrNull() } },
+            glance = { id, space, windowMs -> glanceOf(db(), gate(), id, space, windowMs) },
+            config = { PlaceGuideSettings.of(app).photoMatch },
+            multiFrame = { if (!DeveloperFlags.placeMultiFrame(app)) null else com.rokid.context.memory.retrieval.MultiFrameConfig(mode = if (PlaceGuideSettings.of(app).bestOfK) com.rokid.context.memory.retrieval.QueryMode.BEST_OF_K else com.rokid.context.memory.retrieval.QueryMode.MEAN) },
+            mayEmbed = { KeyframeGraph.get(app).power.mayRunBackground(com.rokid.context.work.budget.BackgroundWork.IMAGE_VECTORS) },
+            scope = refScope,
+        )
+    }
+
+    /** The recent frames of the dwell frame's glasses session that already have a vector in [space] (no extra embed), and whether the glasses moved meanwhile. Forgotten frames are never used. */
+    internal suspend fun glanceOf(db: com.rokid.context.memory.db.ContextDatabase, gate: com.rokid.context.provenance.ProvenanceGate, frameId: String, space: String, windowMs: Long): Glance? {
+        val meta = db.frameMetaDao().byIds(listOf(frameId)).firstOrNull() ?: return null
+        val session = meta.sessionId ?: return null
+        val at = meta.capturedAtMs ?: db.frameDao().byIds(listOf(frameId)).firstOrNull()?.ts?.takeIf { it > 0 } ?: return null
+        val vecs = db.frameVectorDao().window(space, at - windowMs, at).filter { it.frameId != frameId }
+        if (vecs.isEmpty()) return Glance(at, emptyList(), db.frameMetaDao().movedSince(meta.createdAt - windowMs))
+        val ids = vecs.map { it.frameId }
+        val sameSession = db.frameMetaDao().byIds(ids).filter { it.sessionId == session }.map { it.frameId }.toSet()
+        val ts = db.frameDao().byIds(ids).associate { it.id to it.ts }
+        val gone = gate.goneFrames(sameSession, requirePresent = false)
+        val frames = vecs.filter { it.frameId in sameSession && it.frameId !in gone && ts[it.frameId] != null }.mapNotNull { v ->
+            val vec = runCatching { com.rokid.context.memory.retrieval.VectorCodec.decode(v.blob) }.getOrNull() ?: return@mapNotNull null
+            com.rokid.context.memory.retrieval.MultiFrameQuery.Frame(v.frameId, ts.getValue(v.frameId), vec)
+        }
+        return Glance(at, frames, db.frameMetaDao().movedSince(meta.createdAt - windowMs))
     }
 
     /** The process-wide offline tier (one rate limit for every sampler the hub makes), created on first use. */

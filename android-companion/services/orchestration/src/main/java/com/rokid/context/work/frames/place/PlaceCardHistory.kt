@@ -13,8 +13,11 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
 /** What kind of card a history row records. */
-/** [MAYBE] (V2b): an offline guess card. It lives in the existing `kind` text column; no schema change. */
-enum class HistoryKind { PHOTO, NEARBY, PIN, PIN_CLUSTER, TEXT, POSSIBLE, MAYBE }
+/**
+ * [MAYBE] (V2b): an offline guess card. [IMAGE] (layered confirmation): a Layer 1 accept, the photo matched a reference photo on the phone. [NO_MATCH]: an attempt that reached the candidate stage and showed nothing and
+ * had no single nearby place to name. They live in the existing `kind` text column; no schema change.
+ */
+enum class HistoryKind { PHOTO, NEARBY, PIN, PIN_CLUSTER, TEXT, POSSIBLE, MAYBE, IMAGE, NO_MATCH }
 
 /**
  * The authority an attempt acts under, captured at its START (before the frame, fix or pins are read): the durable `frame_forget_rev` (moved by every photo Forget, range Forget and Delete all), the wipe
@@ -107,7 +110,7 @@ class PlaceCardHistory(
                 val pins = (listOf(e.placeId) + e.members).filter { UserPlace.isUserId(it) }.distinct()
                 if (pins.any { it in removing || !pinActive(it) }) { log("place history add refused reason=pin"); return@withTransaction null }
                 readyLine()
-                val delivery = e.delivery ?: takeEarly(e.cardId) ?: if (e.kind == HistoryKind.POSSIBLE) CardDelivery.NOT_SENT_POSSIBLE else CardDelivery.PENDING
+                val delivery = e.delivery ?: takeEarly(e.cardId) ?: if (e.kind == HistoryKind.POSSIBLE) CardDelivery.NOT_SENT_POSSIBLE else CardDelivery.PENDING // a held row carries its HELD_* token in [PlaceHistoryEvent.delivery]
                 val row = PlaceCardLogEntity(
                     id = e.importedId ?: newId(), at = e.importedAt ?: clock(), placeId = e.placeId, title = e.title.take(TITLE_MAX), kind = e.kind.name,
                     members = e.members.takeIf { it.isNotEmpty() }?.joinToString(","), frameId = e.frameId, confPct = e.confPct?.coerceIn(0, 100),

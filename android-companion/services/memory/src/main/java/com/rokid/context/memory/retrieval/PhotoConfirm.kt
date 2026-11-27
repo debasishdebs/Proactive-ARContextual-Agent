@@ -81,6 +81,9 @@ object PhotoConfirm {
         return Result(if (anyKept) Outcome.MEDIUM else Outcome.BELOW, null, keep, scores, margin)
     }
 
+    /** Nothing to compare with: no candidate has a usable reference. Every place stays in the list. */
+    fun noReferences(ids: List<String>): Result { val d = ids.distinct(); return Result(Outcome.NO_REF, null, d, d.map { PlaceScore(it, null, null, Level.NO_REF) }, null) }
+
     /** Fixed log buckets (no raw score): the milli of a place and the margin. */
     fun scoreBucket(milli: Int?): String = when { milli == null -> "na"; milli < 700 -> "lt700"; milli < 800 -> "lt800"; milli < 850 -> "lt850"; milli < 900 -> "lt900"; milli < 945 -> "lt945"; milli < 970 -> "lt970"; else -> "ge970" }
     fun marginBucket(milli: Int?): String = when { milli == null -> "na"; milli < 0 -> "neg"; milli < 10 -> "lt10"; milli < 25 -> "lt25"; milli < 50 -> "lt50"; else -> "ge50" }

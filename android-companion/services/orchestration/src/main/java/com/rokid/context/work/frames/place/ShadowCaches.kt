@@ -23,13 +23,23 @@ object ShadowCaches {
     /** Registers (or replaces) the clear action under [name] (one of [DERIVED_ITEMS]). Called when the cache is first created. */
     fun register(name: String, clear: () -> Unit) { clears[name] = clear }
 
+    /** Caches that outlive the shadow's switch (Layer 1's reference vectors: its own switch decides): emptied by every deletion path like the rest, but NOT by the shadow flag going off. */
+    private val kept = ConcurrentHashMap<String, () -> Unit>()
+    fun registerKept(name: String, clear: () -> Unit) { kept[name] = clear }
+
     /** Counts every [clearAll]. */
     fun epoch(): Long = epochValue.get()
 
-    fun registered(): Set<String> = clears.keys.toSet()
+    fun registered(): Set<String> = (clears.keys + kept.keys).toSet()
 
     /** Empties every registered cache now. Never throws. */
     fun clearAll() {
+        epochValue.incrementAndGet()
+        for (c in clears.values + kept.values) try { c() } catch (_: Exception) { }
+    }
+
+    /** The `placeShadowScore` flag is off: empties the shadow's caches only (not [registerKept] ones). */
+    fun clearShadow() {
         epochValue.incrementAndGet()
         for (c in clears.values) try { c() } catch (_: Exception) { }
     }
@@ -42,5 +52,5 @@ object ShadowCaches {
         override suspend fun onUserForget() = clearAll()
     }
 
-    fun resetForTests() { clears.clear() }
+    fun resetForTests() { clears.clear(); kept.clear() }
 }

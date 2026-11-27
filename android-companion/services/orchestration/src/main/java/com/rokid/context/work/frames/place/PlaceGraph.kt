@@ -176,9 +176,9 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
         get() = com.rokid.context.core.model.PlaceSide.parse(prefs.getString(SIDE_KEY, null))
         set(v) { prefs.edit().putString(SIDE_KEY, v.name).apply() }
 
-    /** V2b "Offline place guess (Maybe)": the user's switch, default OFF. It only matters while the `offlineTier` and `offlineCaption` Developer flags are on and the captioner model is downloaded. */
+    /** "Offline place guess (Maybe)": the user's switch, default ON (owner decision D13, 27 Nov): it only matters while the `offlineTier` and `offlineCaption` Developer flags are on and the captioner model is downloaded. */
     var offlineGuess: Boolean
-        get() = runCatching { prefs.getBoolean(OFFLINE_GUESS_KEY, false) }.getOrDefault(false)
+        get() = runCatching { prefs.getBoolean(OFFLINE_GUESS_KEY, true) }.getOrDefault(true)
         set(v) { prefs.edit().putBoolean(OFFLINE_GUESS_KEY, v).apply() }
 
     /** "Maybe cut-off": the lowest caption-to-place score that may show a "Maybe" card, [OfflineTier.MIN_CUTOFF]..[OfflineTier.MAX_CUTOFF], 0.55 by default. A stored value out of range reads as the default. */
@@ -190,6 +190,46 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
     var candidateRadiusM: Int
         get() = runCatching { prefs.getInt(RADIUS_KEY, OfflineTier.DEFAULT_RADIUS_M) }.getOrDefault(OfflineTier.DEFAULT_RADIUS_M).takeIf { it in OfflineTier.MIN_RADIUS_M..OfflineTier.WIDE_RADIUS_M } ?: OfflineTier.DEFAULT_RADIUS_M
         set(v) { prefs.edit().putInt(RADIUS_KEY, v.coerceIn(OfflineTier.MIN_RADIUS_M, OfflineTier.WIDE_RADIUS_M)).apply() }
+
+    /** "Cards on glasses: only when the photo matches": default ON. OFF = the older behaviour (a location-only nearby card may go to the glasses). */
+    var confirmedOnly: Boolean
+        get() = runCatching { prefs.getBoolean(CONFIRMED_ONLY_KEY, true) }.getOrDefault(true)
+        set(v) { prefs.edit().putBoolean(CONFIRMED_ONLY_KEY, v).apply() }
+
+    /** "Also show pin cards when nearby": default OFF. ON = your own pin the fix is inside still gets its location-only card (only while [confirmedOnly]). */
+    var pinCardsNearby: Boolean
+        get() = runCatching { prefs.getBoolean(PIN_NEARBY_KEY, false) }.getOrDefault(false)
+        set(v) { prefs.edit().putBoolean(PIN_NEARBY_KEY, v).apply() }
+
+    /** "How to check the photo": Automatic (default), Online only, On the phone only. An unknown stored value reads as Automatic. */
+    var checkMode: CheckMode
+        get() = CheckMode.parse(runCatching { prefs.getString(CHECK_MODE_KEY, null) }.getOrNull())
+        set(v) { prefs.edit().putString(CHECK_MODE_KEY, v.name).apply() }
+
+    /** Developer: how several frames of one glance become the query. Default MEAN; BEST_OF_K is more eager and less precise. */
+    var bestOfK: Boolean
+        get() = runCatching { prefs.getBoolean(BEST_OF_K_KEY, false) }.getOrDefault(false)
+        set(v) { prefs.edit().putBoolean(BEST_OF_K_KEY, v).apply() }
+
+    /** The nine Layer 1 numbers (Developer mode shows them); every value is clamped, an unreadable one reads as the example default. EXAMPLE values, not calibrated. */
+    var photoMatch: com.rokid.context.memory.retrieval.PhotoMatchConfig
+        get() = runCatching {
+            val d = com.rokid.context.memory.retrieval.PhotoMatchConfig.DEFAULT
+            fun k(n: String, def: com.rokid.context.memory.retrieval.KindThresholds) = com.rokid.context.memory.retrieval.KindThresholds(prefs.getInt("pm.$n.high", def.high), prefs.getInt("pm.$n.floor", def.floor), prefs.getInt("pm.$n.margin", def.margin)).clamped()
+            com.rokid.context.memory.retrieval.PhotoMatchConfig(k("own", d.own), k("centroid", d.ownCentroid), k("web", d.web))
+        }.getOrDefault(com.rokid.context.memory.retrieval.PhotoMatchConfig.DEFAULT)
+        set(v) {
+            val c = v.clamped()
+            val e = prefs.edit()
+            fun put(n: String, t: com.rokid.context.memory.retrieval.KindThresholds) { e.putInt("pm.$n.high", t.high); e.putInt("pm.$n.floor", t.floor); e.putInt("pm.$n.margin", t.margin) }
+            put("own", c.own); put("centroid", c.ownCentroid); put("web", c.web); e.apply()
+        }
+
+    /** "Reset to defaults" of the nine numbers. */
+    fun resetPhotoMatch() { val e = prefs.edit(); for (n in listOf("own", "centroid", "web")) for (f in listOf("high", "floor", "margin")) e.remove("pm.$n.$f"); e.apply() }
+
+    /** The policy of one attempt, read per attempt (so a switch applies at once). [layers] = the Developer layer switches. */
+    fun policy(l1: Boolean, l2: Boolean): PlacePolicy = PlacePolicy(confirmedOnly, checkMode, pinCardsNearby, l1, l2)
 
     /** One "Extra place type" switch (Settings > Place Guide; [com.rokid.context.connectors.place.ExtraPlaceTypes]): ON by default (owner decision 27 Nov night), an unreadable pref reads as the default. Stored places are never purged by switching one off. */
     fun extraType(key: String): Boolean {
@@ -214,6 +254,10 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
         private const val OFFLINE_GUESS_KEY = "offlineGuess"
         private const val CUTOFF_KEY = "maybeCutoff"
         private const val RADIUS_KEY = "candidateRadiusM"
+        private const val CONFIRMED_ONLY_KEY = "confirmedOnly"
+        private const val PIN_NEARBY_KEY = "pinCardsNearby"
+        private const val CHECK_MODE_KEY = "checkMode"
+        private const val BEST_OF_K_KEY = "bestOfK"
         const val DEFAULT_BUDGET_MB = 50
         fun of(context: Context) = PlaceGuideSettings(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
         fun over(prefs: android.content.SharedPreferences) = PlaceGuideSettings(prefs)

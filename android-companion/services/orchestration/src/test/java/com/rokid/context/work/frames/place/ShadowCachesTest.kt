@@ -87,7 +87,7 @@ class ShadowCachesTest {
         assertTrue("flag off", "ShadowCaches.clearAll()" in src(orch + "orchestration/forget/ForgetShadow.kt"))
         assertTrue("pin link set and edit", src(orch + "work/frames/place/PlacePinning.kt").split("ShadowCaches.clearAll()").size - 1 >= 2)
         assertTrue("pin sweep and pin deletion", src(orch + "work/frames/place/PinMomentLinks.kt").split("ShadowCaches.clearAll()").size - 1 >= 2)
-        assertTrue("the sampler's flag read", "ShadowCaches.clearAll()" in src(orch + "work/frames/place/PlaceSamplers.kt"))
+        assertTrue("the sampler's flag read", "ShadowCaches.clearShadow()" in src(orch + "work/frames/place/PlaceSamplers.kt"))
         assertTrue("the Forget listener is registered at start", "ShadowCaches.listener()" in src("phone/src/main/java/com/rokid/context/ContextApp.kt"))
     }
 }

@@ -42,7 +42,7 @@ object DumpImportParser {
     private val SCENE_ID = Regex("^S[0-9a-f]{8}$")
     private val CARD_ID = Regex("^[A-Za-z0-9_-]{1,80}$")
     private val PLACE_ID = Regex("^[A-Za-z0-9_.:-]{1,100}$")
-    private val DELIVERIES = setOf(CardDelivery.PENDING, CardDelivery.SENT, CardDelivery.NOT_SENT_LINK, CardDelivery.NOT_SENT_HOST, CardDelivery.NOT_SENT_BUSY, CardDelivery.NOT_SENT_ZONE, CardDelivery.NOT_SENT_POSSIBLE, CardDelivery.NOT_SENT_LATE)
+    private val DELIVERIES = setOf(CardDelivery.PENDING, CardDelivery.SENT, CardDelivery.NOT_SENT_LINK, CardDelivery.NOT_SENT_HOST, CardDelivery.NOT_SENT_BUSY, CardDelivery.NOT_SENT_ZONE, CardDelivery.NOT_SENT_POSSIBLE, CardDelivery.NOT_SENT_LATE) + CardDelivery.HELD
     const val MAX_TEXT = 2000
     private val FRAME_ID = Regex("^[A-Za-z0-9_-]{1,100}$")
     private val MEMORY_ID = Regex("^[A-Za-z0-9_.:-]{1,100}$")

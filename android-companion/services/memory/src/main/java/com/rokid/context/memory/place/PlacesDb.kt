@@ -86,6 +86,27 @@ object CardDelivery {
     const val NOT_SENT_ZONE = "NOT_SENT_ZONE"
     const val NOT_SENT_POSSIBLE = "NOT_SENT_POSSIBLE"
     const val NOT_SENT_LATE = "NOT_SENT_LATE"
+
+    /**
+     * Confirmed-only policy (design 2026-11-27 section 5): the row was NOT sent to the glasses because nothing confirmed the place; the token says why. A held row is never a shown card (it must not feed the
+     * once-per-place rule or the dedupe seeding). Stored in the same text column, so no schema change.
+     */
+    /** The checks ran (photo match, online check, offline guess as far as allowed) and nothing confirmed the place. */
+    const val HELD_NOT_CONFIRMED = "HELD_NOT_CONFIRMED"
+    /** No nearby place has a reference photo and no other check could run. */
+    const val HELD_NO_REFERENCE = "HELD_NO_REFERENCE"
+    /** The online check was not allowed on this network (Data saver). */
+    const val HELD_DATA_SAVER = "HELD_DATA_SAVER"
+    /** No network (or "On the phone only") and the offline guess is not available (switched off or its model is not downloaded). */
+    const val HELD_OFFLINE_NO_MODEL = "HELD_OFFLINE_NO_MODEL"
+    /** "Online only" and there is no network. */
+    const val HELD_ONLINE_ONLY_NO_NETWORK = "HELD_ONLINE_ONLY_NO_NETWORK"
+    /** The online call failed (provider or network) and no offline guess confirmed the place. */
+    const val HELD_CALL_FAILED = "HELD_CALL_FAILED"
+    /** Power, heat or policy did not allow the check right now. */
+    const val HELD_NOT_ADMITTED = "HELD_NOT_ADMITTED"
+    val HELD = setOf(HELD_NOT_CONFIRMED, HELD_NO_REFERENCE, HELD_DATA_SAVER, HELD_OFFLINE_NO_MODEL, HELD_ONLINE_ONLY_NO_NETWORK, HELD_CALL_FAILED, HELD_NOT_ADMITTED)
+    fun isHeld(state: String?): Boolean = state != null && state in HELD
 }
 
 const val CELL_OK = "OK"

@@ -18,22 +18,22 @@ class OfflineTierSettingsTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private fun fresh(): PlaceGuideSettings { ctx.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE).edit().clear().commit(); return PlaceGuideSettings.of(ctx) }
 
-    @Test fun theDeveloperFlagIsOffByDefaultAndSwitchable() {
+    @Test fun theDeveloperFlagIsOnByDefaultAndSwitchable() {
         assertEquals("offlineTier", DeveloperFlags.OFFLINE_TIER)
         ctx.getSharedPreferences(DeveloperFlags.PREFS, Context.MODE_PRIVATE).edit().clear().commit()
-        assertFalse(DeveloperFlags.offlineTier(ctx))
-        DeveloperFlags.setOfflineTier(ctx, true); assertTrue(DeveloperFlags.offlineTier(ctx))
+        assertTrue(DeveloperFlags.offlineTier(ctx)) // ON by default since 27 Nov (layered confirmation, D13); the model download still gates it
         DeveloperFlags.setOfflineTier(ctx, false); assertFalse(DeveloperFlags.offlineTier(ctx))
+        DeveloperFlags.setOfflineTier(ctx, true); assertTrue(DeveloperFlags.offlineTier(ctx))
     }
 
-    @Test fun theSourceFlagFallsBackToFalse() {
+    @Test fun theSourceDefaultsToTrueAndAFailedReadIsOff() {
         val src = listOf("src/main/java/com/rokid/context/orchestration/forget/ForgetShadow.kt", "services/orchestration/src/main/java/com/rokid/context/orchestration/forget/ForgetShadow.kt").map { java.io.File(it) }.first { it.exists() }.readText()
-        assertTrue(Regex("""fun offlineTier\(.*getBoolean\(OFFLINE_TIER, false\).*getOrDefault\(false\)""").containsMatchIn(src))
+        assertTrue(Regex("""fun offlineTier\(.*getBoolean\(OFFLINE_TIER, true\).*getOrDefault\(false\)""").containsMatchIn(src))
     }
 
-    @Test fun theUserSwitchIsOffAndTheDefaultsAreTheOwnersNumbers() {
+    @Test fun theUserSwitchIsOnAndTheDefaultsAreTheOwnersNumbers() {
         val s = fresh()
-        assertFalse(s.offlineGuess); assertEquals(0.55f, s.maybeCutoff); assertEquals(150, s.candidateRadiusM)
+        assertTrue(s.offlineGuess); assertEquals(0.55f, s.maybeCutoff); assertEquals(150, s.candidateRadiusM)
     }
 
     @Test fun valuesAreStoredAndClampedToTheirRanges() {
