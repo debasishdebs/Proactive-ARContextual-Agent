@@ -264,6 +264,32 @@ class PlacePackTest {
         assertTrue(p.setAreaName("hyd", "   ")); assertEquals(null, p.areas().single().name)
     }
 
+    // "Edit box" of an existing area: the SAME id takes a new rectangle; only the cells that are not fresh are fetched; nothing is deleted, also not when the box shrinks; the owner's name stays.
+    @Test fun editingAnAreaKeepsItsIdNameAndPlacesAndFetchesOnlyTheMissingCells() = run {
+        val src = FakeSource { c -> CellFetch(listOf(fp("$c:p", lat = Geohash5.bounds(c)!!.south + 0.01, lon = Geohash5.bounds(c)!!.west + 0.01))) }
+        val p = pack(src)
+        val small = GeoBox(17.30, 78.40, 17.36, 78.46)
+        val big = GeoBox(17.30, 78.40, 17.45, 78.55)
+        p.seedArea("a", small); p.setAreaName("a", "Old town")
+        val first = Geohash5.cellsCovering(small); val all = Geohash5.cellsCovering(big)
+        val stored = db.dao().inBox(-90.0, 90.0, -180.0, 180.0).map { it.id }.toSet()
+        src.asked.clear()
+        // grow: beginArea writes the new box under the same id (what the Edit box action does), then the seed runs
+        p.beginArea("a", big)
+        assertEquals(big, p.areas().single().box); assertEquals("Old town", p.areas().single().name); assertEquals(AREA_SEEDING, p.areas().single().status)
+        val grown = p.seedArea("a", big)
+        assertEquals((all - first.toSet()).toSet(), src.asked.toSet()); assertEquals(first.size, grown.skipped)
+        assertEquals(1, p.areas().size); assertEquals(AREA_DONE, p.areas().single().status)
+        assertTrue(db.dao().inBox(-90.0, 90.0, -180.0, 180.0).map { it.id }.containsAll(stored))
+        // shrink: nothing fetched, no place deleted, the area is the smaller box and still the same id
+        val before = db.dao().inBox(-90.0, 90.0, -180.0, 180.0).map { it.id }.toSet()
+        src.asked.clear()
+        p.beginArea("a", small); p.seedArea("a", small)
+        assertTrue(src.asked.isEmpty())
+        assertEquals(before, db.dao().inBox(-90.0, 90.0, -180.0, 180.0).map { it.id }.toSet())
+        assertEquals(listOf("a"), p.areas().map { it.blueZoneId }); assertEquals(small, p.areas().single().box); assertEquals("Old town", p.areas().single().name)
+    }
+
     @Test fun aFailedCellMakesTheAreaPartialAndTheRestGoOn() = run {
         val box = GeoBox(17.30, 78.40, 17.36, 78.46)
         val cells = Geohash5.cellsCovering(box)

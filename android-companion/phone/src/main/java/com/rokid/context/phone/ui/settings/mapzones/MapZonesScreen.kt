@@ -128,8 +128,9 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
         LaunchedEffect(seedVm) { seedVm.refresh() }
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
         LaunchedEffect(seedState?.seeding) { if (seedState?.seeding == true) mapVm.cancelDraw() } // the sheet closes once the seed has really started
+        LaunchedEffect(seedState?.editSeq) { if ((seedState?.editSeq ?: 0) > 0) mapVm.editSeedBox(seedState?.editBox) } // "Edit box": the area's rectangle becomes the draft
     }
-    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour) else null
+    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour, seedVm::requestSeedAgain, seedVm::editArea, seedVm::endEdit) else null
     val view = remember { MapViewState() }
     val zoneCb = ZonesCallbacks.of(zonesVm, back)
     val offlinePanel = offline?.let { o ->
@@ -150,7 +151,7 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
         MapP23(mapVm::undo, mapVm::redo, mapVm::applyCoordinates, mapVm::alsoSeedFromDraft, mapVm::alsoSeedFromStored, cellsUi, { id, b -> cellsVm?.toggle(id, b) }, { cellsVm?.dismissMessage() }, densUi, densVm::setOn, densVm::setWindow, densVm::onViewChanged)
     }
     val cb = MapZonesCallbacks(
-        back, mapVm::beginDraw, mapVm::cancelDraw, mapVm::setKind, mapVm::place, mapVm::reshape, mapVm::next, mapVm::choose, mapVm::back, mapVm::setName, mapVm::setBuffer, mapVm::savePause,
+        back, mapVm::beginDraw, { mapVm.cancelDraw(); seedVm?.endEdit() }, mapVm::setKind, mapVm::place, mapVm::reshape, mapVm::next, mapVm::choose, mapVm::back, mapVm::setName, mapVm::setBuffer, mapVm::savePause,
         { seedPanel?.seedBox?.invoke(mapVm.seedBox()) }, { l -> mapVm.toggleLayer(l, zones.rows.any { it.chip.level == ChipLevel.PAUSED || it.chip.level == ChipLevel.WARN }) },
         { t -> onTap(t, view, zones, seedPanel, mapVm) }, mapVm::select, mapVm::editPause, mapVm::dismissMessage,
     )
@@ -330,13 +331,15 @@ private fun PauseSheet(ui: MapZonesUiState, unreadable: Boolean, on: MapZonesCal
 @Composable
 private fun SeedSheet(ui: MapZonesUiState, seed: SeedPanel?, level: SeedLevel, on: MapZonesCallbacks, overlapNote: String? = null) {
     val box = SeedEstimate.boxOf(ui.box)
-    Text("Seed places", style = MaterialTheme.typography.titleMedium)
+    val editing = seed?.ui?.editingId != null
+    Text(if (editing) "Edit the seeded area's box" else "Seed places", style = MaterialTheme.typography.titleMedium)
+    if (editing) NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaList.EDIT_NOTE, tag = "seed_edit_note")
     NoticeText(SeedEstimate.estimate(box, seed?.ui?.rates ?: com.rokid.context.phone.ui.settings.privacy.zones.SeedRates.ROUGH), error = level == SeedLevel.TOO_LARGE, tag = "seed_estimate")
     NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaList.ATTRIBUTION, tag = "seed_attribution")
     NoticeText("Only the 5 km cell keys leave the phone, never your position. Seeding runs in the background and needs a network (free Wi-Fi only when your Data saver says Wi-Fi only); it is refused under Offline only. The seed area has no name yet.", tag = "seed_note")
     overlapNote?.let { NoticeText(it, tag = "mapzones_seed_overlap_note") }
     if (seed == null) NoticeText("Place Guide is not available in this build.", error = true, tag = "mapzones_seed_unavailable")
-    PrimaryAction("Seed now", on.seedNow, tag = "seed_box", enabled = seed != null && !seed.ui.seeding && box != null && level != SeedLevel.TOO_LARGE && level != SeedLevel.EMPTY)
+    PrimaryAction(if (editing) "Seed this box" else "Seed now", on.seedNow, tag = "seed_box", enabled = seed != null && !seed.ui.seeding && box != null && level != SeedLevel.TOO_LARGE && level != SeedLevel.EMPTY)
     SecondaryAction("Back", on.backSheet, tag = "mapzones_back_sheet")
     SecondaryAction("Clear box", on.cancelDraw, tag = "mapzones_seed_clear", enabled = !ui.saving)
 }
@@ -410,7 +413,8 @@ private fun SelectedCard(ui: MapZonesUiState, zones: ZonesUiState, seed: SeedPan
             val a = s.ui.areas.firstOrNull { it.id == sel.id } ?: return
             Text(a.label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("mapzones_sel_name"))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                SecondaryAction("Seed again", { s.seedBox(SeedEstimate.boxOf(a.box)) }, tag = "mapzones_sel_seed_again", enabled = !s.ui.seeding)
+                SecondaryAction("Seed again", { s.seedAgain(SeedEstimate.boxOf(a.box)) }, tag = "mapzones_sel_seed_again", enabled = !s.ui.seeding)
+                SecondaryAction("Edit box", { s.editArea(a.id) }, tag = "mapzones_sel_edit_box", enabled = !s.ui.seeding && a.look != com.rokid.context.phone.ui.settings.privacy.zones.AreaLook.SEEDING)
                 if (a.failedCells > 0) SecondaryAction("Retry failed cells (${a.failedCells})", { s.retryFailed(a.id) }, tag = "mapzones_sel_retry", enabled = !s.ui.seeding)
                 SecondaryAction("Remove", { s.askRemove(a.id) }, tag = "seed_remove_${a.id}")
             }

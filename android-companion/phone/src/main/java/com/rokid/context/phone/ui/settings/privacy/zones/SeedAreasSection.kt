@@ -65,7 +65,8 @@ fun SeedAreaRowContent(p: SeedPanel, a: SeedOverlay, onFocus: () -> Unit) {
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
             SecondaryAction("Rename", { renaming = true }, tag = "seed_rename_${a.id}")
-            SecondaryAction("Seed again", { p.seedBox(SeedEstimate.boxOf(a.box)) }, tag = "seed_again_${a.id}", enabled = !p.ui.seeding)
+            SecondaryAction("Seed again", { p.seedAgain(SeedEstimate.boxOf(a.box)) }, tag = "seed_again_${a.id}", enabled = !p.ui.seeding)
+            SecondaryAction("Edit box", { p.editArea(a.id) }, tag = "seed_edit_${a.id}", enabled = !p.ui.seeding && a.look != AreaLook.SEEDING)
             if (a.failedCells > 0) SecondaryAction("Retry failed cells", { p.retryFailed(a.id) }, tag = "seed_retry_${a.id}", enabled = !p.ui.seeding)
             SecondaryAction("Remove", { p.askRemove(a.id) }, tag = "seed_remove_${a.id}")
         }

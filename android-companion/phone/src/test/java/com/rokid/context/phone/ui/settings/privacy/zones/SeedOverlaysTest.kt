@@ -180,6 +180,8 @@ class SeedMapViewModelTest {
         override suspend fun areas() = areas
         override suspend fun pins() = pins
         override suspend fun seed(box: GeoBox): Result<SeedOutcome> { seeded += box; return result }
+        val reseeded = mutableListOf<Pair<String, GeoBox>>()
+        override suspend fun reseed(id: String, box: GeoBox): Result<SeedOutcome> { reseeded += id to box; return result }
         val removedWithPlaces = mutableListOf<Boolean>()
         val renamed = mutableListOf<Pair<String, String?>>()
         override suspend fun rename(id: String, name: String?): Boolean { renamed += id to name; areas = areas.map { if (it.id == id) it.copy(name = name?.trim()?.takeIf { n -> n.isNotEmpty() }) else it }; return true }
@@ -209,6 +211,48 @@ class SeedMapViewModelTest {
         v.focusArea("seed:1") // a second tap keeps it focused and asks for another fit
         assertEquals("seed:1", v.state.value.selectedId); assertEquals(2, v.state.value.focusSeq)
         v.focusArea("nope"); assertEquals(2, v.state.value.focusSeq)
+    }
+
+    @Test fun editBoxLoadsTheAreaIntoTheDraftAndSeedThisBoxReseedsThatSameArea() = runTest {
+        val v = vm(); v.refresh()
+        assertNull(v.state.value.editingId)
+        v.editArea("seed:1")
+        val s = v.state.value
+        assertEquals("seed:1", s.editingId); assertEquals(1, s.editSeq); assertEquals(listOf(27.0, 88.0, 27.1, 88.1), s.editBox!!.toList())
+        assertEquals("seed:1", s.selectedId) // the map fits it, like a row tap
+        v.requestSeed(small)
+        assertEquals(listOf("seed:1" to small), fake.reseeded); assertTrue(fake.seeded.isEmpty()) // the area's id, not a new area
+        assertNull(v.state.value.editingId) // a started seed leaves the edit
+        assertEquals(1, v.state.value.areas.size) // nothing was removed
+        assertTrue(fake.removed.isEmpty())
+    }
+
+    @Test fun seedAgainOnARowNeverReseedsTheAreaThatIsBeingEdited() = runTest {
+        val v = vm(); v.refresh(); v.editArea("seed:1")
+        v.requestSeedAgain(small)
+        assertEquals(listOf(small), fake.seeded); assertTrue(fake.reseeded.isEmpty())
+        assertEquals("seed:1", v.state.value.editingId) // still editing
+    }
+
+    @Test fun cancelEditLeavesTheAreaAloneAndALargeEditStillAsksFirst() = runTest {
+        val v = vm(); v.refresh(); v.editArea("seed:1")
+        v.endEdit()
+        assertNull(v.state.value.editingId); assertNull(v.state.value.editBox)
+        v.requestSeed(small); assertEquals(listOf(small), fake.seeded); assertTrue(fake.reseeded.isEmpty()) // not editing: an ordinary new seed
+        val w = vm(); w.refresh(); w.editArea("seed:1"); w.requestSeed(large)
+        assertNotNull(w.state.value.confirmCells); assertTrue(fake.reseeded.isEmpty())
+        w.confirmSeed(); assertEquals(listOf("seed:1" to large), fake.reseeded)
+        val x = vm(); x.refresh(); x.editArea("seed:1"); x.requestSeed(huge) // too large: refused, still editing
+        assertEquals("seed:1", x.state.value.editingId); assertEquals(1, fake.reseeded.size)
+    }
+
+    @Test fun editIsRefusedWhileTheAreaIsSeedingAndDroppedWhenTheAreaIsRemoved() = runTest {
+        fake.areas = listOf(SeedAreaInfo("seed:1", 27.0, 88.0, 27.1, 88.1, AREA_SEEDING, seed = com.rokid.context.phone.place.SeedAreaState(com.rokid.context.phone.place.SeedPhase.RUNNING, 10)))
+        val v = vm(); v.refresh(); v.editArea("seed:1")
+        assertNull(v.state.value.editingId); assertTrue(v.state.value.messageIsError)
+        fake.areas = listOf(SeedAreaInfo("seed:1", 27.0, 88.0, 27.1, 88.1, AREA_DONE))
+        val w = vm(); w.refresh(); w.editArea("seed:1"); fake.areas = emptyList(); w.refresh()
+        assertNull(w.state.value.editingId)
     }
 
     @Test fun mapBackgroundTapClearsTheHighlightAndRemovalClearsItToo() = runTest {

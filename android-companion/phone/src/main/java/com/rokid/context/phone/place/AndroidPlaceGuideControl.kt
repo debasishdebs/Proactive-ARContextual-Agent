@@ -205,6 +205,22 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
         com.rokid.context.core.log.PcLog.i("PcPlaceSeed", "seed retry queued")
         com.rokid.context.phone.ui.settings.place.SeedOutcome("Retrying the failed cells in the background.")
     }
+    override suspend fun reseed(id: String, box: GeoBox): Result<com.rokid.context.phone.ui.settings.place.SeedOutcome> = runCatching {
+        if (com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() != com.rokid.context.core.net.ModelPrivacy.AUTO) {
+            com.rokid.context.core.log.PcLog.i("PcData", "seed refused: offline only")
+            throw com.rokid.context.phone.ui.settings.place.SeedOfflineOnlyException()
+        }
+        val n = com.rokid.context.memory.place.Geohash5.cellsCovering(box).size
+        val cap = if (com.rokid.context.orchestration.forget.DeveloperFlags.bulkSeed(app)) com.rokid.context.memory.place.PlacePack.MAX_SEED_CELLS_BULK else com.rokid.context.memory.place.PlacePack.MAX_SEED_CELLS
+        if (n == 0 || n > cap) throw IllegalArgumentException("cells=$n") // counts only
+        val pack = PlaceGraph.readyPack(app)
+        if (pack.areas().none { it.blueZoneId == id }) throw IllegalArgumentException("area gone")
+        // The SAME area id (its name and colour stay) takes the new rectangle. Nothing is deleted: places stored before stay, also those outside a smaller box. The pack skips cells that are fresh.
+        pack.beginArea(id, box)
+        seedWork.enqueue(id)
+        com.rokid.context.core.log.PcLog.i("PcPlaceSeed", "seed edit queued")
+        com.rokid.context.phone.ui.settings.place.SeedOutcome("Seeding the changed box in the background. Places already fetched are kept.")
+    }
     override suspend fun rename(id: String, name: String?) = PlaceGraph.readyPack(app).setAreaName(id, name)
     override suspend fun pins() = guide.pinning?.pins().orEmpty().map { com.rokid.context.phone.ui.settings.privacy.zones.PinInfo(it.lat, it.lon, it.radiusM) }
     override suspend fun seed(box: GeoBox) = guide.seed(box)

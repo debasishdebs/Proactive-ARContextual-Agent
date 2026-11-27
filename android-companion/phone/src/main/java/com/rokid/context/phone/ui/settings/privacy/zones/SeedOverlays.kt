@@ -66,6 +66,11 @@ interface SeedMapControl {
     suspend fun cellStatuses(box: GeoBox): Map<String, String> = emptyMap()
     /** Saves the owner's colour (a [SeedPalette] index) for the area; kept in a small prefs file keyed by a hash of the id. */
     suspend fun setColour(id: String, index: Int) {}
+    /**
+     * "Edit box": the area [id] keeps its id, name and colour and takes the new [box]; only the cells that are not fresh are fetched (the pack's own freshness rule). Nothing is deleted: places fetched before stay,
+     * also those that fall outside a smaller box. Same Offline only refusal as a new seed.
+     */
+    suspend fun reseed(id: String, box: GeoBox): Result<SeedOutcome> = Result.failure(UnsupportedOperationException())
 }
 
 /**
@@ -244,6 +249,11 @@ data class SeedMapUiState(
     val focusSeq: Int = 0,
     /** The selected area's box grown by a small margin ([SeedFocus.fitBox]): what the map fits. No text shows it. */
     val focusBox: DoubleArray? = null,
+    /** "Edit box": the area whose rectangle is being reshaped in the draft box (null = a new seed). "Seed this box" then re-seeds THIS area; its places are kept. */
+    val editingId: String? = null,
+    /** Counts up on every "Edit box" tap; the screen loads [editBox] into its draft box when it changes. */
+    val editSeq: Int = 0,
+    val editBox: DoubleArray? = null,
 )
 
 /** The pure part of "tap a seeded area": the box the map fits (the area plus a margin) and the row tap and map tap results. */
@@ -260,6 +270,7 @@ object SeedFocus {
 data class SeedAreaRow(val id: String, val text: String, val colour: Int = 0)
 
 object SeedAreaList {
+    const val EDIT_NOTE = "Drag the handles to change the box, or drag inside it to move it. Places already fetched are kept (nothing is deleted, also not when the box gets smaller); only the cells that are not fresh are fetched."
     const val ATTRIBUTION = "Place text from Wikipedia (CC BY-SA), Wikidata (CC0) and (c) OpenStreetMap contributors (ODbL). Licence names are from the projects' standard terms."
     /** The pure outcome of [truth]: the area status to show, the cells that did not seed, whether it was cancelled and how many stored cells have no OSM extras. */
     data class Truth(val status: String, val failed: Int, val cancelled: Boolean, val noOsm: Int)
@@ -333,6 +344,16 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
         _state.update { it.copy(selectedId = id, focusBox = SeedFocus.fitBox(a.box), focusSeq = it.focusSeq + 1) }
     }
 
+    /** "Edit box" on an area row: the area's rectangle goes into the draft box (the screens watch [SeedMapUiState.editSeq]) and the next "Seed this box" re-seeds THIS area with the new rectangle. Not while it is seeding. */
+    fun editArea(id: String) {
+        val a = infos.firstOrNull { it.id == id } ?: return
+        if (a.seed != null || _state.value.seeding) { _state.update { it.copy(message = "This area is being seeded. Wait for it to finish or cancel it first.", messageIsError = true) }; return }
+        _state.update { it.copy(selectedId = id, focusBox = SeedFocus.fitBox(a.box), focusSeq = it.focusSeq + 1, editingId = id, editBox = a.box, editSeq = it.editSeq + 1, message = null) }
+    }
+
+    /** Leaves "Edit box" (Cancel, Clear box): the area is untouched. */
+    fun endEdit() = _state.update { if (it.editingId == null) it else it.copy(editingId = null, editBox = null) }
+
     /** A tap on the map background clears the highlight (the map keeps its view). */
     fun clearFocus() = _state.update { if (it.selectedId == null) it else it.copy(selectedId = null, focusBox = null) }
 
@@ -353,7 +374,10 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
         }
     }
 
-    private fun SeedMapUiState.keepSelection(a: List<SeedAreaInfo>) = if (selectedId != null && a.none { it.id == selectedId }) copy(selectedId = null, focusBox = null) else this
+    private fun SeedMapUiState.keepSelection(a: List<SeedAreaInfo>): SeedMapUiState {
+        val s = if (selectedId != null && a.none { it.id == selectedId }) copy(selectedId = null, focusBox = null) else this
+        return if (s.editingId != null && a.none { it.id == s.editingId }) s.copy(editingId = null, editBox = null) else s
+    }
 
     private var poll: kotlinx.coroutines.Job? = null
     /** While a background seed is active the rows are re-read every few seconds; it stops when none is (and with the screen: viewModelScope). */
@@ -381,33 +405,42 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
 
     fun cancelSeed(id: String) { viewModelScope.launch(work) { runCatching { control.cancelSeed(id) }; refresh() } }
 
-    /** The user taps "Seed places in this box". Too large is refused here; above the confirm threshold it waits for a yes. */
-    fun requestSeed(box: GeoBox?) {
+    /** The user taps "Seed places in this box" (or "Seed this box" while editing an area: then it is THAT area that is re-seeded). Too large is refused here; above the confirm threshold it waits for a yes. */
+    fun requestSeed(box: GeoBox?) = request(box, _state.value.editingId)
+
+    /** "Seed again" on an area row: the area's own box, never an edit of another area. */
+    fun requestSeedAgain(box: GeoBox?) = request(box, null)
+
+    private var pendingEdit: String? = null
+
+    private fun request(box: GeoBox?, edit: String?) {
         if (_state.value.seeding) return
         if (box == null) { _state.update { it.copy(message = "Draw a box on the map first.", messageIsError = true) }; return }
         val n = SeedEstimate.cells(box)
         when (SeedEstimate.level(n)) {
             SeedLevel.EMPTY -> _state.update { it.copy(message = "Draw a box on the map first.", messageIsError = true) }
             SeedLevel.TOO_LARGE -> _state.update { it.copy(message = SeedEstimate.line(box), messageIsError = true) }
-            SeedLevel.CONFIRM -> { pendingBox = box; _state.update { it.copy(confirmCells = n) } }
-            SeedLevel.OK -> start(box)
+            SeedLevel.CONFIRM -> { pendingBox = box; pendingEdit = edit; _state.update { it.copy(confirmCells = n) } }
+            SeedLevel.OK -> start(box, edit)
         }
     }
 
     fun confirmSeed() {
         val b = pendingBox ?: return
         pendingBox = null
+        val e = pendingEdit; pendingEdit = null
         _state.update { it.copy(confirmCells = null) }
-        start(b)
+        start(b, e)
     }
 
-    fun cancelConfirm() { pendingBox = null; _state.update { it.copy(confirmCells = null) } }
+    fun cancelConfirm() { pendingBox = null; pendingEdit = null; _state.update { it.copy(confirmCells = null) } }
 
-    private fun start(box: GeoBox) {
+    private fun start(box: GeoBox, edit: String? = null) {
         if (_state.value.seeding) return
         _state.update { it.copy(seeding = true, message = "Starting…", messageIsError = false) }
         viewModelScope.launch(work) {
-            val r = control.seed(box)
+            val r = if (edit != null) control.reseed(edit, box) else control.seed(box)
+            if (r.isSuccess && edit != null) _state.update { it.copy(editingId = null, editBox = null) }
             val byRemoval = (r.exceptionOrNull() as? com.rokid.context.memory.place.SeedStopped)?.reason == "area removed" // the removal's own message says it
             _state.update { if (byRemoval) it.copy(seeding = false) else it.copy(seeding = false, message = r.fold({ o -> o.message }, { t -> seedFailureText(t) }), messageIsError = r.isFailure) }
             refresh()

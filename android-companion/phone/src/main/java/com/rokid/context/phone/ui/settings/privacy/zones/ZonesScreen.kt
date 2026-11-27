@@ -164,7 +164,7 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
         val seedState by seedVm.state.collectAsStateWithLifecycle()
         LaunchedEffect(seedVm) { seedVm.refresh() }
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
-        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour)
+        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour, seedVm::requestSeedAgain, seedVm::editArea, seedVm::endEdit)
     }
     if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back), null, online, seedPanel, networkOnline); return }
     val mapVm = viewModel(key = "offline_map") { OfflineMapViewModel(offline.files, offline.store) }
@@ -260,6 +260,12 @@ class SeedPanel(
     val clearFocus: () -> Unit = {},
     /** The owner's colour choice for an area (a [SeedPalette] index). */
     val setColour: (String, Int) -> Unit = { _, _ -> },
+    /** "Seed again" on a row: the area's own box (never an edit). */
+    val seedAgain: (com.rokid.context.memory.place.GeoBox?) -> Unit = seedBox,
+    /** "Edit box": loads the area's rectangle into the draft box. */
+    val editArea: (String) -> Unit = {},
+    /** Leaves "Edit box" without seeding. */
+    val endEdit: () -> Unit = {},
 )
 
 /** The remove-area dialog (both map screens): "the area and its places" is preselected; the other choice keeps the places as ordinary fetched places. */
@@ -392,11 +398,16 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
 private fun SeedCard(state: ZonesUiState, p: SeedPanel, on: ZonesCallbacks) {
     val box = SeedEstimate.boxOf(state.draft.box())
     val cells = box?.let { SeedEstimate.cells(it) } ?: 0L
+    val editing = p.ui.editingId != null
+    // "Edit box": the area's rectangle is loaded into the draft by the screen; the same handles then reshape it.
+    LaunchedEffect(p.ui.editSeq) { if (p.ui.editSeq > 0) p.ui.editBox?.let { b -> on.editDraft { d -> ZoneDrafts.withBox(d, b) } } }
     SettingsCard {
-        Text("Seed places in the box", style = MaterialTheme.typography.titleMedium)
+        Text(if (editing) "Edit the seeded area's box" else "Seed places in the box", style = MaterialTheme.typography.titleMedium)
+        if (editing) NoticeText(SeedAreaList.EDIT_NOTE, tag = "seed_edit_note")
         NoticeText(SeedEstimate.estimate(box, p.ui.rates), error = SeedEstimate.level(cells) == SeedLevel.TOO_LARGE, tag = "seed_estimate")
-        PrimaryAction("Seed places in this box", { p.seedBox(box) }, tag = "seed_box", enabled = !p.ui.seeding && box != null && SeedEstimate.level(cells) != SeedLevel.TOO_LARGE)
-        if (box != null) SecondaryAction("Clear box", { on.editDraft { ZoneDrafts.withoutBox(it) } }, tag = "seed_clear_box", enabled = !p.ui.seeding)
+        PrimaryAction(if (editing) "Seed this box" else "Seed places in this box", { p.seedBox(box) }, tag = "seed_box", enabled = !p.ui.seeding && box != null && SeedEstimate.level(cells) != SeedLevel.TOO_LARGE)
+        if (editing) SecondaryAction("Cancel edit", { p.endEdit(); on.editDraft { ZoneDrafts.withoutBox(it) } }, tag = "seed_edit_cancel", enabled = !p.ui.seeding)
+        else if (box != null) SecondaryAction("Clear box", { on.editDraft { ZoneDrafts.withoutBox(it) } }, tag = "seed_clear_box", enabled = !p.ui.seeding)
         else NoticeText("Draw a box with Draw a box above, then drag its handles to resize it or drag inside it to move it.", tag = "seed_box_hint")
         p.ui.message?.let { m -> NoticeText(m, error = p.ui.messageIsError, tag = "seed_message"); SecondaryAction("Dismiss", p.dismiss, tag = "seed_message_dismiss") }
         SeedProgressRows(p)

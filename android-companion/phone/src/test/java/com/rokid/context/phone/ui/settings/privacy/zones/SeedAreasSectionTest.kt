@@ -112,6 +112,25 @@ class SeedAreasSectionTest {
         assertEquals(listOf("retry:seed:2", "seed", "remove:seed:2"), log)
     }
 
+    @Test fun editBoxButtonAndTheEditingSeedCardOnPauseZones() {
+        val log = mutableListOf<String>()
+        val drafts = mutableListOf<ZoneDraft>()
+        val ed = ui().copy(editingId = "seed:1", editSeq = 1, editBox = doubleArrayOf(27.0, 88.0, 27.1, 88.1))
+        val state = androidx.compose.runtime.mutableStateOf(ZonesUiState())
+        val panel = SeedPanel(ed, false, { log += "seed" }, {}, {}, {}, {}, {}, {}, editArea = { log += "edit:$it" }, endEdit = { log += "end" })
+        val on = ZonesCallbacks({}, {}, { _, _ -> }, { f -> drafts += f(state.value.draft) }, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {})
+        compose.setContent { PcTheme { ZonesScreen(state.value, on, null, null, panel, networkOnline = false) } }
+        compose.onNodeWithTag("zones_screen").performScrollToNode(hasTestTag("seed_edit_seed:1"))
+        compose.onNodeWithTag("seed_edit_seed:1").performClick()
+        compose.onNodeWithTag("zones_screen").performScrollToNode(hasTestTag("seed_edit_note"))
+        compose.onNodeWithTag("seed_edit_note").assertExists() // "Places already fetched are kept"
+        assertTrue(SeedAreaList.EDIT_NOTE.contains("Places already fetched are kept"))
+        compose.onNodeWithTag("seed_edit_cancel").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("edit:seed:1", "end"), log)
+        assertEquals(listOf(27.0, 88.0, 27.1, 88.1), drafts.first().box()!!.toList()) // the screen loaded the area's rectangle into the draft
+    }
+
     private val on0 get() = ZonesCallbacks({}, {}, { _, _ -> }, {}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {})
 
     @Test fun everyRowHasItsColourChipAndThePaletteSavesTheChoice() {

@@ -154,6 +154,12 @@ class MapZonesViewModel(
         s.copy(shape = d, kind = ShapeKind.RECT, editingId = null, name = "", bufferText = PauseZone.DEFAULT_BUFFER_M.toString(), sheet = SheetMode.SEED, sheetError = null, coordError = null, selected = null, history = DraftHistory())
     }
 
+    /** "Edit box" of a seeded area: its rectangle becomes the draft and the Seed sheet opens (the pause store is not touched). */
+    fun editSeedBox(box: DoubleArray?) = edit { s ->
+        val d = AlsoSeed.draftOf(box) ?: return@edit s
+        s.copy(shape = d, kind = ShapeKind.RECT, editingId = null, name = "", bufferText = PauseZone.DEFAULT_BUFFER_M.toString(), sheet = SheetMode.SEED, sheetError = null, coordError = null, selected = null, drawing = false, history = DraftHistory())
+    }
+
     /** Drops the draft, the sheet and any edit. Makes no store call. */
     fun cancelDraw() = edit { it.copy(shape = null, drawing = false, sheet = SheetMode.NONE, editingId = null, name = "", bufferText = PauseZone.DEFAULT_BUFFER_M.toString(), sheetError = null, saving = false, history = DraftHistory(), coordError = null) }
 
