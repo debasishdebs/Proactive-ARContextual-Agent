@@ -206,6 +206,11 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
         get() = runCatching { prefs.getBoolean(PIN_NEARBY_KEY, false) }.getOrDefault(false)
         set(v) { prefs.edit().putBoolean(PIN_NEARBY_KEY, v).apply() }
 
+    /** "Also show places that have no photo, by GPS only": default OFF. ON = nearby places with NO reference photo are exempt from the confirmed-only hold and get the old nearby card (only while [confirmedOnly]). */
+    var noPhotoByGps: Boolean
+        get() = runCatching { prefs.getBoolean(NO_PHOTO_GPS_KEY, false) }.getOrDefault(false)
+        set(v) { prefs.edit().putBoolean(NO_PHOTO_GPS_KEY, v).apply() }
+
     /** "How to check the photo": Automatic (default), Online only, On the phone only. An unknown stored value reads as Automatic. */
     var checkMode: CheckMode
         get() = CheckMode.parse(runCatching { prefs.getString(CHECK_MODE_KEY, null) }.getOrNull())
@@ -239,7 +244,7 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
     fun resetPhotoMatch() { val e = prefs.edit(); for (n in listOf("own", "centroid", "web")) for (f in listOf("high", "floor", "margin")) e.remove("pm.$n.$f"); e.apply() }
 
     /** The policy of one attempt, read per attempt (so a switch applies at once). [layers] = the Developer layer switches. */
-    fun policy(l1: Boolean, l2: Boolean): PlacePolicy = PlacePolicy(confirmedOnly, checkMode, pinCardsNearby, l1, l2, photoMatch)
+    fun policy(l1: Boolean, l2: Boolean): PlacePolicy = PlacePolicy(confirmedOnly, checkMode, pinCardsNearby, l1, l2, photoMatch, noPhotoByGps)
 
     /** One "Extra place type" switch (Settings > Place Guide; [com.rokid.context.connectors.place.ExtraPlaceTypes]): ON by default (owner decision 27 Nov night), an unreadable pref reads as the default. Stored places are never purged by switching one off. */
     fun extraType(key: String): Boolean {
@@ -266,6 +271,7 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
         private const val RADIUS_KEY = "candidateRadiusM"
         private const val CONFIRMED_ONLY_KEY = "confirmedOnly"
         private const val PIN_NEARBY_KEY = "pinCardsNearby"
+        private const val NO_PHOTO_GPS_KEY = "noPhotoByGps"
         private const val CHECK_MODE_KEY = "checkMode"
         private const val BEST_OF_K_KEY = "bestOfK"
         private const val SHOW_ALL_KEY = "showAllAttempts"

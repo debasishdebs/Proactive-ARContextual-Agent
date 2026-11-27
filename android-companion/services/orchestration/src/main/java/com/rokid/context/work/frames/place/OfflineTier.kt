@@ -98,7 +98,7 @@ class OfflineTier(
     }
 
     companion object {
-        /** Cosine of the photo caption and a candidate's text (bge-small, name only): the first guess from the Mac test, to be calibrated on the phone. */
+        /** Cosine of the photo caption and a candidate's text (bge-small, name + kind + description): the first guess from the Mac test, to be calibrated on the phone. */
         const val DEFAULT_CUTOFF = 0.55f
         const val MIN_CUTOFF = 0.30f
         const val MAX_CUTOFF = 0.90f
@@ -137,10 +137,10 @@ fun interface TextEmbed {
     suspend fun embed(texts: List<String>): List<FloatArray>?
 }
 
-/** A place the caption is compared with. The text is name plus kind (the long summary made bge-small worse in the Mac test); a user's own pin uses its name and note. */
+/** A place the caption is compared with. Owner spec 28 Nov: the text is name, kind AND the description (summary), so a caption that matches the description raises the rank; a user's own pin uses its name and note. */
 class OfflineCandidate(val place: PlaceEntity) {
     fun text(): String = if (UserPlace.isUserId(place.id)) listOf(place.name, place.summary).filter { it.isNotBlank() }.joinToString(". ").take(TEXT_MAX)
-    else "${place.name} ${PlaceCards.kindLabel(place.kind).lowercase()}".take(TEXT_MAX)
+    else listOf(place.name, PlaceCards.kindLabel(place.kind).lowercase(), place.summary.trim().replace('\n', ' ')).filter { it.isNotBlank() }.joinToString(". ").take(TEXT_MAX)
 
     private companion object { const val TEXT_MAX = 300 }
 }

@@ -129,6 +129,8 @@ object PlaceSamplers {
             dedupeV2On = { DeveloperFlags.placeDedupeV2(app) }, retryOn = { DeveloperFlags.placeRetryOnPin(app) },
             offlineGuess = tier?.let { t -> { id, hits -> offlineGuessOf(app, t, id, hits, zoneBlocked, share::get) } },
             photoLayer = { id, hits, live -> layer1.score(id, hits, live) },
+            matchPlaces = { id, places -> matchPlacesCall(app, id, places, zoneBlocked, currentZoneTicket(), share::get) },
+            refPlaceIds = { places -> PlaceL2Refs.placesWithRefs(app, places) },
             policy = { PlaceGuideSettings.of(app).policy(l1 = DeveloperFlags.placeL1Photo(app), l2 = DeveloperFlags.placeL2Vision(app)) },
             offlineAvailable = { tier?.isEnabled() == true },
         )
@@ -359,6 +361,33 @@ object PlaceSamplers {
     private val refScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
 
     private const val TAG = "PcPlace"
+
+    private const val L2_REF_CAP = 3
+
+    /**
+     * Layer 2, owner spec 28 Nov: ONE PLACE_MATCH call with the camera photo AND up to [PlaceL2Request.PER_CANDIDATE] reference photos per candidate (at most [PlaceL2Request.MAX_REFS] in all) AND each candidate's name, kind and
+     * description. A candidate with no photo is still sent, as text. Every image rides the same router checks as the camera photo (Data saver / roaming gate and byte counts, liveness, delivery proof). A provider that cannot
+     * take images makes the router answer without them ([PlaceMatchResult.delivered] false), exactly as before. [refsOf] is a seam for tests. Null = the camera photo is gone or the call failed.
+     */
+    internal suspend fun matchPlacesCall(
+        app: Context, frameId: String, places: List<PlaceEntity>, zoneBlocked: suspend () -> Boolean = { false }, ticket: ZoneTicket? = null,
+        photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto? = { FramePhotos.load(app, listOf(it)).photos.singleOrNull() },
+        refsOf: suspend (PlaceEntity, Int, String) -> List<L2Image> = { p, n, ref -> PlaceL2Refs.refsFor(app, p, n, ref) },
+    ): PlaceMatchResult? {
+        val photo = photoOf(frameId) ?: return null
+        var budget = PlaceL2Request.MAX_REFS
+        val cands = places.map { p -> L2Candidate(p, if (budget <= 0) emptyList() else refsOf(p, minOf(PlaceL2Request.PER_CANDIDATE, budget), frameId).take(PlaceL2Request.PER_CANDIDATE).also { budget -= it.size }) }
+        val req = PlaceL2Request.build(L2Image(photo.image.base64Data, frameId), cands)
+        val images = req.images.mapIndexed { i, im -> if (i == 0) photo.image.copy(ref = frameId) else com.rokid.context.model.ModelImageInput("image/jpeg", im.base64, detail = "low", ref = im.ref) }
+        val r = try {
+            AiGraph.get(app).runner.run(RoleCall(PromptKey.PLACE_MATCH, PromptVars(recentContext = PromptComposer.dataBlock("candidates", req.lines)), images = images, callClass = CallClass.EXTRACT,
+                liveness = ZoneFencedLiveness(com.rokid.context.work.frames.FrameLiveness.forApp(app, MemoryWipe.generation.get()), zoneBlocked, ticket), sources = com.rokid.context.model.PayloadSources.frames(listOf(frameId))))
+        } catch (f: com.rokid.context.ai.PhotoForgottenException) {
+            return null
+        }
+        val out = r.output as? PlaceMatchOutput ?: return null
+        return PlaceMatchResult(out, r.imagesDelivered, req.refCount, req.withRefs)
+    }
 
     /**
      * One photo, one PLACE_MATCH call through the same router and choke point as VISION_EXTRACT / INTENT_CLASSIFY (CallClass.EXTRACT, so the AI call pace applies; the photo carries its ref and

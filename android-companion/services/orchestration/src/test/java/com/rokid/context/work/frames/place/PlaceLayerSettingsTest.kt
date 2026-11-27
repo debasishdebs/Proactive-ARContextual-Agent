@@ -40,6 +40,15 @@ class PlaceLayerSettingsTest {
         assertFalse(PlacePolicy(confirmedOnly = true, pinCardsNearby = true).holdPins)
     }
 
+    @Test fun noPhotoByGpsSwitchDefaultsOffStoresAndFeedsThePolicy() {
+        val s = fresh()
+        assertFalse(s.noPhotoByGps); assertFalse(s.policy(true, true).noPhotoByGps)
+        s.noPhotoByGps = true
+        assertTrue(PlaceGuideSettings.of(ctx).noPhotoByGps); assertTrue(PlaceGuideSettings.of(ctx).policy(true, true).noPhotoByGps)
+        s.noPhotoByGps = false; assertFalse(PlaceGuideSettings.of(ctx).policy(true, true).noPhotoByGps)
+        assertFalse(PlacePolicy().noPhotoByGps)
+    }
+
     @Test fun theNineNumbersAreClampedAndReset() {
         val s = fresh()
         s.photoMatch = PhotoMatchConfig(KindThresholds(10, 5, 9999), KindThresholds(970, 880, 25), KindThresholds(940, 0, 15))

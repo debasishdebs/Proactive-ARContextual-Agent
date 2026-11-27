@@ -112,11 +112,23 @@ class OfflineTierTest {
         assertEquals("failed", tier().guess("/p", listOf(museum)).token)
     }
 
-    @Test fun candidateTextIsNameAndKindNeverTheSummary() = runTest {
+    @Test fun candidateTextIsNameKindAndDescription() = runTest {
         tier().guess("/p", listOf(museum))
         val texts = emb.seen.single()
-        assertEquals("a museum gallery with paintings", texts[0]); assertEquals("Salar Jung Museum museum", texts[1])
-        assertFalse(texts.joinToString().contains("summary"))
+        assertEquals("a museum gallery with paintings", texts[0]); assertEquals("Salar Jung Museum. museum. A very long stored summary that must never reach the text embedder.", texts[1])
+        assertTrue(OfflineCandidate(pl("wd:Q9", "N", "fort", "x".repeat(900))).text().length <= 300)
+    }
+
+    /** Layer 3 (owner spec 28 Nov): a caption that matches only the DESCRIPTION ranks the place above one whose name alone is a worse match. */
+    @Test fun theDescriptionRaisesTheRankOfAMatchingPlace() = runTest {
+        cap.result = Result.success("a museum gallery")
+        val named = OfflineCandidate(pl("wd:Q5", "Heritage Hall", "building", "")) // name only: no 'museum' word anywhere
+        val described = OfflineCandidate(pl("wd:Q6", "Heritage Hall", "building", "A museum of old paintings."))
+        val r = tier().guess("/p", listOf(named, described))
+        assertEquals("the described twin wins", "wd:Q6", r.place?.id)
+        now += OfflineTier.RATE_LIMIT_MS
+        val nameOnly = tier().guess("/p", listOf(named))
+        assertNull("without the description the same place stays below the cut-off", nameOnly.place)
     }
 
     @Test fun aPinUsesItsNameAndNote() {

@@ -47,21 +47,24 @@ LAYER 1  photo vs reference photos, on the phone (any network state)
    |-- below FLOOR: that place is dropped from the list; places with no reference stay in the list
    |
 check mode + network + Data saver:
-   |-- online allowed -> LAYER 2 vision model over the narrowed list (as today)
+   |-- online allowed -> LAYER 2 vision model: ONE call with the camera photo (Image 1) AND up to 2 reference photos per candidate (at most 8 in all) AND each candidate's name, kind and description; it picks a numbered candidate or none (owner spec 28 Nov)
    |        confirmed: its chosen place with confidence >= the existing floor -> card
    |        low confidence -> POSSIBLE row (as today); "none" -> NO_MATCH row
    |        genuine call failure -> Layer 3 in Automatic mode, else HELD row
    |-- offline, Offline only, Data saver blocks the photo, or the call failed -> LAYER 3 caption rank
-   |        cosine >= cut-off -> card labelled "Maybe <place>"
+   |        the caption is compared with the name + kind + description text of the nearby places; cosine >= cut-off (constant 0.55, configurable) -> card labelled "Maybe <place>"
    |        below -> HELD row
    |
 nothing confirmed and one nearest place within 100 m -> NEARBY row in Activity with the reason (HELD_*), NOT on the glasses
+   (switch 'Also show places that have no photo, by GPS only', default OFF: when ON, nearby places with NO reference photo at all skip this hold and get the plain nearby card; places with photos still go through the layers)
 ```
+
+Layer 2 request (`PlaceL2Request`): text lines name each image ('Image 1 = camera photo'; 'Candidate 3 ... reference photos Image 4, Image 5' or 'no reference photo'); reference photos come from the pin's own Moment, glance references (place_link REF/CARD_REF) and the seeded 330 px thumbnail (`PlaceL2Refs`). All images go through the same router gate as the camera photo (Data saver / roaming, byte count, liveness); Data saver blocking the photo stays HELD_DATA_SAVER. Backends: OpenAI-compatible and Ollama providers send every image; the on-device llama.cpp provider takes none, so the router answers text-only as before. Logs carry counts only (`l2refs`, `l2candRef`, `noPhoto`).
 
 "Confirmation", per layer, in plain terms:
 - Layer 1: the similarity score (cosine x 1000, "milli") of the photo against the place's best reference photo is at or above HIGH, and it leads the next place by at least MARGIN.
-- Layer 2: the vision model picked one numbered candidate and its stated confidence is at or above the existing floor (`BackendThresholds.minConfidence`, unchanged).
-- Layer 3: the cosine between the photo caption and the place's name text is at or above the cut-off (0.55 now). It is a guess, so the card says "Maybe".
+- Layer 2: the vision model, given the camera photo, the reference photos and the name/kind/description of each candidate (a candidate without a photo is still listed, as text), picked one numbered candidate and its stated confidence is at or above the existing floor (`BackendThresholds.minConfidence`, unchanged).
+- Layer 3: the cosine between the photo caption and the place's name + kind + description text is at or above the cut-off (0.55 now). It is a guess, so the card says "Maybe".
 
 ## 3. Layer 1 in detail
 

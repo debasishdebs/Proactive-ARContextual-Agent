@@ -47,8 +47,8 @@ class PlacePhotoRulesTest {
 
     @Test fun storedPhotosAndVectorsAreNeverReadByAModelCall() {
         val users = all().filter { f -> code(f).let { it.contains("imageVectorsFor(") || it.contains("imagesOf(") } }.map { it.name }.toSet()
-        // the matcher reference path, the pack, the embed glue, the credit line and the fetcher: none of them builds a model request
-        assertEquals(setOf("PlacePack.kt", "PlaceSamplers.kt", "PlaceImages.kt", "AndroidPlaceGuideControl.kt", "PlaceRefPhotos.kt", "PlacesDb.kt").sorted(), users.sorted().filter { it != "PlaceImagesTest.kt" })
+        // owner spec 28 Nov: PlaceL2Refs.kt is the ONE place a seeded thumbnail is read into a Layer 2 model request. The matcher reference path, the pack, the embed glue, the credit line and the fetcher: none of them builds a model request
+        assertEquals(setOf("PlacePack.kt", "PlaceSamplers.kt", "PlaceImages.kt", "AndroidPlaceGuideControl.kt", "PlaceRefPhotos.kt", "PlacesDb.kt", "PlaceL2Refs.kt").sorted(), users.sorted().filter { it != "PlaceImagesTest.kt" })
         for (f in all().filter { it.name in setOf("PlaceMatchCall.kt", "PlaceResolvers.kt", "PlaceVision.kt") }) assertFalse(f.name, code(f).let { it.contains("imagesOf(") || it.contains("imageVectorsFor(") })
     }
 

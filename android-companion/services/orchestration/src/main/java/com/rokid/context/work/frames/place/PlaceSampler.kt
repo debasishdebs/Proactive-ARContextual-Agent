@@ -44,7 +44,7 @@ interface PlaceFrameStore {
 }
 
 /** The model's answer and whether the router proved the photo reached it. */
-data class PlaceMatchResult(val output: PlaceMatchOutput, val delivered: Boolean)
+data class PlaceMatchResult(val output: PlaceMatchOutput, val delivered: Boolean, /** Layer 2 counts only (never names): reference photos sent, candidates that had one. */ val refImages: Int = 0, val candWithRefs: Int = 0)
 
 /** What the memory writer needs for one `type="place"` row. */
 data class PlaceMemoryRequest(
@@ -108,6 +108,8 @@ data class PlacePolicy(
     val l2: Boolean = true,
     /** The nine Layer 1 numbers in force: only the FLOOR of a kind is read here (the loop guard of B3: L2 confirmed AND the Layer 1 score at or above a real floor makes a glance a reference). */
     val photoMatch: com.rokid.context.memory.retrieval.PhotoMatchConfig = com.rokid.context.memory.retrieval.PhotoMatchConfig.DEFAULT,
+    /** "Also show places that have no photo, by GPS only" (default OFF): with [confirmedOnly], nearby places with NO reference photo are exempt from the hold and get the old nearby card. */
+    val noPhotoByGps: Boolean = false,
 ) {
     /** A pin-first (location only) card is held instead of shown. */
     val holdPins: Boolean get() = confirmedOnly && !pinCardsNearby
@@ -259,6 +261,10 @@ class PlaceSampler(
      * dedupe and before the call gap; it returns a [PhotoLayerOutcome] and never throws except for cancellation. [live] is the attempt's fence.
      */
     private val photoLayer: (suspend (frameId: String, hits: List<Pair<PlaceEntity, Double>>, live: () -> Boolean) -> PhotoLayerOutcome)? = null,
+    /** Layer 2 (owner spec 28 Nov): when set, used INSTEAD of [match]: the camera photo plus the reference photos and the name, kind and description of each candidate go in one call. Same result contract as [match]. */
+    private val matchPlaces: (suspend (frameId: String, places: List<PlaceEntity>) -> PlaceMatchResult?)? = null,
+    /** Of these places, the ids that HAVE any reference photo (seeded thumbnail, pin Moment, glance reference). Null = unknown: the no-photo switch then exempts nothing. */
+    private val refPlaceIds: (suspend (places: List<PlaceEntity>) -> Set<String>)? = null,
     /** The policy of the attempt, read once per attempt. */
     private val policy: () -> PlacePolicy = { PlacePolicy() },
     /** Is the offline guess (Layer 3) available at all (its Developer flags, the user's switch and the downloaded model)? Only used to tell "no model" from "no guess" in a held row. Default: as the [offlineGuess] hook exists. */
@@ -286,6 +292,7 @@ class PlaceSampler(
         val layersCard: String get() = if (card == "shown") "shown" else if (held != "-") "held_${held.removePrefix("held_")}" else "none"
         /** B3 eval record inputs: the Layer 1 decision (scores, margin), the check mode token, the Layer 2 answer token, confidence and picked place id. Never logged; they only go into the history row's eval. */
         var l1Res: com.rokid.context.memory.retrieval.PhotoConfirm.Result? = null; var checkMode = "-"; var photoMatch = com.rokid.context.memory.retrieval.PhotoMatchConfig.DEFAULT; var l2Conf: Int? = null; var l2Pick: String? = null; var evalCand: List<String> = emptyList()
+        var noPhoto: List<Pair<PlaceEntity, Double>> = emptyList(); var epoch = 0L; var l2Refs = 0; var l2WithRefs = 0
         var l1: String? = null; var l1k = 0; var l1With = 0; var l1No = 0; var l1Score = "na"; var l1Margin = "na"; var l1Cand = 0; var l2 = "-"; var l3 = "-"; var held = "-"; var l1Skip = "-"
         /** F7 fields (default "-"): where the fix came from, how old a reused fix really was, the pin-first decision, the weak back-off window, the retry reason, the history write, the text hit. */
         /** The place ids this attempt chose (a model pick, a pin card, a cluster, the nearest): handed to [chosenSink] ONLY; user-pin ids are never written to the log. */
@@ -349,7 +356,7 @@ class PlaceSampler(
         try { chosenSink(t.chosenIds) } catch (_: Exception) { }
         log("place outcome=${o.name}")
         // The one `place layers` line (counts, buckets and fixed tokens; no id, name, coordinate or score), only for an attempt that went through the layered flow.
-        if (t.l1 != null) log("place layers v=1 outcome=${o.name} l1=${t.l1} skip=${t.l1Skip} k=${t.l1k} cand=${t.cand} narrowed=${t.l1Cand} withRef=${t.l1With} noRef=${t.l1No} score=${t.l1Score} margin=${t.l1Margin} l2=${t.l2} l3=${t.l3} card=${t.layersCard}")
+        if (t.l1 != null) log("place layers v=1 outcome=${o.name} l1=${t.l1} skip=${t.l1Skip} k=${t.l1k} cand=${t.cand} narrowed=${t.l1Cand} withRef=${t.l1With} noRef=${t.l1No} score=${t.l1Score} margin=${t.l1Margin} l2=${t.l2} l2refs=${t.l2Refs} l2candRef=${t.l2WithRefs} noPhoto=${t.noPhoto.size} l3=${t.l3} card=${t.layersCard}")
         val totalMs = (elapsed() - t.startedAt).coerceAtLeast(0L)
         log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} pinCand=${t.pinCand} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err} mode=${t.mode} backend=${t.backend} resolve=${t.resolve} label=${t.label} thrV=${BackendThresholds.VERSION} fixSrc=${t.fixSrc} fixRealAgeB=${t.fixRealAgeB} pinFirst=${t.pinFirst} weakWin=${t.weakWin} retry=${t.retry} hist=${t.hist} textHit=${t.textHit}${maybeFields(t)}${shadowFields(t)}")
     }
@@ -522,6 +529,12 @@ class PlaceSampler(
         val hits = cutKeepingPins(pool.map { it to Geo.distanceM(fx.lat, fx.lon, it.lat, it.lon) })
         tr.cand = hits.size; tr.ids = idList(hits.map { it.first.id }.filter { !UserPlace.isUserId(it) }); tr.pinCand = hits.count { UserPlace.isUserId(it.first.id) }
         tr.evalCand = hits.map { it.first.id }
+        tr.epoch = cardEpoch
+        // Switch "Also show places that have no photo, by GPS only": the nearby places with NO reference photo are exempt from the confirmed-only hold (a pin keeps its own rule). Counts only.
+        if (pol.confirmedOnly && pol.noPhotoByGps && refPlaceIds != null) {
+            val has = try { refPlaceIds.invoke(hits.map { it.first }) } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
+            if (has != null) tr.noPhoto = hits.filter { !UserPlace.isUserId(it.first.id) && it.first.id !in has }
+        }
         // ---- LAYER 1: the photo against the reference photos of the candidates (on the phone, any network state) ----
         var list = hits
         val l1 = photoLayer
@@ -588,7 +601,7 @@ class PlaceSampler(
         val callAt = elapsed()
         val sh = shadow
         if (sh != null && shadowEnabled()) { tr.shadowStartedAt = elapsed(); tr.shadowPackIds = hits.map { it.first.id }.filter { !UserPlace.isUserId(it) }; tr.shadowPending = shadowScope.async { try { sh(f.frameId, hits) { shadowEnabled() && ticket.isOpen() && live(gen) } } catch (c: CancellationException) { throw c } catch (_: Exception) { null } } }
-        val res = try { match(f.frameId, lines) } catch (c: CancellationException) { throw c } catch (e: Exception) { genuineFailure = isGenuineCallFailure(e); tr.err = e.javaClass.simpleName; null }
+        val res = try { if (matchPlaces != null) matchPlaces.invoke(f.frameId, list.map { it.first }) else match(f.frameId, lines) } catch (c: CancellationException) { throw c } catch (e: Exception) { genuineFailure = isGenuineCallFailure(e); tr.err = e.javaClass.simpleName; null }
         flight.lastCallAt = elapsed() // the permit wait and the call are over: the gap runs from here, not from the start of the attempt
         tr.callMs = (flight.lastCallAt - callAt).coerceAtLeast(0L)
         if (stopped(gen, ticket, f.frameId) != null) return PlaceOutcome.DROPPED
@@ -601,9 +614,9 @@ class PlaceSampler(
         }
         if (!res.delivered) { tr.reason = "photo_not_delivered"; tr.l2 = "not_delivered"; if (pol.confirmedOnly) held(hits, CardDelivery.HELD_CALL_FAILED, f.frameId, gen, ticket); return PlaceOutcome.FAILED } // the photo was not proven to have reached the model: not a photo match, not a nearby guess either
         val choice = res.output.choice
-        tr.confPct = (res.output.confidence * 100).toInt(); tr.l2Conf = tr.confPct
-        if (choice.equals(NONE, ignoreCase = true)) { tr.reason = "model_none"; tr.l2 = "none"; if (pol.confirmedOnly) heldNoMatch(CardDelivery.HELD_NOT_CONFIRMED, f.frameId); return weak(PlaceOutcome.NONE) }
-        val idx = choice.toIntOrNull()?.takeIf { it in 1..list.size && it.toString() == choice } ?: run { tr.reason = "choice_out_of_range"; tr.l2 = "contract"; if (pol.confirmedOnly) heldNoMatch(CardDelivery.HELD_NOT_CONFIRMED, f.frameId); return weak(PlaceOutcome.CONTRACT) }
+        tr.confPct = (res.output.confidence * 100).toInt(); tr.l2Conf = tr.confPct; tr.l2Refs = res.refImages; tr.l2WithRefs = res.candWithRefs
+        if (choice.equals(NONE, ignoreCase = true)) { tr.reason = "model_none"; tr.l2 = "none"; if (pol.confirmedOnly) { exemptNearby(f.frameId, gen, ticket)?.let { return it }; heldNoMatch(CardDelivery.HELD_NOT_CONFIRMED, f.frameId) }; return weak(PlaceOutcome.NONE) }
+        val idx = choice.toIntOrNull()?.takeIf { it in 1..list.size && it.toString() == choice } ?: run { tr.reason = "choice_out_of_range"; tr.l2 = "contract"; if (pol.confirmedOnly) { exemptNearby(f.frameId, gen, ticket)?.let { return it }; heldNoMatch(CardDelivery.HELD_NOT_CONFIRMED, f.frameId) }; return weak(PlaceOutcome.CONTRACT) }
         tr.l2Pick = list[idx - 1].first.id
         setChosen(list[idx - 1].first); tr.distB = bucketM(list[idx - 1].second)
         tr.shadowChoice = tr.chosenIds.firstOrNull() // P3-7: the private id stays internal for the scorer's ranking; the log only ever prints the redacted `chosen` token
@@ -764,6 +777,7 @@ class PlaceSampler(
      */
     private suspend fun held(hits: List<Pair<PlaceEntity, Double>>, token: String, frameId: String, gen: Long, ticket: ZoneTicket): PlaceOutcome {
         stopped(gen, ticket, frameId)?.let { return it }
+        exemptNearby(frameId, gen, ticket)?.let { return it }
         val why = token
         val first = hits.firstOrNull()
         val unique = first != null && gap(first.first, first.second) <= NEARBY_M && !(hits.size > 1 && gap(hits[1].first, hits[1].second) <= NEARBY_M)
@@ -773,6 +787,15 @@ class PlaceSampler(
             record(if (UserPlace.isUserId(p.id)) HistoryKind.PIN else HistoryKind.NEARBY, p.id, p.name, emptyList(), frameId, tr.confPct.takeIf { it >= 0 }, why)
         } else record(HistoryKind.NO_MATCH, NO_MATCH_ID, NO_MATCH_TITLE, emptyList(), frameId, tr.confPct.takeIf { it >= 0 }, why)
         return heldDone(why)
+    }
+
+    /**
+     * The no-photo switch: nothing confirmed, but nearby places that have NO reference photo at all are exempt from the hold and get the old nearby card (never the "confirmed" look). Null = none to show (the hold goes on).
+     */
+    private suspend fun exemptNearby(frameId: String, gen: Long, ticket: ZoneTicket): PlaceOutcome? {
+        if (tr.noPhoto.isEmpty()) return null
+        val o = fallback(tr.noPhoto, frameId, gen, tr.epoch, ticket)
+        return if (o == PlaceOutcome.NOTHING_NEARBY) null else o
     }
 
     /** A model "none" or an unusable answer: a NO_MATCH row (the model looked and found no listed place). */
