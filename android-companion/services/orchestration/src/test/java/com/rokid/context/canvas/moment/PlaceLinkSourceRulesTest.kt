@@ -20,6 +20,8 @@ class PlaceLinkSourceRulesTest {
         "PlaceLink.kt", "ContextDatabase.kt", "DatabaseFactory.kt",
         // the writer and the pin removal
         "PlaceCardHistory.kt",
+        "PlaceRefSweep.kt", // round 10: drops REF links of places that are gone
+
         // the Forget choke points, the wipe and the lifecycle tables
         "CanvasSlice3Dao.kt", "ForgetService.kt", "ForgetExecutor.kt", "MomentForget.kt", "WipeDao.kt", "Families.kt", "ForgetPolicy.kt", "DeletionGraph.kt", "DesignDivergence.kt",
     )
