@@ -290,6 +290,20 @@ class PlacePackTest {
         assertEquals(listOf("a"), p.areas().map { it.blueZoneId }); assertEquals(small, p.areas().single().box); assertEquals("Old town", p.areas().single().name)
     }
 
+    // Map dots: a cheap box read of id, position and kind. Never user pins (they have their own marker), capped, works with no source (offline), nothing logged.
+    @Test fun dotsInReadsOnlyThePlacesInTheBoxWithoutPinsAndHonoursTheLimit() = run {
+        val p = pack(null) // no network source at all: the read is local
+        fun pe(id: String, lat: Double, lon: Double) = PlaceEntity(id, null, "N-$id", PlaceKinds.MONUMENT, lat, lon, 60, "intro", "wikipedia:en", "r", t, false, false, 0, 10)
+        db.dao().putPlaces(listOf(pe("wd:1", 17.30, 78.40), pe("wd:2", 17.31, 78.41), pe("wd:3", 17.32, 78.42), pe("wd:far", 50.0, 10.0), pe("user:pin", 17.305, 78.405)))
+        val box = GeoBox(17.29, 78.39, 17.35, 78.45)
+        val all = p.dotsIn(box, 100)
+        assertEquals(setOf("wd:1", "wd:2", "wd:3"), all.map { it.id }.toSet()) // not the far place, not the pin
+        assertEquals(PlaceKinds.MONUMENT, all.first().kind)
+        assertEquals(2, p.dotsIn(box, 2).size)
+        assertTrue(p.dotsIn(box, 0).isEmpty()); assertTrue(p.dotsIn(GeoBox(1.0, 1.0, 0.0, 0.0), 10).isEmpty())
+        assertTrue(logs.none { "N-" in it || "17." in it }) // nothing about a name or a position was logged
+    }
+
     @Test fun aFailedCellMakesTheAreaPartialAndTheRestGoOn() = run {
         val box = GeoBox(17.30, 78.40, 17.36, 78.46)
         val cells = Geohash5.cellsCovering(box)

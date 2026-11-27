@@ -28,6 +28,17 @@ class SeedColoursTest {
     }
     private fun dist(a: Int, b: Int): Double = Math.sqrt(listOf(16, 8, 0).sumOf { s -> val d = ((a shr s) and 255) - ((b shr s) and 255); (d * d).toDouble() })
 
+    @Test fun theShowSeededPlacesSwitchDefaultsOnPersistsAndSurvivesDeleteAll() {
+        val s = SeedColourStore.of(app); s.clearAll()
+        assertTrue(SeedColourStore.of(app).showPlaces()) // default ON
+        s.setShowPlaces(false)
+        assertFalse(SeedColourStore.of(app).showPlaces()) // a new store on the same prefs reads it
+        s.set(id, 3); s.clearAll()
+        assertNull(s.get(id)); assertFalse(s.showPlaces()) // Delete all drops the area colours, not the owner's view setting
+        s.setShowPlaces(true); assertTrue(SeedColourStore.of(app).showPlaces())
+        assertEquals("seed_area_colours", SeedColourStore.PREFS) // the same prefs file, already excluded from backup
+    }
+
     @Test fun defaultsCycleByOrderAndASavedChoiceWins() {
         assertEquals(0, SeedPalette.default(0)); assertEquals(1, SeedPalette.default(1)); assertEquals(0, SeedPalette.default(SeedPalette.colours.size))
         assertEquals(4, SeedPalette.resolve(4, 0)); assertEquals(2, SeedPalette.resolve(null, 2)); assertEquals(2, SeedPalette.resolve(77, 2))

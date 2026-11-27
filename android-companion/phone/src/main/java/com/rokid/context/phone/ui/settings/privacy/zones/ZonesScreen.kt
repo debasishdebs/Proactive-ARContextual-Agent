@@ -164,7 +164,7 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
         val seedState by seedVm.state.collectAsStateWithLifecycle()
         LaunchedEffect(seedVm) { seedVm.refresh() }
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
-        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour, seedVm::requestSeedAgain, seedVm::editArea, seedVm::endEdit)
+        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour, seedVm::requestSeedAgain, seedVm::editArea, seedVm::endEdit, seedVm::viewportSettled, seedVm::setShowPlaces, seedVm::tapDot)
     }
     if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back), null, online, seedPanel, networkOnline); return }
     val mapVm = viewModel(key = "offline_map") { OfflineMapViewModel(offline.files, offline.store) }
@@ -266,6 +266,10 @@ class SeedPanel(
     val editArea: (String) -> Unit = {},
     /** Leaves "Edit box" without seeding. */
     val endEdit: () -> Unit = {},
+    /** The map's view settled: read the places in it (the dots). */
+    val viewportSettled: (com.rokid.context.memory.place.GeoBox?) -> Unit = {},
+    val setShowPlaces: (Boolean) -> Unit = {},
+    val tapDot: (String?) -> Unit = {},
 )
 
 /** The remove-area dialog (both map screens): "the area and its places" is preselected; the other choice keeps the places as ordinary fetched places. */
@@ -319,7 +323,8 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
             SettingsCard {
                 Text((if (seedMode) "Draw a box, then seed places for it. Seeded areas are blue, your pins purple, pause zones red. " else "Capture pauses inside a red box and in the ring around it. ") + if (offline?.reader != null) "The map is drawn from your offline file." else if (online?.source != null) "The map is drawn from online street tiles; the grid shows where they are missing." else "The map has no tiles; the grid shows latitude and longitude.", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
                 if (!networkOnline) NoNetworkBanner()
-                ZoneMap(mapState, on, offline?.reader, online, seed?.ui, blank = !networkOnline, focusBox = focusBox, focusSeq = focusSeq, clearFocus = seed?.clearFocus ?: {})
+                ZoneMap(mapState, on, offline?.reader, online, seed?.ui, blank = !networkOnline, focusBox = focusBox, focusSeq = focusSeq, clearFocus = seed?.clearFocus ?: {}, settle = seed?.viewportSettled ?: {}, onDot = seed?.tapDot ?: {})
+                seed?.let { p -> SeedDotsSwitch(p) }
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     SecondaryAction(if (state.drawing) "Cancel drawing" else "Draw a box", { on.setDrawing(!state.drawing) }, tag = "zone_draw", enabled = networkOnline && (seedMode || !state.protectedMode))
                     if (online?.canCentre == true) SecondaryAction("Centre on me", online.centreOnMe, tag = "zone_centre", enabled = !online.centreBusy)
@@ -394,6 +399,17 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
 }
 
 /** The box drawn above, its cell estimate and the seed button. The seed itself is the existing Place Guide seed, with its Offline only and Wi-Fi rules. */
+/** The "Show seeded places" switch (default ON) under the map, with the zoom-in and cap notes. Shared by both map screens. */
+@Composable
+internal fun SeedDotsSwitch(p: SeedPanel) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Text(SeedDots.SWITCH, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+        Switch(p.ui.showPlaces, { p.setShowPlaces(it) }, modifier = Modifier.testTag("seed_dots_switch"))
+    }
+    if (p.ui.showPlaces && p.ui.dotsTooFar) NoticeText(SeedDots.ZOOM_HINT, tag = "seed_dots_zoom_hint")
+    if (p.ui.showPlaces && p.ui.dotsCapped) NoticeText(SeedDots.CAPPED, tag = "seed_dots_capped")
+}
+
 @Composable
 private fun SeedCard(state: ZonesUiState, p: SeedPanel, on: ZonesCallbacks) {
     val box = SeedEstimate.boxOf(state.draft.box())
@@ -507,13 +523,19 @@ internal fun StateChip(chip: ZoneChip, modifier: Modifier = Modifier) {
 
 /** The tile-less map: plain background, a latitude/longitude grid, red boxes with their buffer ring, the draft box and (only with a fresh fix) a blue dot for the user. */
 @Composable
-private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null, online: OnlineMapPanel? = null, seed: SeedMapUiState? = null, blank: Boolean = false, focusBox: DoubleArray? = null, focusSeq: Int = 0, clearFocus: () -> Unit = {}) {
+private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null, online: OnlineMapPanel? = null, seed: SeedMapUiState? = null, blank: Boolean = false, focusBox: DoubleArray? = null, focusSeq: Int = 0, clearFocus: () -> Unit = {},
+                    settle: (com.rokid.context.memory.place.GeoBox?) -> Unit = {}, onDot: (String?) -> Unit = {}) {
     val measurer = rememberTextMeasurer()
     var size by remember { mutableStateOf(Size.Zero) }
     var vp by remember { mutableStateOf<MapViewport?>(null) }
     var fitKey by remember { mutableStateOf(0) }
     var dragA by remember { mutableStateOf<Offset?>(null) }
     var dragB by remember { mutableStateOf<Offset?>(null) }
+    // Seeded places as dots: painted from the stored places in view (read once the view settled), in the colour of the area that holds them.
+    val dotPaint = remember(seed?.dots, seed?.areas, seed?.showPlaces) { if (seed != null && seed.showPlaces) SeedDots.paint(seed.dots, seed.areas) else emptyList() }
+    val paintedNow by rememberUpdatedState(dotPaint)
+    val onDotNow by rememberUpdatedState(onDot)
+    LaunchedEffect(vp?.centerLat, vp?.centerLon, vp?.ppd, size) { if (seed != null) settle(SeedDots.visibleBox(vp, size.width, size.height)) }
     val draftNow by rememberUpdatedState(state.draft)
     val drawingNow by rememberUpdatedState(state.drawing)
     val editDraftNow by rememberUpdatedState(on.editDraft)
@@ -563,7 +585,7 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
     ) {
         Canvas(
             Modifier.fillMaxWidth().height(300.dp).background(if (blank) Color.White else MapBackground)
-                .pointerInput(seed?.selectedId, areas) { detectTapGestures { p -> if (seed?.selectedId != null && vp.let { v -> v == null || areas.none { a -> SeedOverlays.screenRect(v, a.box, 0f).let { r -> p.x in r[0]..(r[0] + r[2]) && p.y in r[1]..(r[1] + r[3]) } } }) clearFocus() } } // a tap on the map background clears the highlight
+                .pointerInput(seed?.selectedId, areas) { detectTapGestures { p -> val dotId = vp?.let { v -> SeedDots.hit(v, paintedNow, p.x, p.y, SeedDots.TOUCH_DP.dp.toPx()) }; onDotNow(dotId); if (dotId == null && seed?.selectedId != null && vp.let { v -> v == null || areas.none { a -> SeedOverlays.screenRect(v, a.box, 0f).let { r -> p.x in r[0]..(r[0] + r[2]) && p.y in r[1]..(r[1] + r[3]) } } }) clearFocus() } } // a tap on the map background clears the highlight
                 .pointerInput(state.drawing) {
                     if (state.drawing) {
                         detectDragGestures(
@@ -616,6 +638,7 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
             for (a in areas) if (a.id != seed?.selectedId) drawSeedArea(v, a)
             areas.firstOrNull { it.id == seed?.selectedId }?.let { drawSeedArea(v, it, measurer, selected = true) } // the tapped area on top, with its name
             for (r in state.rows) drawZone(v, r.zone, measurer, active = r.zone.enabled)
+            drawSeedDots(v, dotPaint, seed?.dotSelectedId)
             for (p in pins) drawPin(v, p)
             state.draft.box()?.let { b ->
                 drawBox(v, b, ZoneRed, filled = false, dashed = true)
@@ -633,6 +656,7 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
             onlineSource.logoText?.let { Text(it, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = PcColors.InkSoft, modifier = Modifier.padding(end = 4.dp).testTag("zone_map_logo")) }
             onlineSource.attribution?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = PcColors.InkSoft) }
         }
+        seed?.dotLabel?.let { l -> Text(l.text, style = MaterialTheme.typography.labelMedium, color = PcColors.Ink, modifier = Modifier.align(Alignment.TopStart).padding(4.dp).background(Color.White.copy(alpha = 0.92f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 3.dp).testTag("seed_dot_label")) }
         if (seed != null) Text(SeedOverlays.legend(zones.size, areas.size, pins.size), style = MaterialTheme.typography.labelSmall, color = PcColors.InkSoft, modifier = Modifier.align(Alignment.BottomStart).background(Color.White.copy(alpha = 0.8f)).padding(horizontal = 4.dp).testTag("zone_map_legend"))
         Row(Modifier.align(Alignment.TopEnd).padding(4.dp)) {
             MapButton("+", "zone_zoom_in") { vp = vp?.zoomed(1.6) }

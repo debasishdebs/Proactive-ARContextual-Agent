@@ -3,6 +3,7 @@ package com.rokid.context.phone.ui.settings.mapzones
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import com.rokid.context.phone.ui.settings.privacy.zones.SeedOverlay
@@ -130,7 +131,7 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
         LaunchedEffect(seedState?.seeding) { if (seedState?.seeding == true) mapVm.cancelDraw() } // the sheet closes once the seed has really started
         LaunchedEffect(seedState?.editSeq) { if ((seedState?.editSeq ?: 0) > 0) mapVm.editSeedBox(seedState?.editBox) } // "Edit box": the area's rectangle becomes the draft
     }
-    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour, seedVm::requestSeedAgain, seedVm::editArea, seedVm::endEdit) else null
+    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour, seedVm::requestSeedAgain, seedVm::editArea, seedVm::endEdit, seedVm::viewportSettled, seedVm::setShowPlaces, seedVm::tapDot) else null
     val view = remember { MapViewState() }
     val zoneCb = ZonesCallbacks.of(zonesVm, back)
     val offlinePanel = offline?.let { o ->
@@ -189,6 +190,9 @@ fun MapZonesScreen(
     val snapTargets = if (p23 != null && ui.shape != null) items.filter { it.type != ItemType.PIN && it.id != ui.editingId }.map { it.box } else null
     val dens = p23?.density
     val vpNow = view.vp
+    // Seeded places as dots (the seed layer's switch and the "Show seeded places" switch): read once the view settled, coloured by the area that holds them.
+    val paintedDots = remember(seed?.ui?.dots, seedAreas, seed?.ui?.showPlaces, MapLayer.SEED in layers) { if (seed != null && seed.ui.showPlaces && MapLayer.SEED in layers) com.rokid.context.phone.ui.settings.privacy.zones.SeedDots.paint(seed.ui.dots, seedAreas) else emptyList() }
+    if (seed != null) LaunchedEffect(vpNow?.centerLat, vpNow?.centerLon, vpNow?.ppd, view.size) { seed.viewportSettled(com.rokid.context.phone.ui.settings.privacy.zones.SeedDots.visibleBox(view.vp, view.size.width, view.size.height)) }
     if (p23 != null && dens?.on == true && vpNow != null) LaunchedEffect(vpNow.centerLat, vpNow.centerLon, vpNow.ppd, dens.window, dens.on) { p23.refreshDensity(vpNow) }
     // While a pause save is in flight the screen cannot be left: its answer (a refusal especially) must reach the sheet it was asked from.
     androidx.activity.compose.BackHandler(enabled = ui.saving) { }
@@ -203,6 +207,7 @@ fun MapZonesScreen(
                 selectNext = { ShapeSteps.nextSelection(items, ui.selected, layers)?.let { on.select(it) } },
             ),
             snapTargets = snapTargets, doubleTapZoom = p23 != null, density = if (dens?.on == true) dens.blobs else emptyList(), cells = p23?.cells?.coverage, edgeHandles = ui.editingId == null,
+            dots = paintedDots, selectedDot = seed?.ui?.dotSelectedId, onDot = seed?.tapDot ?: {},
         )
         Row(Modifier.align(Alignment.TopStart).fillMaxWidth().background(PcColors.SurfaceSoft.copy(alpha = 0.9f)).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(on.back, Modifier.testTag("mapzones_back"), enabled = !ui.saving) { Text("Back") }
@@ -213,6 +218,7 @@ fun MapZonesScreen(
             if (online?.canCentre == true) TextButton(online.centreOnMe, Modifier.testTag("zone_centre"), enabled = !online.centreBusy) { Text(if (online.centreBusy) com.rokid.context.phone.ui.settings.privacy.zones.tiles.CentreWords.FINDING else "Me") }
             if (online?.centreBusy == true) TextButton(online.centreCancel, Modifier.testTag("zone_centre_cancel")) { Text("Cancel") }
         }
+        seed?.ui?.dotLabel?.let { l -> Text(l.text, style = MaterialTheme.typography.labelMedium, color = PcColors.Ink, modifier = Modifier.align(Alignment.TopCenter).padding(top = 52.dp).background(Color.White.copy(alpha = 0.92f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 3.dp).testTag("seed_dot_label")) }
         if (!networkOnline) com.rokid.context.phone.ui.settings.privacy.zones.NoNetworkBanner(tag = "mapzones_no_network", modifier = Modifier.align(Alignment.TopStart).padding(top = 48.dp))
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().heightIn(max = 380.dp).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState()).padding(16.dp).testTag("mapzones_sheet"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (zones.protectedMode) NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.ZoneWords.PROTECTED_BANNER, error = true, tag = "zone_protected")
@@ -356,6 +362,7 @@ private fun BrowseSheet(
         FilterChip(MapLayer.SEED in layers, { on.toggleLayer(MapLayer.SEED) }, { Text("$seedCount seed") }, Modifier.testTag("mapzones_legend_seed"))
         FilterChip(MapLayer.PINS in layers, { on.toggleLayer(MapLayer.PINS) }, { Text("$pinCount pin" + if (pinCount == 1) "" else "s") }, Modifier.testTag("mapzones_legend_pins"))
     }
+    seed?.let { com.rokid.context.phone.ui.settings.privacy.zones.SeedDotsSwitch(it) }
     p23?.density?.let { d -> DensityControls(d, p23) }
     if (pauseLocked) NoticeText("The pause layer stays on while you are in or near a zone.", tag = "mapzones_pause_locked")
     if (zones.you == null) NoticeText("Your position is not shown: there is no fresh location fix.", tag = "zone_no_fix")

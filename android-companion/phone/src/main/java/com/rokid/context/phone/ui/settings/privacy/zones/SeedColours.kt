@@ -42,10 +42,16 @@ class SeedColourStore(private val p: SharedPreferences) {
     fun get(areaId: String): Int? = p.getInt(key(areaId), -1).takeIf { it in SeedPalette.colours.indices }
     fun set(areaId: String, index: Int) { if (index in SeedPalette.colours.indices) p.edit().putInt(key(areaId), index).apply() }
     fun clear(areaId: String) { p.edit().remove(key(areaId)).apply() }
-    fun clearAll() { p.edit().clear().apply() }
+    /** Delete all: every area colour goes; the "Show seeded places" switch is the owner's view setting and stays. */
+    fun clearAll() { val e = p.edit(); p.all.keys.filter { it.startsWith("c.") }.forEach { e.remove(it) }; e.apply() }
+
+    /** The "Show seeded places" switch of the zones maps (default ON). Same prefs file, so the same backup exclusion. */
+    fun showPlaces(): Boolean = p.getBoolean(KEY_SHOW_PLACES, true)
+    fun setShowPlaces(on: Boolean) { p.edit().putBoolean(KEY_SHOW_PLACES, on).apply() }
 
     companion object {
         const val PREFS = "seed_area_colours"
+        const val KEY_SHOW_PLACES = "show_places"
         fun of(app: android.content.Context) = SeedColourStore(app.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE))
     }
 }

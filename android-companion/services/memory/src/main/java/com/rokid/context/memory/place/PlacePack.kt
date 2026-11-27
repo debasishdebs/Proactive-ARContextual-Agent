@@ -157,6 +157,10 @@ class PlacePack(
         return dao.cells().filter { it.geohash5 in want }.associate { it.geohash5 to it.status }
     }
 
+    /** The map dots inside [box] (read only, nothing is fetched, no lock, no log): at most [limit] stored places, never user pins. A box that is not valid gives none. */
+    suspend fun dotsIn(box: GeoBox, limit: Int): List<PlaceDot> =
+        if (!box.valid || limit <= 0) emptyList() else dao.dotsIn(box.south, box.north, box.west, box.east, limit)
+
     /** Read-only lookup by id (v3.0 shadow loop: where a recalled place is, for the zone check). */
     suspend fun placesByIds(ids: List<String>): List<PlaceEntity> = chunked(ids) { dao.byIds(it) }
 

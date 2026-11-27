@@ -125,6 +125,7 @@ class SeedAreasSectionTest {
         compose.onNodeWithTag("zones_screen").performScrollToNode(hasTestTag("seed_edit_note"))
         compose.onNodeWithTag("seed_edit_note").assertExists() // "Places already fetched are kept"
         assertTrue(SeedAreaList.EDIT_NOTE.contains("Places already fetched are kept"))
+        compose.onNodeWithTag("zones_screen").performScrollToNode(hasTestTag("seed_edit_cancel"))
         compose.onNodeWithTag("seed_edit_cancel").performClick()
         compose.waitForIdle()
         assertEquals(listOf("edit:seed:1", "end"), log)

@@ -55,6 +55,9 @@ import com.rokid.context.phone.ui.settings.privacy.zones.MapViewport
 import com.rokid.context.phone.ui.settings.privacy.zones.OnlineMapPanel
 import com.rokid.context.phone.ui.settings.privacy.zones.PinInfo
 import com.rokid.context.phone.ui.settings.privacy.zones.ReaderTiles
+import com.rokid.context.phone.ui.settings.privacy.zones.PaintedDot
+import com.rokid.context.phone.ui.settings.privacy.zones.SeedDots
+import com.rokid.context.phone.ui.settings.privacy.zones.drawSeedDots
 import com.rokid.context.phone.ui.settings.privacy.zones.SeedOverlay
 import com.rokid.context.phone.ui.settings.privacy.zones.SeedOverlays
 import com.rokid.context.phone.ui.settings.privacy.zones.ZoneRowUi
@@ -127,6 +130,10 @@ fun MapCanvas(
     blank: Boolean = false,
     /** A rectangle draft also gets a handle on each side (new drafts only; a stored pause zone being reshaped keeps its four corners). */
     edgeHandles: Boolean = false,
+    /** Seeded places as dots (already coloured) and the tap on one (null = a tap elsewhere). */
+    dots: List<PaintedDot> = emptyList(),
+    selectedDot: String? = null,
+    onDot: (String?) -> Unit = {},
 ) {
     val measurer = rememberTextMeasurer()
     val fitSig = items.map { it.id }
@@ -173,6 +180,8 @@ fun MapCanvas(
     val snapNow by rememberUpdatedState(snapTargets)
     val dblNow by rememberUpdatedState(doubleTapZoom)
     val edgesNow by rememberUpdatedState(edgeHandles)
+    val dotsNow by rememberUpdatedState(dots)
+    val onDotNow by rememberUpdatedState(onDot)
     var lastTap by remember { mutableStateOf<Triple<Long, Float, Float>?>(null) }
     var preview by remember { mutableStateOf<Pair<Offset, Offset>?>(null) }
 
@@ -241,6 +250,9 @@ fun MapCanvas(
                             return@awaitEachGesture
                         }
                         lastTap = Triple(now, down.position.x, down.position.y)
+                        val dotId = SeedDots.hit(v0, dotsNow, down.position.x, down.position.y, SeedDots.TOUCH_DP.dp.toPx())
+                        onDotNow(dotId)
+                        if (dotId != null) return@awaitEachGesture
                         onTapNow(MapTap.at(itemsNow, v0, down.position.x, down.position.y, minShape, touch, layersNow))
                         return@awaitEachGesture
                     }
@@ -307,6 +319,7 @@ fun MapCanvas(
                 if (c.state != CellState.MISSING) drawRect(col.copy(alpha = 0.3f), Offset(tl.x, tl.y), Size(br.x - tl.x, br.y - tl.y))
                 drawRect(col, Offset(tl.x, tl.y), Size(br.x - tl.x, br.y - tl.y), style = Stroke(1.dp.toPx(), pathEffect = if (c.state == CellState.OK) null else PathEffect.dashPathEffect(floatArrayOf(8f, 6f))))
             }
+            drawSeedDots(v, dots, selectedDot)
             for (c in MapOverview.clusters(items, v, minPx, layers)) drawChip(v, c, measurer)
             selected?.let { s -> items.firstOrNull { it.id == s.id && (it.type == ItemType.PAUSE) == (s.kind == SelectionKind.PAUSE) }?.let { drawSelected(v, it.box, minPx) } }
             shape?.let { drawDraft(v, it, edgeHandles) }

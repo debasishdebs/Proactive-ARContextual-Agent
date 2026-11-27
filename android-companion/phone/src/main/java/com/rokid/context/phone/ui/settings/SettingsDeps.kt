@@ -323,4 +323,7 @@ class AppConfigMobileData(context: Context) : com.rokid.context.phone.ui.setting
 }
 
 /** A tick every [periodMs]; screens drive their progress re-reads from it (the polling loop lives here, not in a ViewModel or screen file). */
+/** Waits [ms] (the map's view must hold still this long before the places in it are read). Lives here with the other timing helpers, not in a screen or ViewModel. */
+internal suspend fun settleDelay(ms: Long) = kotlinx.coroutines.delay(ms)
+
 internal fun seedTicks(periodMs: Long): kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flow { while (true) { kotlinx.coroutines.delay(periodMs); emit(Unit) } }

@@ -165,6 +165,10 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
     private val seedWork by lazy { SeedWork(app) }
     private val colours by lazy { com.rokid.context.phone.ui.settings.privacy.zones.SeedColourStore.of(app) }
     override suspend fun setColour(id: String, index: Int) { colours.set(id, index) }
+    override suspend fun showPlaces() = colours.showPlaces()
+    override suspend fun setShowPlaces(on: Boolean) { colours.setShowPlaces(on) }
+    override suspend fun dots(box: GeoBox, cap: Int) = PlaceGraph.readyPack(app).dotsIn(box, cap)
+    override suspend fun dotLabel(id: String): String? = PlaceGraph.readyPack(app).placesByIds(listOf(id)).firstOrNull()?.let { com.rokid.context.phone.ui.settings.privacy.zones.SeedDots.label(it.name, it.kind, it.summary) }
     override suspend fun areas(): List<com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo> {
         val pack = PlaceGraph.readyPack(app)
         runCatching { seedWork.reconcile(pack) } // an area marked seeding with no live work becomes partial

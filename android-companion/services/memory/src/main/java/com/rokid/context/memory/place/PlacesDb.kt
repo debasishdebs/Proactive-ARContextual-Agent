@@ -39,6 +39,9 @@ data class PlaceEntity(
     val bytes: Int,
 )
 
+/** What a map dot needs of a place: where it is, what it is and its id (to look the label up on a tap). Public pack data; never a text body. A query result only, not a table. */
+data class PlaceDot(val id: String, val lat: Double, val lon: Double, val kind: String)
+
 /** A 5 km cell that was fetched. [status] is [CELL_OK] (all sources answered) or [CELL_PARTIAL] (Overpass did not: re-fetched after a day, not 30). */
 @Entity(tableName = "cell")
 data class CellEntity(@PrimaryKey val geohash5: String, val fetchedAt: Long, val status: String)
@@ -96,6 +99,8 @@ interface PlacesDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putPlaces(rows: List<PlaceEntity>)
     @Query("SELECT * FROM place WHERE id IN (:ids)") suspend fun byIds(ids: List<String>): List<PlaceEntity>
     @Query("SELECT * FROM place WHERE lat BETWEEN :south AND :north AND lon BETWEEN :west AND :east") suspend fun inBox(south: Double, north: Double, west: Double, east: Double): List<PlaceEntity>
+    /** Map dots: id, position and kind of the stored places inside a box, never user pins (they have their own marker), at most [limit] (no ordering: the cap keeps the read cheap). */
+    @Query("SELECT id, lat, lon, kind FROM place WHERE lat BETWEEN :south AND :north AND lon BETWEEN :west AND :east AND substr(id, 1, 5) <> 'user:' LIMIT :limit") suspend fun dotsIn(south: Double, north: Double, west: Double, east: Double, limit: Int): List<PlaceDot>
     @Query("SELECT * FROM place WHERE parentId IN (:parentIds)") suspend fun childrenOf(parentIds: List<String>): List<PlaceEntity>
     @Query("UPDATE place SET lastUsedDay = :day WHERE id IN (:ids)") suspend fun touch(ids: List<String>, day: Int)
     @Query("UPDATE place SET seeded = 1 WHERE lat BETWEEN :south AND :north AND lon BETWEEN :west AND :east") suspend fun markSeeded(south: Double, north: Double, west: Double, east: Double): Int

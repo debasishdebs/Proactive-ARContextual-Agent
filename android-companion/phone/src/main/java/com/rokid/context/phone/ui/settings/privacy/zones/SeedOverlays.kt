@@ -70,6 +70,13 @@ interface SeedMapControl {
      * "Edit box": the area [id] keeps its id, name and colour and takes the new [box]; only the cells that are not fresh are fetched (the pack's own freshness rule). Nothing is deleted: places fetched before stay,
      * also those that fall outside a smaller box. Same Offline only refusal as a new seed.
      */
+    /** The stored places inside [box] as map dots (never user pins), at most [cap]; read from places.db, so it works with no network. */
+    suspend fun dots(box: GeoBox, cap: Int): List<com.rokid.context.memory.place.PlaceDot> = emptyList()
+    /** The label of one dot (name, kind, first line of the intro), or null when the place is gone. */
+    suspend fun dotLabel(id: String): String? = null
+    /** The "Show seeded places" switch (default ON), kept on the phone. */
+    suspend fun showPlaces(): Boolean = true
+    suspend fun setShowPlaces(on: Boolean) {}
     suspend fun reseed(id: String, box: GeoBox): Result<SeedOutcome> = Result.failure(UnsupportedOperationException())
 }
 
@@ -254,6 +261,17 @@ data class SeedMapUiState(
     /** Counts up on every "Edit box" tap; the screen loads [editBox] into its draft box when it changes. */
     val editSeq: Int = 0,
     val editBox: DoubleArray? = null,
+    /** Seeded places as dots: the stored places in view (at most [SeedDots.CAP]) when the view is close enough. */
+    val dots: List<com.rokid.context.memory.place.PlaceDot> = emptyList(),
+    /** More places than [SeedDots.CAP] are in view: the map says to zoom in. */
+    val dotsCapped: Boolean = false,
+    /** The view is too wide to read the places (about 400 cells or more): none are drawn and the map says to zoom in. */
+    val dotsTooFar: Boolean = false,
+    /** The "Show seeded places" switch (default ON). */
+    val showPlaces: Boolean = true,
+    /** The label of the tapped dot (id and text); null = none. */
+    val dotLabel: DotLabel? = null,
+    val dotSelectedId: String? = null,
 )
 
 /** The pure part of "tap a seeded area": the box the map fits (the area plus a margin) and the row tap and map tap results. */
@@ -329,7 +347,7 @@ object SeedAreaList {
 data class SeedProgressRow(val id: String, val text: String, val failed: Int = 0)
 
 /** The seed side of the zones map. It only reads areas and pins and calls the existing seed; it never writes a pause zone. */
-class SeedMapViewModel(private val control: SeedMapControl, private val work: CoroutineDispatcher = Dispatchers.IO) : ViewModel() {
+class SeedMapViewModel(private val control: SeedMapControl, private val work: CoroutineDispatcher = Dispatchers.IO, private val settleMs: Long = SETTLE_MS) : ViewModel() {
     private val _state = MutableStateFlow(SeedMapUiState())
     val state: StateFlow<SeedMapUiState> = _state
     private var pendingBox: GeoBox? = null
@@ -351,6 +369,45 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
         _state.update { it.copy(selectedId = id, focusBox = SeedFocus.fitBox(a.box), focusSeq = it.focusSeq + 1, editingId = id, editBox = a.box, editSeq = it.editSeq + 1, message = null) }
     }
 
+    private var viewBox: GeoBox? = null
+    private var dotsJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * The map's view settled (the screen calls this after the view stopped moving): reads the stored places inside it, once, when the switch is on and the view is close enough. Counts and coordinates only
+     * (no text), at most [SeedDots.CAP] + 1 rows; nothing is read per frame, and nothing is logged.
+     */
+    fun viewportSettled(box: GeoBox?) { viewBox = box; loadDots(settleMs) }
+
+    private fun loadDots(holdMs: Long = 0) {
+        dotsJob?.cancel()
+        val box = viewBox
+        val on = _state.value.showPlaces
+        if (!on || box == null) { _state.update { if (it.dots.isEmpty() && !it.dotsCapped && !it.dotsTooFar) it else it.copy(dots = emptyList(), dotsCapped = false, dotsTooFar = false) }; return }
+        if (!SeedDots.closeEnough(box)) { _state.update { it.copy(dots = emptyList(), dotsCapped = false, dotsTooFar = true) }; return }
+        dotsJob = viewModelScope.launch(work) {
+            if (holdMs > 0) com.rokid.context.phone.ui.settings.settleDelay(holdMs) // a moving view reads nothing: only the view that held still
+            val l = runCatching { control.dots(box, SeedDots.CAP + 1) }.getOrDefault(emptyList())
+            _state.update { it.copy(dots = l.take(SeedDots.CAP), dotsCapped = l.size > SeedDots.CAP, dotsTooFar = false) }
+        }
+    }
+
+    /** The "Show seeded places" switch: saved on the phone; off removes the dots at once, on reads the view again. */
+    fun setShowPlaces(on: Boolean) {
+        _state.update { it.copy(showPlaces = on, dotLabel = null, dotSelectedId = null) }
+        viewModelScope.launch(work) { runCatching { control.setShowPlaces(on) } }
+        loadDots()
+    }
+
+    /** A tap on a dot shows its small label (looked up by id, nothing heavy opens); a tap elsewhere ([id] null) hides it. */
+    fun tapDot(id: String?) {
+        if (id == null) { _state.update { if (it.dotLabel == null && it.dotSelectedId == null) it else it.copy(dotLabel = null, dotSelectedId = null) }; return }
+        _state.update { it.copy(dotSelectedId = id) }
+        viewModelScope.launch(work) {
+            val t = runCatching { control.dotLabel(id) }.getOrNull()
+            _state.update { if (it.dotSelectedId != id) it else it.copy(dotLabel = t?.let { x -> DotLabel(id, x) }) }
+        }
+    }
+
     /** Leaves "Edit box" (Cancel, Clear box): the area is untouched. */
     fun endEdit() = _state.update { if (it.editingId == null) it else it.copy(editingId = null, editBox = null) }
 
@@ -369,7 +426,10 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             val p = runCatching { control.pins() }.getOrDefault(emptyList())
             val r = runCatching { control.rates() }.getOrDefault(SeedRates.ROUGH)
             infos = a
+            val show = runCatching { control.showPlaces() }.getOrDefault(true)
+            _state.update { it.copy(showPlaces = show) }
             _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, rates = r, pins = p, progress = SeedAreaList.progress(a)).keepSelection(a) }
+            loadDots()
             if (a.any { it.seed != null }) startPoll()
         }
     }
@@ -390,6 +450,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
                 _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, progress = SeedAreaList.progress(a)).keepSelection(a) }
                 a.any { it.seed != null }
             }.collect {}
+            loadDots() // the seed ended: its new places show
         }
     }
 
@@ -473,5 +534,5 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
 
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
-    private companion object { const val POLL_MS = 2_000L }
+    companion object { private const val POLL_MS = 2_000L; /** The view must hold still this long before the places in it are read. */ const val SETTLE_MS = 350L }
 }

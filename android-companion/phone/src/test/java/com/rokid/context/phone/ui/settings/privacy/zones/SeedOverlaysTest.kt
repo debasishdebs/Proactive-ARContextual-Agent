@@ -180,6 +180,13 @@ class SeedMapViewModelTest {
         override suspend fun areas() = areas
         override suspend fun pins() = pins
         override suspend fun seed(box: GeoBox): Result<SeedOutcome> { seeded += box; return result }
+        var dotRows = listOf<com.rokid.context.memory.place.PlaceDot>()
+        val dotAsks = mutableListOf<Pair<GeoBox, Int>>()
+        var shown = true
+        override suspend fun dots(box: GeoBox, cap: Int): List<com.rokid.context.memory.place.PlaceDot> { dotAsks += box to cap; return dotRows.filter { box.contains(it.lat, it.lon) }.take(cap) }
+        override suspend fun dotLabel(id: String) = if (id == "d1") "Old fort \u00b7 fort\nBuilt in 1590." else null
+        override suspend fun showPlaces() = shown
+        override suspend fun setShowPlaces(on: Boolean) { shown = on }
         val reseeded = mutableListOf<Pair<String, GeoBox>>()
         override suspend fun reseed(id: String, box: GeoBox): Result<SeedOutcome> { reseeded += id to box; return result }
         val removedWithPlaces = mutableListOf<Boolean>()
@@ -190,7 +197,7 @@ class SeedMapViewModelTest {
     }
 
     private val fake = Fake()
-    private fun vm() = SeedMapViewModel(fake, main.dispatcher).also { vms += it }
+    private fun vm() = SeedMapViewModel(fake, main.dispatcher, settleMs = 0).also { vms += it }
     private val small = GeoBox(17.2443, 78.6708, 17.2643, 78.6908)
     private val large = GeoBox(17.0, 78.0, 19.0, 80.0) // well above 100 cells
     private val huge = GeoBox(-80.0, -170.0, 80.0, 170.0)
@@ -253,6 +260,76 @@ class SeedMapViewModelTest {
         fake.areas = listOf(SeedAreaInfo("seed:1", 27.0, 88.0, 27.1, 88.1, AREA_DONE))
         val w = vm(); w.refresh(); w.editArea("seed:1"); fake.areas = emptyList(); w.refresh()
         assertNull(w.state.value.editingId)
+    }
+
+    private val view = GeoBox(27.0, 88.0, 27.2, 88.2) // a few cells: close enough to read the places
+
+    @Test fun dotsAreReadOnceWhenTheViewSettlesAndOnlyThePlacesInViewComeBack() = runTest {
+        fake.dotRows = listOf(com.rokid.context.memory.place.PlaceDot("d1", 27.05, 88.05, "fort"), com.rokid.context.memory.place.PlaceDot("far", 40.0, 70.0, "hill"))
+        val v = vm(); v.refresh()
+        v.viewportSettled(view)
+        assertEquals(listOf("d1"), v.state.value.dots.map { it.id }); assertFalse(v.state.value.dotsTooFar); assertFalse(v.state.value.dotsCapped)
+        assertEquals(SeedDots.CAP + 1, fake.dotAsks.last().second) // one more than the cap: to know it was cut
+        assertEquals(view, fake.dotAsks.last().first) // the box of the view, nothing else
+    }
+
+    @Test fun aWideViewReadsNothingAndSaysZoomIn() = runTest {
+        fake.dotRows = listOf(com.rokid.context.memory.place.PlaceDot("d1", 27.05, 88.05, "fort"))
+        val v = vm(); v.refresh(); v.viewportSettled(view)
+        val asks = fake.dotAsks.size
+        v.viewportSettled(GeoBox(10.0, 70.0, 40.0, 100.0))
+        assertTrue(v.state.value.dotsTooFar); assertTrue(v.state.value.dots.isEmpty()); assertEquals(asks, fake.dotAsks.size) // no read at all
+        v.viewportSettled(null); assertFalse(v.state.value.dotsTooFar)
+    }
+
+    @Test fun moreThanTheCapIsCutAndSaysZoomInToSeeAll() = runTest {
+        fake.dotRows = (0 until SeedDots.CAP + 5).map { com.rokid.context.memory.place.PlaceDot("p$it", 27.05 + it * 1e-6, 88.05, "x") }
+        val v = vm(); v.refresh(); v.viewportSettled(view)
+        assertEquals(SeedDots.CAP, v.state.value.dots.size); assertTrue(v.state.value.dotsCapped)
+        assertTrue(SeedDots.CAPPED.contains("zoom in to see all", ignoreCase = true))
+        fake.dotRows = fake.dotRows.take(10); v.viewportSettled(view)
+        assertFalse(v.state.value.dotsCapped)
+    }
+
+    @Test fun theSwitchIsOnByDefaultPersistsAndOffRemovesTheDotsAndStopsReading() = runTest {
+        fake.dotRows = listOf(com.rokid.context.memory.place.PlaceDot("d1", 27.05, 88.05, "fort"))
+        val v = vm(); v.refresh(); v.viewportSettled(view)
+        assertTrue(v.state.value.showPlaces); assertEquals(1, v.state.value.dots.size)
+        v.setShowPlaces(false)
+        assertFalse(fake.shown); assertTrue(v.state.value.dots.isEmpty())
+        val asks = fake.dotAsks.size; v.viewportSettled(view); assertEquals(asks, fake.dotAsks.size) // off: no read
+        val w = vm(); w.refresh(); assertFalse(w.state.value.showPlaces) // a new screen reads the saved choice
+        w.setShowPlaces(true); w.viewportSettled(view); assertEquals(1, w.state.value.dots.size)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun aMovingViewReadsNothingAndOnlyTheViewThatHeldStillIsReadOnce() = runTest {
+        fake.dotRows = listOf(com.rokid.context.memory.place.PlaceDot("d1", 27.05, 88.05, "fort"))
+        val v = SeedMapViewModel(fake, main.dispatcher).also { vms += it } // the production hold time
+        repeat(20) { v.viewportSettled(GeoBox(27.0 + it * 0.001, 88.0, 27.2, 88.2)); main.dispatcher.scheduler.advanceTimeBy(50) } // a drag: a new view every 50 ms
+        assertTrue(fake.dotAsks.isEmpty()) // nothing was read while it moved
+        main.dispatcher.scheduler.advanceTimeBy(SeedMapViewModel.SETTLE_MS + 10)
+        assertEquals(1, fake.dotAsks.size) // one read, for the last view
+        assertEquals(1, v.state.value.dots.size)
+    }
+
+    @Test fun aTapOnADotShowsItsLabelAndATapElsewhereOrAMissingPlaceHidesIt() = runTest {
+        val v = vm(); v.refresh()
+        v.tapDot("d1")
+        assertEquals("d1", v.state.value.dotSelectedId); assertEquals("Old fort \u00b7 fort\nBuilt in 1590.", v.state.value.dotLabel!!.text)
+        v.tapDot(null); assertNull(v.state.value.dotLabel); assertNull(v.state.value.dotSelectedId)
+        v.tapDot("gone"); assertNull(v.state.value.dotLabel) // the place is gone: no label, nothing breaks
+    }
+
+    @Test fun aFailingReadGivesNoDotsAndNoCrash() = runTest {
+        val bad = object : SeedMapControl {
+            override suspend fun areas() = emptyList<SeedAreaInfo>(); override suspend fun pins() = emptyList<PinInfo>()
+            override suspend fun seed(box: GeoBox): Result<SeedOutcome> = Result.failure(UnsupportedOperationException())
+            override suspend fun remove(id: String, withPlaces: Boolean) {}
+            override suspend fun dots(box: GeoBox, cap: Int): List<com.rokid.context.memory.place.PlaceDot> = throw IllegalStateException("db closed")
+        }
+        val v = SeedMapViewModel(bad, main.dispatcher, settleMs = 0).also { vms += it }; v.refresh(); v.viewportSettled(view)
+        assertTrue(v.state.value.dots.isEmpty())
     }
 
     @Test fun mapBackgroundTapClearsTheHighlightAndRemovalClearsItToo() = runTest {
