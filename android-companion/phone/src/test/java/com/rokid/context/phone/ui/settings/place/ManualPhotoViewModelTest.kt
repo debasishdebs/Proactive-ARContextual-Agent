@@ -81,7 +81,7 @@ class ManualPhotoViewModelTest {
         vm.openManual(); vm.updateManual { it.copy(photoLink = "https://example.com/a.jpg") }
         vm.fetchManualPhoto(); d.scheduler.advanceUntilIdle()
         val f = vm.state.value.manualForm!!
-        assertEquals(1, c.fetched); assertEquals(photo, f.photo); assertEquals("", f.photoLink); assertFalse(f.photoBusy); assertNull(f.error)
+        assertEquals(1, c.fetched); assertEquals(photo, f.photo); assertEquals("", f.photoLink); assertFalse(f.photoBusy); assertNull(f.photoError)
         assertEquals("Photo ready: 640 x 480, 2 KB", PlaceGuideModel.photoSize(photo))
         vm.removeManualPhoto(); assertNull(vm.state.value.manualForm!!.photo)
     }
@@ -90,8 +90,8 @@ class ManualPhotoViewModelTest {
         val c = Control().also { it.fetchAnswer = PhotoResult.Fail(PhotoFault.OFFLINE_ONLY) }; val vm = PlaceGuideViewModel(c, d, developerMode = true)
         vm.openManual(); vm.fetchManualPhoto(); d.scheduler.advanceUntilIdle(); assertEquals(0, c.fetched) // an empty link is not sent
         vm.updateManual { it.copy(photoLink = "https://example.com/a.jpg") }; vm.fetchManualPhoto(); d.scheduler.advanceUntilIdle()
-        assertEquals(PhotoFault.OFFLINE_ONLY.text, vm.state.value.manualForm!!.error); assertNull(vm.state.value.manualForm!!.photo)
-        vm.updateManual { it }; assertNull("any edit clears the line", vm.state.value.manualForm!!.error)
+        assertEquals(PhotoFault.OFFLINE_ONLY.text, vm.state.value.manualForm!!.photoError); assertNull(vm.state.value.manualForm!!.photo)
+        vm.updateManual { it }; assertNull("any edit clears the line", vm.state.value.manualForm!!.photoError)
     }
 
     @Test fun thePickerResultIsCheckedAndACancelDoesNothing() = runTest(d) {
@@ -99,7 +99,7 @@ class ManualPhotoViewModelTest {
         vm.openManual(); vm.pickManualPhoto(null); d.scheduler.advanceUntilIdle(); assertEquals(0, c.read); assertNull(vm.state.value.manualForm!!.photo)
         vm.pickManualPhoto("content://doc/1"); d.scheduler.advanceUntilIdle(); assertEquals(photo, vm.state.value.manualForm!!.photo)
         c.readAnswer = PhotoResult.Fail(PhotoFault.NOT_AN_IMAGE); vm.pickManualPhoto("content://doc/2"); d.scheduler.advanceUntilIdle()
-        assertEquals("a bad replacement keeps the earlier photo and says why", photo, vm.state.value.manualForm!!.photo); assertEquals(PhotoFault.NOT_AN_IMAGE.text, vm.state.value.manualForm!!.error)
+        assertEquals("a bad replacement keeps the earlier photo and says why", photo, vm.state.value.manualForm!!.photo); assertEquals(PhotoFault.NOT_AN_IMAGE.text, vm.state.value.manualForm!!.photoError)
     }
 
     @Test fun savingWithAPhotoMakesThePinThenOneReferenceMomentWithTheDescription() = runTest(d) {
@@ -140,5 +140,81 @@ class ManualPhotoViewModelTest {
         assertEquals("Photo added, waiting to be indexed", PlaceGuideModel.PHOTO_WAITING); assertEquals("Reference photo indexed", PlaceGuideModel.PHOTO_READY)
         val plain = PlaceGuideViewModel(c, d, developerMode = false); d.scheduler.advanceUntilIdle()
         assertTrue("without Developer mode nothing is read", plain.state.value.refIndexed.isEmpty())
+    }
+
+    // ---- 27 Nov device fix: Fetch state machine, Add with an unfetched link, Add photo on an existing pin ----
+    private fun pin(id: Int, moment: String? = null) = UserPlace("user:00000000-0000-0000-0000-%012d".format(id), "Office", PlaceKinds.ATTRACTION, 1.0, 2.0, 60, null, "Main building", moment, 1L)
+
+    @Test fun fetchStatesGoIdleFetchingReady() = runTest(d) {
+        val c = Control().also { it.fetchAnswer = PhotoResult.Ok(photo) }; val vm = PlaceGuideViewModel(c, d, developerMode = true)
+        vm.openManual(); vm.updateManual { it.copy(photoLink = "https://example.com/a.jpg") }
+        val idle = vm.state.value.manualForm!!; assertFalse(idle.photoBusy); assertNull(idle.photo); assertNull(idle.photoError)
+        vm.fetchManualPhoto(); assertTrue("fetching", vm.state.value.manualForm!!.photoBusy); vm.fetchManualPhoto() // a second tap while busy is ignored
+        d.scheduler.advanceUntilIdle(); assertEquals(1, c.fetched); assertEquals(photo, vm.state.value.manualForm!!.photo); assertFalse(vm.state.value.manualForm!!.photoBusy)
+    }
+
+    @Test fun everyFailureReasonIsPlainAndNotHttpsNeverLeavesThePhone() = runTest(d) {
+        val c = Control(); val vm = PlaceGuideViewModel(c, d, developerMode = true); vm.openManual()
+        vm.updateManual { it.copy(photoLink = "http://example.com/a.jpg") }; vm.fetchManualPhoto(); d.scheduler.advanceUntilIdle()
+        assertEquals(0, c.fetched); assertEquals(PhotoFault.BAD_LINK.text, vm.state.value.manualForm!!.photoError)
+        for (f in listOf(PhotoFault.BLOCKED_HOST, PhotoFault.TOO_BIG, PhotoFault.NOT_AN_IMAGE, PhotoFault.OFFLINE_ONLY, PhotoFault.DATA_SAVER, PhotoFault.NO_NETWORK, PhotoFault.FAILED)) {
+            c.fetchAnswer = PhotoResult.Fail(f); vm.updateManual { it.copy(photoLink = "https://example.com/a.jpg") }; vm.fetchManualPhoto(); d.scheduler.advanceUntilIdle()
+            assertEquals(f.text, vm.state.value.manualForm!!.photoError); assertFalse(vm.state.value.manualForm!!.photoBusy); assertNull(vm.state.value.manualForm!!.photo)
+        }
+        assertTrue(PlaceGuideModel.looksLikeHttps("https://example.com/a.jpg")); assertFalse(PlaceGuideModel.looksLikeHttps("https://")); assertFalse(PlaceGuideModel.looksLikeHttps("example.com"))
+    }
+
+    @Test fun addWithAnUnfetchedLinkFetchesFirstThenCreatesThePin() = runTest(d) {
+        val c = Control().also { it.fetchAnswer = PhotoResult.Ok(photo) }; val vm = PlaceGuideViewModel(c, d, developerMode = true)
+        vm.openManual(); fill(vm); vm.updateManual { it.copy(photoLink = "https://example.com/a.jpg") }
+        vm.saveManual(); assertTrue("progress while it fetches", vm.state.value.manualForm!!.photoBusy); assertTrue(c.stored.isEmpty())
+        d.scheduler.advanceUntilIdle()
+        assertEquals(1, c.fetched); assertEquals(1, c.stored.size); assertEquals(1, c.added); assertNull(vm.state.value.manualForm); assertEquals(PlaceGuideModel.PHOTO_ADDED, vm.state.value.pinMessage)
+    }
+
+    @Test fun aFailedFetchOnAddMakesNoPinAndOffersAddWithoutPhoto() = runTest(d) {
+        val c = Control().also { it.fetchAnswer = PhotoResult.Fail(PhotoFault.NOT_AN_IMAGE) }; val vm = PlaceGuideViewModel(c, d, developerMode = true)
+        vm.openManual(); fill(vm); vm.updateManual { it.copy(photoLink = "https://example.com/a.jpg") }; vm.saveManual(); d.scheduler.advanceUntilIdle()
+        val f = vm.state.value.manualForm!!
+        assertTrue("no silent pin", c.stored.isEmpty()); assertEquals(0, c.added); assertTrue(f.askNoPhoto); assertEquals(PhotoFault.NOT_AN_IMAGE.text, f.photoError); assertFalse(f.photoBusy)
+        vm.updateManual { it.copy(photoLink = "https://example.com/b.jpg") }; assertFalse("fixing the link closes the choice", vm.state.value.manualForm!!.askNoPhoto)
+        vm.saveManual(); d.scheduler.advanceUntilIdle(); assertTrue(vm.state.value.manualForm!!.askNoPhoto)
+        vm.saveManualWithoutPhoto(); d.scheduler.advanceUntilIdle()
+        assertEquals(1, c.stored.size); assertEquals(0, c.added); assertNull(vm.state.value.manualForm); assertEquals("Place added.", vm.state.value.pinMessage); assertEquals(2, c.fetched)
+    }
+
+    @Test fun addPhotoOnAnExistingPinAttachesExactlyOneMomentAndLinksIt() = runTest(d) {
+        val c = Control().also { it.stored = listOf(pin(1)); it.fetchAnswer = PhotoResult.Ok(photo) }; val vm = PlaceGuideViewModel(c, d, developerMode = true); d.scheduler.advanceUntilIdle()
+        vm.openPinPhoto(c.stored.single().id); assertEquals(c.stored.single().id, vm.state.value.pinPhoto!!.pinId)
+        vm.updatePinPhoto { it.copy(link = "https://example.com/a.jpg") }; vm.fetchPinPhoto(); d.scheduler.advanceUntilIdle()
+        assertEquals(photo, vm.state.value.pinPhoto!!.photo); assertEquals("", vm.state.value.pinPhoto!!.link)
+        vm.savePinPhoto(); vm.savePinPhoto(); d.scheduler.advanceUntilIdle() // a double tap writes once
+        assertEquals(1, c.added); assertEquals(c.stored.single().id to "Main building", c.addedFor); assertNull(vm.state.value.pinPhoto); assertEquals(PlaceGuideModel.PHOTO_ADDED, vm.state.value.pinMessage)
+    }
+
+    @Test fun addPhotoWithAnUnfetchedLinkFetchesThenAttaches() = runTest(d) {
+        val c = Control().also { it.stored = listOf(pin(1)); it.fetchAnswer = PhotoResult.Ok(photo) }; val vm = PlaceGuideViewModel(c, d, developerMode = true); d.scheduler.advanceUntilIdle()
+        vm.openPinPhoto(c.stored.single().id); vm.savePinPhoto(); d.scheduler.advanceUntilIdle(); assertEquals(0, c.added); assertEquals(PlaceGuideModel.PIN_PHOTO_NONE, vm.state.value.pinPhoto!!.error)
+        vm.updatePinPhoto { it.copy(link = "https://example.com/a.jpg") }; vm.savePinPhoto(); d.scheduler.advanceUntilIdle()
+        assertEquals(1, c.fetched); assertEquals(1, c.added); assertNull(vm.state.value.pinPhoto)
+    }
+
+    @Test fun addPhotoFailuresLeaveNoOrphanAndKeepTheDialog() = runTest(d) {
+        val c = Control().also { it.stored = listOf(pin(1)); it.fetchAnswer = PhotoResult.Fail(PhotoFault.TOO_BIG) }; val vm = PlaceGuideViewModel(c, d, developerMode = true); d.scheduler.advanceUntilIdle()
+        vm.openPinPhoto(c.stored.single().id); vm.updatePinPhoto { it.copy(link = "https://example.com/a.jpg") }; vm.savePinPhoto(); d.scheduler.advanceUntilIdle()
+        assertEquals(0, c.added); assertEquals(PhotoFault.TOO_BIG.text, vm.state.value.pinPhoto!!.error); assertFalse(vm.state.value.pinPhoto!!.busy)
+        c.addOk = false; vm.updatePinPhoto { it.copy(photo = photo) }; vm.savePinPhoto(); d.scheduler.advanceUntilIdle()
+        assertEquals(1, c.added); assertEquals(PlaceGuideModel.PHOTO_NOT_SAVED, vm.state.value.pinPhoto!!.error); assertNull(c.stored.single().momentId)
+        vm.cancelPinPhoto(); assertNull(vm.state.value.pinPhoto)
+    }
+
+    @Test fun addPhotoOpensOnlyForDeveloperModeAndAPinThatNeedsAMoment() = runTest(d) {
+        val c = Control().also { it.stored = listOf(pin(1), pin(2, com.rokid.context.memory.moment.MomentId.format(100))) }
+        val plain = PlaceGuideViewModel(c, d, developerMode = false); d.scheduler.advanceUntilIdle(); plain.openPinPhoto(c.stored[0].id); assertNull(plain.state.value.pinPhoto)
+        val vm = PlaceGuideViewModel(c, d, developerMode = true); d.scheduler.advanceUntilIdle()
+        vm.openPinPhoto(c.stored[1].id); assertNull("a pin with a live Moment has no Add photo", vm.state.value.pinPhoto)
+        vm.openPinPhoto(c.stored[0].id); assertNotNull(vm.state.value.pinPhoto)
+        c.readAnswer = PhotoResult.Ok(photo); vm.pickPinPhoto("content://doc/1"); d.scheduler.advanceUntilIdle(); assertEquals(photo, vm.state.value.pinPhoto!!.photo)
+        vm.removePinPhoto(); assertNull(vm.state.value.pinPhoto!!.photo)
     }
 }

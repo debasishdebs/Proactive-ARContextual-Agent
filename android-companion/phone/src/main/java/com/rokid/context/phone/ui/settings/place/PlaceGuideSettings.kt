@@ -1,6 +1,8 @@
 package com.rokid.context.phone.ui.settings.place
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.graphics.asImageBitmap
 import com.rokid.context.phone.place.PhotoResult
@@ -68,7 +70,12 @@ data class ManualFormState(
     val name: String = "", val note: String = "", val kindIndex: Int = 0, val coordinates: String = "", val radius: String = "", val error: String? = null,
     /** The optional reference photo: the pasted link (memory only), the checked and re-encoded photo, and whether a fetch or the save is running. */
     val photoLink: String = "", val photo: com.rokid.context.work.frames.place.PreparedPhoto? = null, val photoBusy: Boolean = false,
+    /** The photo's own line (under the link field): the fixed reason of the last fetch or pick, and whether Add found a link it could not fetch (then "Add without photo" is offered). */
+    val photoError: String? = null, val askNoPhoto: Boolean = false,
 )
+
+/** Developer "Add photo" on a pin that needs a Moment: the pin, what was typed (memory only), the checked photo, whether a fetch or the save runs, and the photo's line. */
+data class PinPhotoState(val pinId: String, val link: String = "", val photo: com.rokid.context.work.frames.place.PreparedPhoto? = null, val busy: Boolean = false, val error: String? = null)
 
 /** Place object S2, mode (a): the open "Delete place?" confirmation: the pin and how many Moments it points at (the reference Moment plus the card links). Names no coordinate. */
 data class PinDeleteConfirm(val pinId: String, val name: String, val momentCount: Int,
@@ -95,6 +102,8 @@ data class PlaceGuideUiState(
     val offlineGuess: Boolean = false, val maybeCutoff: Float = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_CUTOFF, val candidateRadiusM: Int = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_RADIUS_M,
     /** Developer only: the open "Add place manually" form (null = closed). */
     val manualForm: ManualFormState? = null,
+    /** Developer only: the open "Add photo" dialog of one pin (null = closed). */
+    val pinPhoto: PinPhotoState? = null,
     /** Developer reference photos: for the pins whose Moment is a photo, whether its image is indexed yet (Moment id to indexed). */
     val refIndexed: Map<String, Boolean> = emptyMap(),
 )
@@ -252,6 +261,11 @@ object PlaceGuideModel {
     const val PHOTO_NOTE = "Optional. A photo of the place (a file, or the https link of an image). It becomes a reference Moment of this pin, made now with no location, and is indexed later like any photo. A web photo may not match a real glance at the place (angle, light)."
     const val PHOTO_WAITING = "Photo added, waiting to be indexed"
     const val PHOTO_READY = "Reference photo indexed"
+    fun looksLikeHttps(link: String): Boolean = link.trim().let { it.length > 8 && it.startsWith("https://", ignoreCase = true) }
+    const val LINK_NOT_HTTPS = "The link must start with https://"
+    const val PIN_PHOTO_NONE = "Choose a photo or paste an https link first."
+    const val PHOTO_NOT_SAVED = "The photo could not be saved. Nothing was changed."
+    const val NO_PHOTO_CHOICE = "The link could not be fetched, so the place was not added. Fix the link, or add the place without the photo."
     fun photoSize(p: com.rokid.context.work.frames.place.PreparedPhoto): String = "Photo ready: ${p.width} x ${p.height}, ${if (p.size >= 1024 * 1024) "%.1f MB".format(java.util.Locale.ROOT, p.size / 1048576.0) else "${(p.size + 1023) / 1024} KB"}"
     const val MANUAL_NOTE = "Developer: adds a real pin at coordinates you type, to try the place guide where you are not. It is a normal pinned place (source: manual) and is deleted like any pin."
 
@@ -417,55 +431,132 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     /** Developer only: opens the "Add place manually" form. A build or screen without Developer mode never opens it. */
     fun openManual() { if (_state.value.developerMode && control.pinning != null) _state.update { it.copy(manualForm = ManualFormState(), pinMessage = null) } }
     fun cancelManual() { _state.update { it.copy(manualForm = null) } }
-    fun updateManual(f: (ManualFormState) -> ManualFormState) { _state.update { s -> s.copy(manualForm = s.manualForm?.let(f)?.copy(error = null)) } }
+    fun updateManual(f: (ManualFormState) -> ManualFormState) { _state.update { s -> s.copy(manualForm = s.manualForm?.let(f)?.copy(error = null, photoError = null, askNoPhoto = false)) } }
 
-    /** Developer only: fetches the pasted link into the form's photo. A refusal or a bad photo is a fixed sentence; nothing of the link is kept after a success. */
+    /** One download for the form and the pin dialog: a link that is not https never leaves the phone. */
+    private suspend fun loadLink(link: String): PhotoResult =
+        if (!PlaceGuideModel.looksLikeHttps(link)) PhotoResult.Fail(com.rokid.context.work.frames.place.PhotoFault.BAD_LINK)
+        else runCatching { control.fetchPhoto(link.trim()) }.getOrElse { PhotoResult.Fail(com.rokid.context.work.frames.place.PhotoFault.FAILED) }
+
+    /** Developer only: fetches the pasted link into the form's photo. A refusal or a bad photo is a fixed sentence under the link; nothing of the link is kept after a success. */
     fun fetchManualPhoto() {
         val d = _state.value.manualForm ?: return
         if (!_state.value.developerMode || d.photoBusy || d.photoLink.isBlank()) return
-        _state.update { s -> s.copy(manualForm = s.manualForm?.copy(photoBusy = true, error = null)) }
-        viewModelScope.launch(work) { takePhoto(runCatching { control.fetchPhoto(d.photoLink) }.getOrElse { PhotoResult.Fail(com.rokid.context.work.frames.place.PhotoFault.FAILED) }, clearLink = true) }
+        _state.update { s -> s.copy(manualForm = s.manualForm?.copy(photoBusy = true, error = null, photoError = null, askNoPhoto = false)) }
+        viewModelScope.launch(work) { takePhoto(loadLink(d.photoLink), clearLink = true) }
     }
 
-    /** Developer only: the document the picker returned (null = the user cancelled: nothing happens). */
+    /** Developer only: the document the picker returned (null = cancelled). It gets the same checks as a link. */
     fun pickManualPhoto(uri: String?) {
         val d = _state.value.manualForm ?: return
         if (uri == null || !_state.value.developerMode || d.photoBusy) return
-        _state.update { s -> s.copy(manualForm = s.manualForm?.copy(photoBusy = true, error = null)) }
+        _state.update { s -> s.copy(manualForm = s.manualForm?.copy(photoBusy = true, error = null, photoError = null, askNoPhoto = false)) }
         viewModelScope.launch(work) { takePhoto(runCatching { control.readPhoto(uri) }.getOrElse { PhotoResult.Fail(com.rokid.context.work.frames.place.PhotoFault.UNREADABLE) }, clearLink = false) }
     }
 
-    fun removeManualPhoto() { _state.update { s -> s.copy(manualForm = s.manualForm?.takeIf { !it.photoBusy }?.copy(photo = null, error = null) ?: s.manualForm) } }
+    fun removeManualPhoto() { _state.update { s -> s.copy(manualForm = s.manualForm?.takeIf { !it.photoBusy }?.copy(photo = null, error = null, photoError = null, askNoPhoto = false) ?: s.manualForm) } }
 
     private fun takePhoto(r: PhotoResult, clearLink: Boolean) {
         _state.update { s ->
             val f = s.manualForm ?: return@update s
             s.copy(manualForm = when (r) {
-                is PhotoResult.Ok -> f.copy(photo = r.photo, photoBusy = false, photoLink = if (clearLink) "" else f.photoLink, error = null)
-                is PhotoResult.Fail -> f.copy(photoBusy = false, error = r.fault.text)
+                is PhotoResult.Ok -> f.copy(photo = r.photo, photoBusy = false, photoLink = if (clearLink) "" else f.photoLink, error = null, photoError = null, askNoPhoto = false)
+                is PhotoResult.Fail -> f.copy(photoBusy = false, photoError = r.fault.text)
             })
         }
     }
 
-    fun saveManual() {
+    /** "Add": a typed link that was not fetched yet is fetched first; when that fails no pin is made (the form offers "Add without photo" or a fixed link). */
+    fun saveManual() = save(withoutPhoto = false)
+    /** "Add without photo": the link and any photo are ignored. */
+    fun saveManualWithoutPhoto() = save(withoutPhoto = true)
+
+    private fun save(withoutPhoto: Boolean) {
         val pinning = control.pinning ?: return
         val d = _state.value.manualForm ?: return
         if (!_state.value.developerMode || d.photoBusy) return
-        _state.update { s -> s.copy(manualForm = s.manualForm?.copy(photoBusy = d.photo != null)) } // while the Moment is written the form is locked
+        val link = d.photoLink.trim()
+        val fetchFirst = !withoutPhoto && d.photo == null && link.isNotEmpty()
+        val photo = if (withoutPhoto) null else d.photo
+        _state.update { s -> s.copy(manualForm = s.manualForm?.copy(photoBusy = photo != null || fetchFirst, error = null, photoError = null, askNoPhoto = false)) } // while the photo is fetched or the Moment is written the form is locked
         val kind = ManualPlace.KINDS.getOrElse(d.kindIndex) { ManualPlace.KINDS.first() }
         viewModelScope.launch(work) {
+            var use = photo
+            if (fetchFirst) {
+                when (val r = loadLink(link)) {
+                    is PhotoResult.Ok -> { use = r.photo; _state.update { s -> s.copy(manualForm = s.manualForm?.copy(photo = r.photo, photoLink = "")) } }
+                    is PhotoResult.Fail -> { _state.update { s -> s.copy(manualForm = s.manualForm?.copy(photoBusy = false, photoError = r.fault.text, askNoPhoto = true)) }; return@launch } // no pin without the photo the user asked for
+                }
+            }
             val res = runCatching { ManualPlace.create(pinning, d.name, d.note, kind, d.coordinates, d.radius) }.getOrElse { ManualResult.Refused(PinRefusal.NOT_STORED) }
             when (res) {
                 is ManualResult.Saved -> {
                     // the photo, when there is one: the pin exists already; a failed Moment write leaves it without a link and nothing else behind
-                    val linked = d.photo?.let { runCatching { control.addReferencePhoto(res.place.id, it, d.note) }.getOrDefault(false) }
+                    val linked = use?.let { runCatching { control.addReferencePhoto(res.place.id, it, d.note) }.getOrDefault(false) }
                     val msg = when (linked) { null -> "Place added."; true -> PlaceGuideModel.PHOTO_ADDED; false -> PlaceGuideModel.PHOTO_NOT_ADDED }
                     _state.update { it.copy(manualForm = null, pins = pinning.pins(), pinMessage = msg, pinMessageIsError = linked == false) }
                 }
-                is ManualResult.Invalid -> _state.update { s -> s.copy(manualForm = d.copy(photoBusy = false, error = ManualPlace.faultText(res.fault))) }
-                is ManualResult.Refused -> _state.update { s -> s.copy(manualForm = d.copy(photoBusy = false, error = if (res.why == PinRefusal.ZONE) PlaceGuideModel.MANUAL_ZONE else PlaceGuideModel.refusalText(res.why))) }
+                is ManualResult.Invalid -> _state.update { s -> s.copy(manualForm = s.manualForm?.copy(photoBusy = false, error = ManualPlace.faultText(res.fault))) }
+                is ManualResult.Refused -> _state.update { s -> s.copy(manualForm = s.manualForm?.copy(photoBusy = false, error = if (res.why == PinRefusal.ZONE) PlaceGuideModel.MANUAL_ZONE else PlaceGuideModel.refusalText(res.why))) }
             }
             refreshSummary()
+        }
+    }
+
+    // ---- Developer "Add photo" on an existing pin that needs a Moment ----
+    fun openPinPhoto(pinId: String) {
+        val s = _state.value
+        if (!s.developerMode || control.pinning == null || s.pins.none { it.id == pinId } || !PlaceGuideModel.needsMoment(s.pins.first { it.id == pinId }, s.moments)) return
+        _state.update { it.copy(pinPhoto = PinPhotoState(pinId), pinMessage = null) }
+    }
+    fun cancelPinPhoto() { _state.update { s -> s.copy(pinPhoto = s.pinPhoto?.takeIf { it.busy }) } }
+    fun updatePinPhoto(f: (PinPhotoState) -> PinPhotoState) { _state.update { s -> s.copy(pinPhoto = s.pinPhoto?.let(f)?.copy(error = null)) } }
+    fun removePinPhoto() { _state.update { s -> s.copy(pinPhoto = s.pinPhoto?.takeIf { !it.busy }?.copy(photo = null, error = null) ?: s.pinPhoto) } }
+
+    private fun takePinPhoto(r: PhotoResult, clearLink: Boolean) {
+        _state.update { s ->
+            val f = s.pinPhoto ?: return@update s
+            s.copy(pinPhoto = when (r) {
+                is PhotoResult.Ok -> f.copy(photo = r.photo, busy = false, link = if (clearLink) "" else f.link, error = null)
+                is PhotoResult.Fail -> f.copy(busy = false, error = r.fault.text)
+            })
+        }
+    }
+
+    fun fetchPinPhoto() {
+        val d = _state.value.pinPhoto ?: return
+        if (!_state.value.developerMode || d.busy || d.link.isBlank()) return
+        _state.update { s -> s.copy(pinPhoto = s.pinPhoto?.copy(busy = true, error = null)) }
+        viewModelScope.launch(work) { takePinPhoto(loadLink(d.link), clearLink = true) }
+    }
+
+    fun pickPinPhoto(uri: String?) {
+        val d = _state.value.pinPhoto ?: return
+        if (uri == null || !_state.value.developerMode || d.busy) return
+        _state.update { s -> s.copy(pinPhoto = s.pinPhoto?.copy(busy = true, error = null)) }
+        viewModelScope.launch(work) { takePinPhoto(runCatching { control.readPhoto(uri) }.getOrElse { PhotoResult.Fail(com.rokid.context.work.frames.place.PhotoFault.UNREADABLE) }, clearLink = false) }
+    }
+
+    /** "Add photo": a typed link not fetched yet is fetched first; then exactly one reference Moment is made and linked (the pin's note is its description). A failure leaves nothing behind and keeps the dialog open. */
+    fun savePinPhoto() {
+        val d = _state.value.pinPhoto ?: return
+        val pin = _state.value.pins.firstOrNull { it.id == d.pinId } ?: return
+        if (!_state.value.developerMode || d.busy) return
+        val link = d.link.trim()
+        if (d.photo == null && link.isEmpty()) { _state.update { s -> s.copy(pinPhoto = s.pinPhoto?.copy(error = PlaceGuideModel.PIN_PHOTO_NONE)) }; return }
+        _state.update { s -> s.copy(pinPhoto = s.pinPhoto?.copy(busy = true, error = null)) }
+        viewModelScope.launch(work) {
+            var use = d.photo
+            if (use == null) {
+                when (val r = loadLink(link)) {
+                    is PhotoResult.Ok -> { use = r.photo; _state.update { s -> s.copy(pinPhoto = s.pinPhoto?.copy(photo = r.photo, link = "")) } }
+                    is PhotoResult.Fail -> { _state.update { s -> s.copy(pinPhoto = s.pinPhoto?.copy(busy = false, error = r.fault.text)) }; return@launch }
+                }
+            }
+            val ok = runCatching { control.addReferencePhoto(pin.id, use!!, pin.note) }.getOrDefault(false)
+            if (ok) _state.update { it.copy(pinPhoto = null, pinMessage = PlaceGuideModel.PHOTO_ADDED, pinMessageIsError = false) }
+            else _state.update { s -> s.copy(pinPhoto = s.pinPhoto?.copy(busy = false, error = PlaceGuideModel.PHOTO_NOT_SAVED)) }
+            refreshSummaryNow()
         }
     }
 
@@ -734,7 +825,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     }
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setExtraType = vm::setExtraType, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius, openManual = vm::openManual, updateManual = vm::updateManual, saveManual = vm::saveManual, cancelManual = vm::cancelManual, pickManualPhoto = vm::pickManualPhoto, fetchManualPhoto = vm::fetchManualPhoto, removeManualPhoto = vm::removeManualPhoto))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setExtraType = vm::setExtraType, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius, openManual = vm::openManual, updateManual = vm::updateManual, saveManual = vm::saveManual, cancelManual = vm::cancelManual, pickManualPhoto = vm::pickManualPhoto, fetchManualPhoto = vm::fetchManualPhoto, removeManualPhoto = vm::removeManualPhoto, saveManualWithoutPhoto = vm::saveManualWithoutPhoto, openPinPhoto = vm::openPinPhoto, updatePinPhoto = vm::updatePinPhoto, pickPinPhoto = vm::pickPinPhoto, fetchPinPhoto = vm::fetchPinPhoto, removePinPhoto = vm::removePinPhoto, savePinPhoto = vm::savePinPhoto, cancelPinPhoto = vm::cancelPinPhoto))
 }
 
 /**
@@ -783,7 +874,9 @@ class PlaceGuideActions(
     /** Developer "Add place manually": open, edit, save, cancel. */
     val openManual: () -> Unit = {}, val updateManual: ((ManualFormState) -> ManualFormState) -> Unit = {}, val saveManual: () -> Unit = {}, val cancelManual: () -> Unit = {},
     /** Developer reference photo: the picked document (null = cancelled), the Fetch button and Remove. */
-    val pickManualPhoto: (String?) -> Unit = {}, val fetchManualPhoto: () -> Unit = {}, val removeManualPhoto: () -> Unit = {},
+    val pickManualPhoto: (String?) -> Unit = {}, val fetchManualPhoto: () -> Unit = {}, val removeManualPhoto: () -> Unit = {}, val saveManualWithoutPhoto: () -> Unit = {},
+    /** Developer "Add photo" on a pin that needs a Moment. */
+    val openPinPhoto: (String) -> Unit = {}, val updatePinPhoto: ((PinPhotoState) -> PinPhotoState) -> Unit = {}, val pickPinPhoto: (String?) -> Unit = {}, val fetchPinPhoto: () -> Unit = {}, val removePinPhoto: () -> Unit = {}, val savePinPhoto: () -> Unit = {}, val cancelPinPhoto: () -> Unit = {},
 )
 
 @Composable
@@ -857,6 +950,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                     MomentSection(p.id, state.moments[p.momentId], PlaceGuideModel.needsMoment(p, state.moments), on)
                     if (state.developerMode) state.refIndexed[p.momentId]?.let { ready -> NoticeText(if (ready) PlaceGuideModel.PHOTO_READY else PlaceGuideModel.PHOTO_WAITING, tag = "pin_photo_state_${p.id}") }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (state.developerMode && PlaceGuideModel.needsMoment(p, state.moments)) SecondaryAction("Add photo", { on.openPinPhoto(p.id) }, tag = "pin_add_photo_${p.id}", enabled = !state.pinBusy)
                         SecondaryAction("Edit", { on.editPin(p.id) }, tag = "pin_edit_${p.id}")
                         SecondaryAction("Delete", { on.deletePin(p.id) }, tag = "pin_delete_${p.id}")
                     }
@@ -900,6 +994,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
     state.historyDetail?.let { d -> PlaceHistoryDetailDialog(d, java.time.ZoneId.systemDefault(), on.closeHistory, on.showAgain, on.deleteHistory, on.openMoment) }
     state.pinDialog?.let { d -> PinDialog(d, on) }
     if (state.developerMode) state.manualForm?.let { d -> ManualPlaceDialog(d, on) }
+    if (state.developerMode) state.pinPhoto?.let { d -> PinPhotoDialog(d, on) }
     state.pinDeleteConfirm?.let { c -> PinDeleteDialog(c, on) }
     state.momentPicker?.let { pk -> MomentPickerDialog(pk, on) }
 }
@@ -1016,39 +1111,56 @@ private fun PinDialog(d: PinDialogState, on: PlaceGuideActions) {
 }
 
 
-/** The form's optional photo: the system document picker (no storage permission), a pasted https link with Fetch, a small preview with its size, and Remove. */
+/**
+ * The optional photo, shared by "Add place manually" and "Add photo": the system document picker (no storage permission), the https link field, a visible Fetch button right under it (the keyboard's Done does the same),
+ * the state line (Fetching..., Photo ready with a small thumbnail, or the plain reason it failed) and Remove. [tag] prefixes the test tags.
+ */
 @Composable
-private fun ManualPhotoSection(d: ManualFormState, on: PlaceGuideActions) {
-    val picker = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri -> on.pickManualPhoto(uri?.toString()) }
-    androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        NoticeText("Photo", tag = "manual_photo_title")
-        NoticeText(PlaceGuideModel.PHOTO_NOTE, tag = "manual_photo_note")
-        val p = d.photo
-        if (p != null) {
-            val bmp = androidx.compose.runtime.remember(p) { android.graphics.BitmapFactory.decodeByteArray(p.jpeg, 0, p.jpeg.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 })?.asImageBitmap() }
+private fun PhotoPicker(link: String, photo: com.rokid.context.work.frames.place.PreparedPhoto?, busy: Boolean, error: String?, tag: String, onLink: (String) -> Unit, onPick: (String?) -> Unit, onFetch: () -> Unit, onRemove: () -> Unit, extra: @Composable () -> Unit = {}) {
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri -> onPick(uri?.toString()) }
+    val canFetch = !busy && PlaceGuideModel.looksLikeHttps(link)
+    androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        SecondaryAction(if (photo != null) "Replace with a file" else "Choose a photo", { picker.launch(arrayOf("image/*")) }, tag = "${tag}_choose", enabled = !busy)
+        TextFieldRow("Paste an image link (https)", link, { v -> onLink(v.take(2000)) }, tag = "${tag}_link", onDone = { if (canFetch) onFetch() })
+        if (link.isNotBlank() && !PlaceGuideModel.looksLikeHttps(link)) NoticeText(PlaceGuideModel.LINK_NOT_HTTPS, tag = "${tag}_link_hint")
+        PrimaryAction(if (busy) "Fetching..." else if (photo != null) "Fetch and replace" else "Fetch", onFetch, tag = "${tag}_fetch", enabled = canFetch)
+        if (busy) NoticeText("Fetching...", tag = "${tag}_status")
+        if (photo != null) {
+            val bmp = androidx.compose.runtime.remember(photo) { android.graphics.BitmapFactory.decodeByteArray(photo.jpeg, 0, photo.jpeg.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 })?.asImageBitmap() }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                bmp?.let { androidx.compose.foundation.Image(it, null, Modifier.size(72.dp).testTag("manual_photo_thumb")) }
-                NoticeText(PlaceGuideModel.photoSize(p), tag = "manual_photo_size")
+                bmp?.let { androidx.compose.foundation.Image(it, null, Modifier.size(72.dp).testTag("${tag}_thumb")) }
+                NoticeText(PlaceGuideModel.photoSize(photo), tag = "${tag}_size")
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SecondaryAction("Replace with a file", { picker.launch(arrayOf("image/*")) }, tag = "manual_photo_choose", enabled = !d.photoBusy)
-                SecondaryAction("Remove photo", on.removeManualPhoto, tag = "manual_photo_remove", enabled = !d.photoBusy)
-            }
-        } else {
-            SecondaryAction("Choose a photo", { picker.launch(arrayOf("image/*")) }, tag = "manual_photo_choose", enabled = !d.photoBusy)
+            SecondaryAction("Remove photo", onRemove, tag = "${tag}_remove", enabled = !busy)
         }
-        TextFieldRow("Paste an image link (https)", d.photoLink, { v -> on.updateManual { it.copy(photoLink = v.take(2000)) } }, tag = "manual_photo_link")
-        SecondaryAction(if (d.photoBusy) "Working..." else if (p != null) "Fetch and replace" else "Fetch", on.fetchManualPhoto, tag = "manual_photo_fetch", enabled = !d.photoBusy && d.photoLink.isNotBlank())
+        error?.let { NoticeText(it, error = true, tag = "${tag}_error") }
+        extra()
     }
 }
 
+/** "Add place manually" > Photo. */
+@Composable
+private fun ManualPhotoSection(d: ManualFormState, on: PlaceGuideActions) {
+    androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        NoticeText("Photo", tag = "manual_photo_title")
+        NoticeText(PlaceGuideModel.PHOTO_NOTE, tag = "manual_photo_note")
+        PhotoPicker(d.photoLink, d.photo, d.photoBusy, d.photoError, "manual_photo", { v -> on.updateManual { it.copy(photoLink = v) } }, on.pickManualPhoto, on.fetchManualPhoto, on.removeManualPhoto) {
+            if (d.askNoPhoto) {
+                NoticeText(PlaceGuideModel.NO_PHOTO_CHOICE, error = true, tag = "manual_photo_choice")
+                SecondaryAction("Add without photo", on.saveManualWithoutPhoto, tag = "manual_f_save_nophoto", enabled = !d.photoBusy)
+            }
+        }
+    }
+}
+
+/** The dialog body scrolls (a small screen or the open keyboard never hides a field) and keeps room under the last field for the keyboard. */
 @Composable
 private fun ManualPlaceDialog(d: ManualFormState, on: PlaceGuideActions) {
     AlertDialog(
         onDismissRequest = on.cancelManual, modifier = Modifier.testTag("manual_dialog"),
         title = { Text("Add place manually") },
         text = {
-            androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            androidx.compose.foundation.layout.Column(Modifier.testTag("manual_scroll").verticalScroll(androidx.compose.foundation.rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 NoticeText(PlaceGuideModel.MANUAL_NOTE, tag = "manual_note")
                 TextFieldRow("Name (stays on this phone, never backed up)", d.name, { v -> on.updateManual { it.copy(name = v) } }, tag = "manual_f_name")
                 TextFieldRow("Description (up to 140 characters, shown on the card)", d.note, { v -> on.updateManual { it.copy(note = v.take(UserPlace.NOTE_MAX)) } }, tag = "manual_f_note", singleLine = false)
@@ -1057,10 +1169,29 @@ private fun ManualPlaceDialog(d: ManualFormState, on: PlaceGuideActions) {
                 TextFieldRow("Radius (metres, 10 to 1500; empty = ${ManualPlace.defaultRadius(ManualPlace.KINDS.getOrElse(d.kindIndex) { ManualPlace.KINDS.first() })} for this kind)", d.radius, { v -> on.updateManual { it.copy(radius = v) } }, tag = "manual_f_radius", number = true)
                 ManualPhotoSection(d, on)
                 d.error?.let { NoticeText(it, error = true, tag = "manual_f_error") }
+                androidx.compose.foundation.layout.Spacer(Modifier.height(24.dp))
             }
         },
         confirmButton = { TextButton(on.saveManual, Modifier.testTag("manual_f_save"), enabled = !d.photoBusy) { Text("Add") } },
         dismissButton = { TextButton(on.cancelManual, Modifier.testTag("manual_f_cancel"), enabled = !d.photoBusy) { Text("Cancel") } },
+    )
+}
+
+/** "Add photo" on a pin that needs a Moment: the same choose / link / Fetch / thumbnail flow; "Add" makes the reference Moment and links it. */
+@Composable
+private fun PinPhotoDialog(d: PinPhotoState, on: PlaceGuideActions) {
+    AlertDialog(
+        onDismissRequest = on.cancelPinPhoto, modifier = Modifier.testTag("pin_photo_dialog"),
+        title = { Text("Add photo") },
+        text = {
+            androidx.compose.foundation.layout.Column(Modifier.testTag("pin_photo_scroll").verticalScroll(androidx.compose.foundation.rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                NoticeText(PlaceGuideModel.PHOTO_NOTE, tag = "pin_photo_note")
+                PhotoPicker(d.link, d.photo, d.busy, d.error, "pin_photo", { v -> on.updatePinPhoto { it.copy(link = v) } }, on.pickPinPhoto, on.fetchPinPhoto, on.removePinPhoto)
+                androidx.compose.foundation.layout.Spacer(Modifier.height(24.dp))
+            }
+        },
+        confirmButton = { TextButton(on.savePinPhoto, Modifier.testTag("pin_photo_save"), enabled = !d.busy) { Text("Add") } },
+        dismissButton = { TextButton(on.cancelPinPhoto, Modifier.testTag("pin_photo_cancel"), enabled = !d.busy) { Text("Cancel") } },
     )
 }
 

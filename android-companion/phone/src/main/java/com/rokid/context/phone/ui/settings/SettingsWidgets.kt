@@ -104,13 +104,14 @@ private val SECRET_KEYBOARD = KeyboardOptions(keyboardType = KeyboardType.Passwo
 fun TextFieldRow(
     label: String, value: String, onChange: (String) -> Unit, tag: String,
     singleLine: Boolean = true, placeholder: String? = null, secret: Boolean = false, enabled: Boolean = true,
-    supporting: String? = null, isError: Boolean = false, number: Boolean = false,
+    supporting: String? = null, isError: Boolean = false, number: Boolean = false, onDone: (() -> Unit)? = null,
 ) {
     OutlinedTextField(
         value = value, onValueChange = onChange, label = { Text(label) }, singleLine = singleLine, enabled = enabled, isError = isError,
         placeholder = placeholder?.let { { Text(it) } }, supportingText = supporting?.let { { Text(it) } },
         visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
-        keyboardOptions = if (secret) SECRET_KEYBOARD else KeyboardOptions(keyboardType = if (number) KeyboardType.Decimal else KeyboardType.Text),
+        keyboardOptions = if (secret) SECRET_KEYBOARD else KeyboardOptions(keyboardType = if (number) KeyboardType.Decimal else KeyboardType.Text, imeAction = if (onDone != null) androidx.compose.ui.text.input.ImeAction.Done else androidx.compose.ui.text.input.ImeAction.Default),
+        keyboardActions = if (onDone != null) androidx.compose.foundation.text.KeyboardActions(onDone = { onDone() }) else androidx.compose.foundation.text.KeyboardActions.Default,
         modifier = Modifier.fillMaxWidth().testTag(tag),
     )
 }
