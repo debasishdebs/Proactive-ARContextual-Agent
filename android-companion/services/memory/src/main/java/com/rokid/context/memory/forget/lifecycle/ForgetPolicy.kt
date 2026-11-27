@@ -178,7 +178,7 @@ object ForgetPolicy {
                 ForgetChild.CONTROL to r(F, "CanvasDao.kt:39,41 the run's saved-marker row in canvas_meta"),
             )),
         // The undo of a mark: the photo goes through the user single-photo Forget row (the other children follow it, not listed here); only the two user-authored children differ from a plain photo Forget, and the PIN cell is the ruling O6.
-        SideDelete("MARK_UNDO", explicit = true, entryPoints = listOf(".forgetMomentKeepPinsOutcome("), callers = listOf("MarkGraph.kt"),
+        SideDelete("MARK_UNDO", explicit = true, entryPoints = listOf(".forgetMomentKeepPinsOutcome("), callers = listOf("MarkGraph.kt", "ReferencePhotos.kt"), // ReferencePhotos.kt: the rollback of a reference photo it made itself (that exact frame, no pin armed: the same cells as the undo of a mark)
             cells = mapOf(
                 ForgetChild.MARK to r(F, "MarkRecorder.kt:156-164 removeMark deletes the mark and its intent row (the user undid it); MarkGraph.kt:28 forgetPhoto"),
                 ForgetChild.PIN to r(L, "MarkGraph.kt:28 -> ForgetActions.forgetMomentKeepPinsOutcome: PinMomentLinks.explicit with an EMPTY target arms nothing, so a pin on the photo's Moment only has its link cleared by the sweep (PML:257-262); ruling O6: no dialog names pins, so an undo never deletes one"),
