@@ -169,11 +169,19 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
         val states = runCatching { seedWork.states(pack, seedAdmission(app)() != null) }.getOrDefault(emptyMap())
         val stats = runCatching { pack.areaStats() }.getOrDefault(emptyMap())
         return pack.areas().map {
-            val live = states[it.blueZoneId]?.takeIf { s -> s.active }
-            val failed = states[it.blueZoneId]?.takeIf { s -> s.phase == SeedPhase.FAILED }?.failedCells ?: 0
+            val st = states[it.blueZoneId]
+            val live = st?.takeIf { s -> s.active }
+            val failed = st?.takeIf { s -> s.phase == SeedPhase.FAILED }?.failedCells ?: 0
             // a row still marked seeding with no live work is shown as partial at once (reconcile rewrites it after its grace): it can never read "(seeding)" forever
             val status = if (it.status == com.rokid.context.memory.place.AREA_SEEDING && live == null) com.rokid.context.memory.place.AREA_PARTIAL else it.status
-            com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, status, it.name, live, stats[it.blueZoneId]?.places, stats[it.blueZoneId]?.bytes ?: 0, it.seededAt, failed)
+            // The state is read from the stored cells, not guessed: an area from an older build that is marked partial but has every cell stored is Done; otherwise it says how many cells did not seed.
+            val box = it.box
+            val check = live == null && status != com.rokid.context.memory.place.AREA_DONE && com.rokid.context.phone.ui.settings.privacy.zones.SeedEstimate.cells(box) in 1..com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaList.TRUTH_MAX_CELLS
+            val wanted = if (check) com.rokid.context.memory.place.Geohash5.cellsCovering(box) else emptyList()
+            val stored = if (check) runCatching { pack.cellStatuses(box) }.getOrNull() else null
+            val t = com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaList.truth(status, live != null, st?.phase, failed, wanted, stored)
+            val noOsm = if (t.status == com.rokid.context.memory.place.AREA_DONE && stored == null) (st?.counts?.noOsm ?: 0) else t.noOsm
+            com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, t.status, it.name, live, stats[it.blueZoneId]?.places, stats[it.blueZoneId]?.bytes ?: 0, it.seededAt, t.failed, t.cancelled, noOsm)
         }
     }
     override suspend fun rates(): com.rokid.context.phone.ui.settings.privacy.zones.SeedRates {

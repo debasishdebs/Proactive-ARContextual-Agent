@@ -289,12 +289,15 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
     // Offline: drawing and the new-zone form are read-only. Viewing, pause and the guard are untouched. A drawing in progress is cancelled.
     LaunchedEffect(networkOnline, state.drawing) { if (!networkOnline && state.drawing) on.setDrawing(false) }
     val mapState = if (networkOnline) state else state.copy(drawing = false)
+    // Tap on a seeded-area row: the map above fits that area (works with no network: the blank grid is drawn from the phone's own data).
+    var focusBox by remember { mutableStateOf<DoubleArray?>(null) }
+    var focusSeq by remember { mutableStateOf(0) }
     SettingsPage(if (seedMode) "Pick an area on the map" else "Pause zones", on.back, tag = "zones_screen") {
         item {
             SettingsCard {
                 Text((if (seedMode) "Draw a box, then seed places for it. Seeded areas are blue, your pins purple, pause zones red. " else "Capture pauses inside a red box and in the ring around it. ") + if (offline?.reader != null) "The map is drawn from your offline file." else if (online?.source != null) "The map is drawn from online street tiles; the grid shows where they are missing." else "The map has no tiles; the grid shows latitude and longitude.", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
                 if (!networkOnline) NoNetworkBanner()
-                ZoneMap(mapState, on, offline?.reader, online, seed?.ui, blank = !networkOnline)
+                ZoneMap(mapState, on, offline?.reader, online, seed?.ui, blank = !networkOnline, focusBox = focusBox, focusSeq = focusSeq)
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     SecondaryAction(if (state.drawing) "Cancel drawing" else "Draw a box", { on.setDrawing(!state.drawing) }, tag = "zone_draw", enabled = networkOnline && (seedMode || !state.protectedMode))
                     if (online?.canCentre == true) SecondaryAction("Centre on me", online.centreOnMe, tag = "zone_centre", enabled = !online.centreBusy)
@@ -319,7 +322,7 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
         online?.let { p -> item { OnlineMapCard(p) } }
         offline?.let { p -> item { OfflineMapCard(p) } }
         if (!seedMode) item { NewZoneCard(state, on, networkOnline) }
-        seed?.let { p -> if (p.ui.areas.isNotEmpty()) item { SeededAreasCard(p) } }
+        seed?.let { p -> if (p.ui.areas.isNotEmpty()) item { SeededAreasCard(p) { a -> focusSeq++; focusBox = a.box } } }
         item {
             SettingsCard {
                 Text("Your zones", style = MaterialTheme.typography.titleMedium)
@@ -385,16 +388,8 @@ private fun SeedCard(state: ZonesUiState, p: SeedPanel) {
 }
 
 @Composable
-private fun SeededAreasCard(p: SeedPanel) {
-    SettingsCard {
-        Text("Seeded areas", style = MaterialTheme.typography.titleMedium)
-        p.ui.areas.forEach { a ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(a.label, Modifier.weight(1f).testTag("seed_area_${a.id}"), style = MaterialTheme.typography.bodyMedium)
-                SecondaryAction("Remove", { p.askRemove(a.id) }, tag = "seed_remove_${a.id}")
-            }
-        }
-    }
+private fun SeededAreasCard(p: SeedPanel, focus: (SeedOverlay) -> Unit) {
+    SettingsCard { SeededAreasContent(p, focus) }
 }
 
 @Composable
@@ -483,7 +478,7 @@ internal fun StateChip(chip: ZoneChip, modifier: Modifier = Modifier) {
 
 /** The tile-less map: plain background, a latitude/longitude grid, red boxes with their buffer ring, the draft box and (only with a fresh fix) a blue dot for the user. */
 @Composable
-private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null, online: OnlineMapPanel? = null, seed: SeedMapUiState? = null, blank: Boolean = false) {
+private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null, online: OnlineMapPanel? = null, seed: SeedMapUiState? = null, blank: Boolean = false, focusBox: DoubleArray? = null, focusSeq: Int = 0) {
     val measurer = rememberTextMeasurer()
     var size by remember { mutableStateOf(Size.Zero) }
     var vp by remember { mutableStateOf<MapViewport?>(null) }
@@ -514,6 +509,11 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
             if (onlineSource == null) { if (c.ensure(wanted)) loaded++ }
             else for (chunk in wanted.chunked(ONLINE_PARALLEL)) coroutineScope { chunk.map { k -> async { if (c.ensure(listOf(k))) loaded++ } }.awaitAll() }
         }
+    }
+    LaunchedEffect(focusSeq, size.width >= 10f && size.height >= 10f) {
+        val b = focusBox ?: return@LaunchedEffect
+        if (size.width < 10f || size.height < 10f) return@LaunchedEffect
+        vp = MapViewport.fit(listOf(b), size.width, size.height)
     }
     val centreReq = online?.centre
     LaunchedEffect(centreReq?.id, size.width >= 10f && size.height >= 10f) {

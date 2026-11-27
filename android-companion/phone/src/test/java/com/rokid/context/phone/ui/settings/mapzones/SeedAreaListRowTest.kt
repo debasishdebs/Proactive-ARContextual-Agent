@@ -65,7 +65,7 @@ class SeedAreaListRowTest {
 
     @Test fun aFailedAreaShowsFAILEDWithItsCountAndARetryButtonOnTheRowAndInTheProgressArea() {
         val ui = SeedMapUiState(areas = SeedOverlays.of(failedInfo), rows = SeedAreaList.rows(failedInfo), progress = SeedAreaList.progress(failedInfo))
-        assertTrue(ui.areas[0].label, ui.areas[0].label.contains("FAILED: 3 cells")); assertTrue(ui.rows[0].text, ui.rows[0].text.contains("FAILED, 3 cells to retry"))
+        assertTrue(ui.areas[0].label, ui.areas[0].label.contains("FAILED: 3 cells")); assertTrue(ui.rows[0].text, ui.rows[0].text.contains("FAILED: 3 cells did not seed: tap Retry failed cells"))
         val panel = SeedPanel(ui, false, {}, {}, {}, {}, {}, {}, {}, retryFailed = { log += "retry:$it" })
         compose.setContent { PcTheme { androidx.compose.foundation.layout.Column { SeedAreaListRow(view, panel, ui.areas[0]) {}; com.rokid.context.phone.ui.settings.privacy.zones.SeedProgressRows(panel) } } }
         compose.onNodeWithTag("seed_retry_seed:1").assertIsEnabled().performClick()

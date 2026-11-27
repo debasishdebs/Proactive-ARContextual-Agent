@@ -112,8 +112,9 @@ class SeedEstimateTest {
     @Test fun areaRowShowsNamePlacesSizeStateAndDateWithoutCoordinates() {
         val a = SeedAreaInfo("z1", 1.0, 2.0, 3.0, 4.0, AREA_PARTIAL, name = "Sikkim", places = 12, bytes = 300_000, seededAt = 1_700_000_000_000)
         val r = SeedAreaList.row(0, a, java.time.ZoneOffset.UTC)
-        assertEquals("Sikkim · partial, seed again · 12 places, 0.3 MB · 2023-11-14", r)
-        assertEquals("Seeded area 2 · done", SeedAreaList.row(1, SeedAreaInfo("z2", 1.0, 2.0, 3.0, 4.0, AREA_DONE)))
+        val cells = SeedAreaList.cellCount(a)
+        assertEquals("Sikkim · Not finished: tap Seed again · 12 places · $cells cells · 0.3 MB · 2023-11-14", r)
+        assertEquals("Seeded area 2 · Done · $cells cells", SeedAreaList.row(1, SeedAreaInfo("z2", 1.0, 2.0, 3.0, 4.0, AREA_DONE)))
         assertTrue(SeedAreaList.ATTRIBUTION.contains("Wikipedia") && SeedAreaList.ATTRIBUTION.contains("Wikidata") && SeedAreaList.ATTRIBUTION.contains("OpenStreetMap"))
     }
 
@@ -135,7 +136,7 @@ class SeedOverlayModelTest {
 
     @Test fun labelsNameNoCoordinates() {
         val o = SeedOverlays.of(listOf(a, a.copy(id = "seed:2", status = AREA_PARTIAL), a.copy(id = "seed:3", status = AREA_SEEDING)))
-        assertEquals(listOf("Seeded area 1", "Seeded area 2 (some cells failed, will retry)", "Seeded area 3 (not finished, seed again)"), o.map { it.label })
+        assertEquals(listOf("Seeded area 1", "Seeded area 2 (not finished, seed again)", "Seeded area 3 (not finished, seed again)"), o.map { it.label })
         assertTrue(o.none { it.label.contains("27.") })
     }
 
