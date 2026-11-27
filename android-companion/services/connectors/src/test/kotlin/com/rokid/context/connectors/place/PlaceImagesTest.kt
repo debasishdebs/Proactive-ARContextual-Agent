@@ -169,6 +169,16 @@ class PlaceImagesTest {
         assertEquals(listOf("wd:Q1"), rows.map { it.placeId }) // the first is kept, the second has no row and no try
     }
 
+    @Test fun aSingle429IsWaitedOutInTheRunAndEveryPlaceIsStoredOnce() {
+        val a = Api(); for (i in 1..4) { a.refs["Q$i"] = WikidataImageRef(null, "f$i.jpg"); a.files["f$i.jpg"] = file("f$i.jpg"); a.bytes["https://upload.wikimedia.org/t/f$i.jpg"] = jpeg }
+        var refused = false
+        a.thumbError = { if (!refused && it.endsWith("f2.jpg")) { refused = true; PlaceHttpException(429, 7) } else null }
+        val rows = mutableListOf<com.rokid.context.memory.place.PlaceImageEntity>()
+        runBlocking { fetcher(a).fetch(cands("wd:Q1", "wd:Q2", "wd:Q3", "wd:Q4")) { rows += it } } // no PhotoPhaseRetry: it carries on after the refusal
+        assertEquals(setOf("wd:Q1", "wd:Q2", "wd:Q3", "wd:Q4"), rows.map { it.placeId }.toSet())
+        assertEquals(4, rows.size) // none stored twice
+    }
+
     // ---- the phase over a real pack (resume, catch-up) ----
     @Test fun thePhaseFillsAreasSeededBeforeAndResumesAfterAStop() = runBlocking {
         val p = pack(); db.dao().putPlaces((1..5).map { place("wd:Q$it") } + place("osm:w1") + place("user:00000000-0000-0000-0000-000000000001", seeded = false))

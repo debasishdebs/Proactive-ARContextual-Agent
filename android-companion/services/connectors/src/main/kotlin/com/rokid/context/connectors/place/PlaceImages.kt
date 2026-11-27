@@ -183,7 +183,7 @@ class DownloadConcurrency(val max: Int = MAX) {
     val limit: Int @Synchronized get() = now
     @Synchronized fun onThrottle() { now = 1; clean = 0 }
     @Synchronized fun onCleanBatch() { if (now < max && ++clean >= CLEAN_BATCHES_PER_STEP) { now++; clean = 0 } }
-    companion object { const val MAX = 4; const val CLEAN_BATCHES_PER_STEP = 2 }
+    companion object { const val MAX = 2; const val CLEAN_BATCHES_PER_STEP = 2 }
 }
 
 /**
@@ -233,12 +233,21 @@ class PlaceImageFetcher(
                 }
             }
             val lock = Mutex() // the store and the counters are used by one download at a time
-            val locked: suspend (PhotoCandidate, String, Int, Thumb?, CommonsFile?) -> Unit = { c, st, t, th, f -> lock.withLock { put(c, st, t, th, f) } }
+            val finished = HashSet<String>()
+            val locked: suspend (PhotoCandidate, String, Int, Thumb?, CommonsFile?) -> Unit = { c, st, t, th, f -> lock.withLock { put(c, st, t, th, f); finished += c.id } }
             var rest: List<Pair<PhotoCandidate, CommonsFile>> = todo
+            var throttled = 0
             while (rest.isNotEmpty()) {
-                val wave = rest.take(concurrency.limit.coerceAtLeast(1)); rest = rest.drop(wave.size)
-                try { coroutineScope { wave.map { (c, f) -> async { download(c, f, locked) } }.awaitAll() } }
-                catch (e: PlaceHttpException) { if (e.code == 429 || e.code == 503) concurrency.onThrottle(); throw e }
+                val wave = rest.take(concurrency.limit.coerceAtLeast(1))
+                // A 429/503 on one download does not cancel the others of the wave: they finish and are stored; only the refused ones are asked again.
+                val refused = coroutineScope {
+                    wave.map { (c, f) -> async { try { download(c, f, locked); null } catch (e: PlaceHttpException) { if (e.code == 429 || e.code == 503) e else throw e } } }.awaitAll()
+                }.firstOrNull { it != null }
+                if (refused == null) { rest = rest.drop(wave.size); throttled = 0; continue }
+                // The server said "slow down": go to one connection and carry on in this run. The next request waits out the Retry-After in the shared guard; only a long run of refusals hands the batch back to the job retry.
+                concurrency.onThrottle()
+                if (++throttled > MAX_THROTTLES_IN_A_ROW) throw refused
+                rest = rest.filter { it.first.id !in finished }
             }
             concurrency.onCleanBatch()
         } catch (e: CancellationException) { throw e
@@ -267,6 +276,8 @@ class PlaceImageFetcher(
     companion object {
         /** A place that failed this many times is left alone (needsFetch no longer returns it). */
         const val MAX_TRIES = 3
+        /** Refusals (429/503) in a row, with nothing downloaded in between, before the batch is handed back to the job retry. */
+        const val MAX_THROTTLES_IN_A_ROW = 6
         fun sha1(b: ByteArray): String = java.security.MessageDigest.getInstance("SHA-1").digest(b).joinToString("") { "%02x".format(it) }
     }
 }
