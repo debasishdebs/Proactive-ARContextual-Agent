@@ -112,6 +112,16 @@ class ManualPlaceTest {
         assertTrue(UserPlace.isUserSource("manual") && UserPlace.isUserSource("user") && !UserPlace.isUserSource("osm"))
     }
 
+    @Test fun aManualPinIsMirroredToPlacesDbAndDeletedLikeAnyPin() = runBlocking {
+        val pack = PlacePack(db, null, PlacePack.DEFAULT_BUDGET_BYTES, { 100 * PlacePack.DAY_MS }, { })
+        val p = pinning()
+        val a = (ManualPlace.create(p, "Office", "", PlaceKinds.ATTRACTION, "$LAT, $LON", "") as ManualResult.Saved).place
+        pack.replaceUserPlaces(stored)
+        assertEquals(listOf("manual"), db.dao().userPlaces().map { it.source })
+        assertTrue(p.delete(a.id)); pack.replaceUserPlaces(stored)
+        assertTrue(db.dao().userPlaces().isEmpty()); assertTrue(stored.isEmpty())
+    }
+
     // ---- retrieval: the real pack lookup and the real sampler, offline ----
 
     private fun cardFor(pin: UserPlace): PlaceCard = runBlocking {

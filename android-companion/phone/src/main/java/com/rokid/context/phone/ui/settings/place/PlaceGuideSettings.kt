@@ -35,6 +35,8 @@ import com.rokid.context.memory.place.UserPlace
 import com.rokid.context.phone.ui.settings.ChoiceRow
 import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.TextFieldRow
+import com.rokid.context.work.frames.place.ManualPlace
+import com.rokid.context.work.frames.place.ManualResult
 import com.rokid.context.work.frames.place.ParentChoice
 import com.rokid.context.work.frames.place.PinForm
 import com.rokid.context.work.frames.place.PinRefusal
@@ -57,6 +59,9 @@ import kotlinx.coroutines.launch
 data class PinDialogState(val editingId: String? = null, val parents: List<ParentChoice> = emptyList(), val name: String = "", val kindIndex: Int = 0, val radius: String = UserPlace.DEFAULT_RADIUS_M.toString(), val parentIndex: Int = 0, val note: String = "", val error: String? = null,
     /** Slice 1.4.2: the reference Moment attached to a NEW pin (or shown on an edit), its thumbnail source, a hint line, and the two steps of "Save without a Moment". */
     val momentId: String? = null, val moment: MomentChoice? = null, val momentHint: String? = null, val askSkipMoment: Boolean = false, val skipMoment: Boolean = false)
+
+/** Developer "Add place manually": what was typed (user data, memory only, never logged), the kind picker index, and the form's error line. */
+data class ManualFormState(val name: String = "", val note: String = "", val kindIndex: Int = 0, val coordinates: String = "", val radius: String = "", val error: String? = null)
 
 /** Place object S2, mode (a): the open "Delete place?" confirmation: the pin and how many Moments it points at (the reference Moment plus the card links). Names no coordinate. */
 data class PinDeleteConfirm(val pinId: String, val name: String, val momentCount: Int,
@@ -81,6 +86,8 @@ data class PlaceGuideUiState(
     /** 27 Nov: the "Extra place types" switches that are ON (all ON by default; see ExtraPlaceTypes). */
     val extraTypes: Set<String> = com.rokid.context.connectors.place.ExtraPlaceTypes.DEFAULT_ON,
     val offlineGuess: Boolean = false, val maybeCutoff: Float = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_CUTOFF, val candidateRadiusM: Int = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_RADIUS_M,
+    /** Developer only: the open "Add place manually" form (null = closed). */
+    val manualForm: ManualFormState? = null,
 )
 
 /**
@@ -216,6 +223,15 @@ object PlaceGuideModel {
     fun seedOutcome(r: com.rokid.context.memory.place.SeedResult) = SeedOutcome(seedMessage(r), r.failed)
 
     fun mb(bytes: Long): String = String.format(java.util.Locale.ROOT, "%.1f MB", bytes / 1_048_576.0)
+    /** Every user pin reads "manual" wherever a source is shown (the stored mirror value is the same). */
+    fun sourceLine(): String = "Source: " + UserPlace.SOURCE
+
+    /** The header of the seeded-areas section and the pack card: counts only. */
+    fun countsHeader(manual: Int, seeded: Int): String = "$manual manual place${if (manual == 1) "" else "s"} \u00b7 $seeded seeded place${if (seeded == 1) "" else "s"}"
+
+    const val MANUAL_ZONE = "That spot is inside or near a pause zone, or the zone state is unknown: no place can be added there."
+    const val MANUAL_NOTE = "Developer: adds a real pin at coordinates you type, to try the place guide where you are not. It is a normal pinned place (source: manual) and is deleted like any pin."
+
     fun kindLabel(kind: String): String = kind.replace('_', ' ').replaceFirstChar { it.uppercase() }
 
     fun refusalText(why: PinRefusal): String = when (why) {
@@ -374,6 +390,27 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     override fun onCleared() { control.pinning?.cancel(); super.onCleared() }
 
     fun cancelPin() { control.pinning?.cancel(); _state.update { it.copy(pinDialog = null) } }
+
+    /** Developer only: opens the "Add place manually" form. A build or screen without Developer mode never opens it. */
+    fun openManual() { if (_state.value.developerMode && control.pinning != null) _state.update { it.copy(manualForm = ManualFormState(), pinMessage = null) } }
+    fun cancelManual() { _state.update { it.copy(manualForm = null) } }
+    fun updateManual(f: (ManualFormState) -> ManualFormState) { _state.update { s -> s.copy(manualForm = s.manualForm?.let(f)?.copy(error = null)) } }
+
+    fun saveManual() {
+        val pinning = control.pinning ?: return
+        val d = _state.value.manualForm ?: return
+        if (!_state.value.developerMode) return
+        val kind = ManualPlace.KINDS.getOrElse(d.kindIndex) { ManualPlace.KINDS.first() }
+        viewModelScope.launch(work) {
+            val res = runCatching { ManualPlace.create(pinning, d.name, d.note, kind, d.coordinates, d.radius) }.getOrElse { ManualResult.Refused(PinRefusal.NOT_STORED) }
+            when (res) {
+                is ManualResult.Saved -> _state.update { it.copy(manualForm = null, pins = pinning.pins(), pinMessage = "Place added.", pinMessageIsError = false) }
+                is ManualResult.Invalid -> _state.update { s -> s.copy(manualForm = d.copy(error = ManualPlace.faultText(res.fault))) }
+                is ManualResult.Refused -> _state.update { s -> s.copy(manualForm = d.copy(error = if (res.why == PinRefusal.ZONE) PlaceGuideModel.MANUAL_ZONE else PlaceGuideModel.refusalText(res.why))) }
+            }
+            refreshSummary()
+        }
+    }
 
     fun savePin() {
         val pinning = control.pinning ?: return
@@ -639,7 +676,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     }
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setExtraType = vm::setExtraType, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setExtraType = vm::setExtraType, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius, openManual = vm::openManual, updateManual = vm::updateManual, saveManual = vm::saveManual, cancelManual = vm::cancelManual))
 }
 
 /**
@@ -685,6 +722,8 @@ class PlaceGuideActions(
     val cancelSeeds: () -> Unit = {},
     /** V2b: the "Offline place guess (Maybe)" switch and its two Advanced fields. */
     val setExtraType: (String, Boolean) -> Unit = { _, _ -> }, val setOfflineGuess: (Boolean) -> Unit = {}, val setMaybeCutoff: (Float) -> Unit = {}, val setCandidateRadius: (Int) -> Unit = {},
+    /** Developer "Add place manually": open, edit, save, cancel. */
+    val openManual: () -> Unit = {}, val updateManual: ((ManualFormState) -> ManualFormState) -> Unit = {}, val saveManual: () -> Unit = {}, val cancelManual: () -> Unit = {},
 )
 
 @Composable
@@ -731,6 +770,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 state.stats?.let { st ->
                     NoticeText("${PlaceGuideModel.mb(st.bytes)} of ${st.budgetBytes / 1_048_576} MB used", tag = "pack_size")
                     NoticeText("${st.seeded} seeded, ${st.fetched} fetched, ${st.pinned} pinned", tag = "pack_counts")
+                    NoticeText(PlaceGuideModel.countsHeader(state.pins.size, st.seeded), tag = "pack_counts_header")
                 }
                 ChoiceRow("Budget", PlaceGuideModel.BUDGET_CHOICES_MB.map { "$it MB" }, PlaceGuideModel.BUDGET_CHOICES_MB.indexOf(state.budgetMb), { on.setBudget(PlaceGuideModel.BUDGET_CHOICES_MB[it]) }, tag = "pack_budget")
                 NoticeText("When the pack is over the budget the least recently used fetched places go first. Seeded and pinned places are never removed.", tag = "pack_budget_note")
@@ -743,6 +783,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 Text("Your pinned places", style = MaterialTheme.typography.titleMedium)
                 NoticeText(PlaceGuideModel.PIN_NOTE, tag = "pin_note")
                 PrimaryAction("Pin a place here", on.beginPin, tag = "pin_here", enabled = !state.pinBusy)
+                if (state.developerMode) SecondaryAction("Add place manually (Developer)", on.openManual, tag = "manual_add", enabled = !state.pinBusy)
                 state.pinMessage?.let { NoticeText(it, error = state.pinMessageIsError, tag = "pin_message") }
             }
         }
@@ -751,6 +792,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 SettingsCard {
                     Text(p.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("pin_name_${p.id}"))
                     NoticeText("${PlaceGuideModel.kindLabel(p.kind)}, ${p.radiusM} m" + if (p.parentId != null) ", part of a site" else "", tag = "pin_detail_${p.id}")
+                    NoticeText(PlaceGuideModel.sourceLine(), tag = "pin_source_${p.id}")
                     if (p.note.isNotEmpty()) NoticeText("Your note: ${p.note}", tag = "pin_note_${p.id}")
                     MomentSection(p.id, state.moments[p.momentId], PlaceGuideModel.needsMoment(p, state.moments), on)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -796,6 +838,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
     )
     state.historyDetail?.let { d -> PlaceHistoryDetailDialog(d, java.time.ZoneId.systemDefault(), on.closeHistory, on.showAgain, on.deleteHistory, on.openMoment) }
     state.pinDialog?.let { d -> PinDialog(d, on) }
+    if (state.developerMode) state.manualForm?.let { d -> ManualPlaceDialog(d, on) }
     state.pinDeleteConfirm?.let { c -> PinDeleteDialog(c, on) }
     state.momentPicker?.let { pk -> MomentPickerDialog(pk, on) }
 }
@@ -911,6 +954,28 @@ private fun PinDialog(d: PinDialogState, on: PlaceGuideActions) {
     )
 }
 
+
+@Composable
+private fun ManualPlaceDialog(d: ManualFormState, on: PlaceGuideActions) {
+    AlertDialog(
+        onDismissRequest = on.cancelManual, modifier = Modifier.testTag("manual_dialog"),
+        title = { Text("Add place manually") },
+        text = {
+            androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                NoticeText(PlaceGuideModel.MANUAL_NOTE, tag = "manual_note")
+                TextFieldRow("Name (stays on this phone, never backed up)", d.name, { v -> on.updateManual { it.copy(name = v) } }, tag = "manual_f_name")
+                TextFieldRow("Description (up to 140 characters, shown on the card)", d.note, { v -> on.updateManual { it.copy(note = v.take(UserPlace.NOTE_MAX)) } }, tag = "manual_f_note", singleLine = false)
+                ChoiceRow("Kind", ManualPlace.KINDS.map(PlaceGuideModel::kindLabel), d.kindIndex, { i -> on.updateManual { it.copy(kindIndex = i) } }, tag = "manual_f_kind")
+                TextFieldRow("Coordinates: latitude, longitude (paste from a maps app)", d.coordinates, { v -> on.updateManual { it.copy(coordinates = v.take(80)) } }, tag = "manual_f_coords", placeholder = "12.9716, 77.5946")
+                TextFieldRow("Radius (metres, 10 to 1500; empty = ${ManualPlace.defaultRadius(ManualPlace.KINDS.getOrElse(d.kindIndex) { ManualPlace.KINDS.first() })} for this kind)", d.radius, { v -> on.updateManual { it.copy(radius = v) } }, tag = "manual_f_radius", number = true)
+                NoticeText("Photo: next version", tag = "manual_photo_disabled")
+                d.error?.let { NoticeText(it, error = true, tag = "manual_f_error") }
+            }
+        },
+        confirmButton = { TextButton(on.saveManual, Modifier.testTag("manual_f_save")) { Text("Add") } },
+        dismissButton = { TextButton(on.cancelManual, Modifier.testTag("manual_f_cancel")) { Text("Cancel") } },
+    )
+}
 
 /** Texts of the mode (b) delete that are worth a test (a committed delete whose cleanup is still owed must not read as plain success). */
 object PlaceDeleteMessages {
