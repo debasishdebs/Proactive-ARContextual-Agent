@@ -29,6 +29,7 @@ class PlaceSamplerL2RefsTest {
     private var places = listOf(pl2("wd:Q1", "Alpha"), pl2("wd:Q2", "Beta"))
     private var withPhoto = setOf("wd:Q1")
     private var answer = "none"
+    private var conf = 0.9f
     private var pol = PlacePolicy(confirmedOnly = true)
     private val asked = mutableListOf<List<String>>()
     private val cards = mutableListOf<PlaceCard>()
@@ -45,7 +46,7 @@ class PlaceSamplerL2RefsTest {
     private fun sampler(scope: TestScope) = PlaceSampler(
         scope = scope, store = store, fix = { PlaceFix(LAT3, LON3, 3_000, 10f) }, candidates = { _, _, _ -> PlaceCandidates(places, CellOutcome.FRESH) },
         match = { _, _ -> legacyCalls++; null },
-        matchPlaces = { _, ps -> asked += ps.map { it.id }; PlaceMatchResult(PlaceMatchOutput(answer, 0.9f), true, refImages = ps.count { it.id in withPhoto }, candWithRefs = ps.count { it.id in withPhoto }) },
+        matchPlaces = { _, ps -> asked += ps.map { it.id }; PlaceMatchResult(PlaceMatchOutput(answer, conf), true, refImages = ps.count { it.id in withPhoto }, candWithRefs = ps.count { it.id in withPhoto }) },
         refPlaceIds = { ps -> ps.map { it.id }.filter { it in withPhoto }.toSet() },
         saveMemory = { true }, onCard = { cards += it }, clock = { t0 }, enabled = { true }, zoneBlocked = { false }, networkUp = { true }, zones = { emptyList() },
         photoAllowed = { photoOk }, log = { logs += it }, stats = { outcomes += it }, history = { events += it }, historyOn = { true }, policy = { pol },
@@ -95,6 +96,20 @@ class PlaceSamplerL2RefsTest {
         pol = PlacePolicy(confirmedOnly = true, noPhotoByGps = true)
         poke()
         assertEquals(PlaceOutcome.NEARBY, outcomes.single()); assertEquals(1, cards.size)
+    }
+
+    @Test fun switchOnTreatsALowConfidencePickOfAPlaceWithoutPhotoLikeNone() = runTest {
+        places = listOf(pl2("wd:Q2", "Beta")); withPhoto = emptySet(); answer = "1"; conf = 0.1f
+        pol = PlacePolicy(confirmedOnly = true, noPhotoByGps = true)
+        poke()
+        assertEquals(PlaceOutcome.NEARBY, outcomes.single()); assertEquals(1, cards.size)
+    }
+
+    @Test fun switchOffKeepsALowConfidencePickWithoutACard() = runTest {
+        places = listOf(pl2("wd:Q2", "Beta")); withPhoto = emptySet(); answer = "1"; conf = 0.1f
+        pol = PlacePolicy(confirmedOnly = true)
+        poke()
+        assertTrue(cards.isEmpty()); assertEquals(PlaceOutcome.LOW_CONFIDENCE, outcomes.single())
     }
 
     @Test fun noFixStaysNoCardEvenWithTheSwitchOn() = runTest {

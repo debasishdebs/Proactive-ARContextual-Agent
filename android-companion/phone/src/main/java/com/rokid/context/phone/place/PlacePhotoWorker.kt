@@ -130,6 +130,7 @@ class PlacePhotoWorker(appContext: Context, params: WorkerParameters) : Coroutin
         } catch (e: PhotoPhaseRetry) {
             val cls = e.cause?.javaClass?.simpleName ?: "none"
             PcLog.i(TAG, "photo work retry cls=$cls")
+            runCatching { PlacePhotoWork(applicationContext).ensureEmbed() } // what was stored before the batch stopped is matched now, not at the next app start (Codex s56 #3)
             if (runAttemptCount >= MAX_ATTEMPTS) { store.set(PhotoPhase.FAILED); Result.failure() } else Result.retry()
         } catch (e: Exception) {
             PcLog.i(TAG, "photo work failed cls=${e.javaClass.simpleName}"); store.set(PhotoPhase.FAILED); Result.failure()

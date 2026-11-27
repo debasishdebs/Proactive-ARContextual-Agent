@@ -624,6 +624,7 @@ class PlaceSampler(
         if (res.output.confidence < BackendThresholds.minConfidence(floor)) { tr.reason = "confidence_below_${BackendThresholds.minConfidencePct(floor)}"; tr.l2 = "low"
             // S6: never silent. The answer is kept as a phone-only "possible" row (no glasses card, no memory, no card dedupe consumed).
             record(HistoryKind.POSSIBLE, list[idx - 1].first.id, list[idx - 1].first.name, emptyList(), f.frameId, tr.confPct)
+            if (pol.confirmedOnly) exemptNearby(f.frameId, gen, ticket)?.let { return it } // the GPS-only switch treats a low-confidence pick like "none" (Codex s56 #2)
             return weak(PlaceOutcome.LOW_CONFIDENCE) }
         tr.l2 = "confirmed"
         val place = list[idx - 1].first
