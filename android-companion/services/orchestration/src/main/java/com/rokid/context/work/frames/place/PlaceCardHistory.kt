@@ -164,11 +164,11 @@ class PlaceCardHistory(
         if (links.momentTombstoned(moment) != 0) return false
         when (links.roleOf(row.placeId, moment)) {
             null -> links.insertIfAbsent(PlaceLinkEntity(row.placeId, moment, Math.floorDiv(at, 1000L) * 1000L, frame, ROLE_REF, clock()))
-            ROLE_CARD -> links.setRole(row.placeId, moment, ROLE_CARD_REF)
-            else -> return true // already a reference
+            ROLE_CARD -> { links.setRole(row.placeId, moment, ROLE_CARD_REF); links.setAnchor(row.placeId, moment, frame) } // the reference photo is the one the owner approved, not the card's unchecked frame
+            else -> { links.setAnchor(row.placeId, moment, frame); return true } // already a reference: it now points at this approved frame
         }
         val all = links.refLinksOf(row.placeId)
-        if (all.size > REF_CAP) all.take(all.size - REF_CAP).filter { it.momentId != moment }.forEach { dropRefLink(it) }
+        if (all.size > REF_CAP) all.filter { it.momentId != moment }.take(all.size - REF_CAP).forEach { dropRefLink(it) } // the protected Moment is excluded BEFORE the oldest slice is taken
         log("place history ref added why=$why")
         return true
     }
@@ -180,8 +180,11 @@ class PlaceCardHistory(
         val frame = row.frameId ?: return
         val at = links.capturedAtOf(frame) ?: return
         val moment = try { com.rokid.context.memory.moment.MomentId.ofMs(at) } catch (_: IllegalArgumentException) { return }
-        val stillRight = dao.rightFramesOf(row.placeId).any { f -> f != frame && links.capturedAtOf(f)?.let { t -> try { com.rokid.context.memory.moment.MomentId.ofMs(t) == moment } catch (_: IllegalArgumentException) { false } } == true }
-        if (stillRight) return
+        val stillRight = dao.rightFramesOf(row.placeId).firstOrNull { f -> f != frame && links.capturedAtOf(f)?.let { t -> try { com.rokid.context.memory.moment.MomentId.ofMs(t) == moment } catch (_: IllegalArgumentException) { false } } == true }
+        if (stillRight != null) { // another approved frame of the Moment keeps the reference; it must not stay pointed at the frame that just lost its approval
+            if (links.refLinksOf(row.placeId).any { it.momentId == moment && it.anchorId == frame }) links.setAnchor(row.placeId, moment, stillRight)
+            return
+        }
         links.refLinksOf(row.placeId).firstOrNull { it.momentId == moment }?.let { dropRefLink(it); log("place history ref dropped") }
     }
 

@@ -37,6 +37,7 @@ abstract class PlaceLinkDao {
     @Query("SELECT * FROM place_link WHERE placeId IN (:ids) AND role IN ('REF', 'CARD_REF') ORDER BY linkedAt, momentId") abstract suspend fun refLinks(ids: List<String>): List<PlaceLinkEntity>
     @Query("SELECT role FROM place_link WHERE placeId = :placeId AND momentId = :momentId") abstract suspend fun roleOf(placeId: String, momentId: String): String?
     @Query("UPDATE place_link SET role = :role WHERE placeId = :placeId AND momentId = :momentId") abstract suspend fun setRole(placeId: String, momentId: String, role: String): Int
+    @Query("UPDATE place_link SET anchorId = :anchorId WHERE placeId = :placeId AND momentId = :momentId") abstract suspend fun setAnchor(placeId: String, momentId: String, anchorId: String): Int
     @Query("DELETE FROM place_link WHERE placeId = :placeId AND momentId = :momentId AND role = 'REF'") abstract suspend fun deleteRefLink(placeId: String, momentId: String): Int
 
     @Query("SELECT COUNT(*) FROM moment_tombstone WHERE momentId = :id") abstract suspend fun momentTombstoned(id: String): Int

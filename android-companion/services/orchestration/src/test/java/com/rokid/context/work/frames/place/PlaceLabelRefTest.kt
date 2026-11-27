@@ -135,6 +135,26 @@ class PlaceLabelRefTest {
         history.setLabel(b, null); assertEquals(0, refs().size)
     }
 
+    @Test fun refAnchorFollowsTheApprovedFrame() = runBlocking {
+        photo(1); db.frameDao().insertIgnore(FrameEntity("f1b", 1, "/f1b.jpg", "rokid_glasses"))
+        db.frameMetaDao().upsert(FrameMetaEntity("f1b", null, null, "UNKNOWN", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = shot + 60_000L + 300))
+        val card = row(1, pin, HistoryKind.PIN); now += 1000
+        val other = requireNotNull(history.add(PlaceHistoryEvent(HistoryKind.PHOTO, pin, "Site A", frameId = "f1b", authority = history.capture())))
+        history.setLabel(other, CardLabel.RIGHT)
+        assertEquals("CARD_REF", refs(pin).single().role); assertEquals("the approved frame, not the card's", "f1b", refs(pin).single().anchorId)
+        history.setLabel(card, CardLabel.RIGHT); history.setLabel(other, CardLabel.WRONG)
+        assertEquals("the anchor leaves the frame labelled WRONG", "f1", refs(pin).single().anchorId)
+    }
+
+    @Test fun promotingTheOldestCardLinkAtTheCapStillEvictsDownToFive() = runBlocking {
+        (0..5).forEach { photo(it) }
+        val card = row(0, pin, HistoryKind.PIN)
+        (1..5).forEach { val id = row(it, pin); history.setLabel(id, CardLabel.RIGHT); now += 10 }
+        assertEquals(5, refs(pin).size)
+        history.setLabel(card, CardLabel.RIGHT)
+        val kept = refs(pin); assertEquals(5, kept.size); assertTrue("the promoted Moment is kept", kept.any { it.anchorId == "f0" }); assertFalse("the oldest other goes", kept.any { it.anchorId == "f1" })
+    }
+
     @Test fun forgettingTheMomentRemovesTheRefAndItsRow() = runBlocking {
         photo(1); photo(2); val a = row(1); val b = row(2)
         history.setLabel(a, CardLabel.RIGHT); history.setLabel(b, CardLabel.RIGHT)
