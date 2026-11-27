@@ -87,7 +87,12 @@ class SeedAreasSectionTest {
     }
 
     private val infos = listOf(area("seed:1", name = "Sikkim"), area("seed:2", status = AREA_PARTIAL, failed = 2))
-    private fun ui() = SeedMapUiState(areas = SeedOverlays.of(infos), rows = SeedAreaList.rows(infos), header = SeedAreaList.header(infos))
+    private fun ui() = SeedMapUiState(areas = SeedOverlays.of(infos), rows = SeedAreaList.rows(infos), header = SeedAreaList.header(infos), seededPlaces = 24)
+
+    @Test fun countsLineShowsManualAndSeeded() {
+        assertEquals("1 manual place · 24 seeded places", SeedAreaList.counts(1, 24))
+        assertEquals("0 manual places · 1 seeded place", SeedAreaList.counts(0, 1))
+    }
 
     @Test fun pauseZonesScreenShowsTheSharedSectionWithEveryControl() {
         val log = mutableListOf<String>()
@@ -96,6 +101,7 @@ class SeedAreasSectionTest {
         compose.setContent { PcTheme { ZonesScreen(ZonesUiState(), on, null, null, panel, networkOnline = false) } }
         compose.onNodeWithTag("zones_screen").performScrollToNode(hasTestTag("seed_header"))
         compose.onNodeWithTag("seed_header").assertExists()
+        compose.onNodeWithTag("seed_counts_header").assertExists()
         assertEquals("2 seeded areas · 24 places stored", ui().header)
         compose.onNodeWithTag("seed_area_seed:1").assertExists()
         compose.onNodeWithTag("zones_screen").performScrollToNode(hasTestTag("seed_retry_seed:2"))

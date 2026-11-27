@@ -220,6 +220,8 @@ object SeedOverlays {
 data class SeedMapUiState(
     val areas: List<SeedOverlay> = emptyList(),
     val pins: List<PinInfo> = emptyList(),
+    /** Places stored across the seeded areas (for the counts header). */
+    val seededPlaces: Int = 0,
     val seeding: Boolean = false,
     val message: String? = null,
     val messageIsError: Boolean = false,
@@ -305,6 +307,8 @@ object SeedAreaList {
         val places = areas.sumOf { it.places ?: 0 }
         return "${areas.size} seeded area${if (areas.size == 1) "" else "s"} · $places place${if (places == 1) "" else "s"} stored"
     }
+    /** "N manual places · M seeded places" (the Place Guide header), shown above the list on both zones screens. */
+    fun counts(manual: Int, seeded: Int): String = com.rokid.context.phone.ui.settings.place.PlaceGuideModel.countsHeader(manual, seeded)
     /** The progress area: every active seed, then every area that ended with failed cells (so a failure stays visible with its Retry button). */
     fun progress(areas: List<SeedAreaInfo>): List<SeedProgressRow> = areas.mapNotNull { x -> x.seed?.let { SeedProgressRow(x.id, it.text) } ?: x.takeIf { it.failedCells > 0 }?.let { SeedProgressRow(it.id, statusText(it), it.failedCells) } }
     fun rows(areas: List<SeedAreaInfo>): List<SeedAreaRow> = areas.mapIndexed { i, a -> SeedAreaRow(a.id, row(i, a), SeedPalette.resolve(a.savedColour, i)) }
@@ -344,7 +348,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             val p = runCatching { control.pins() }.getOrDefault(emptyList())
             val r = runCatching { control.rates() }.getOrDefault(SeedRates.ROUGH)
             infos = a
-            _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, rates = r, pins = p, progress = SeedAreaList.progress(a)).keepSelection(a) }
+            _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, rates = r, pins = p, progress = SeedAreaList.progress(a)).keepSelection(a) }
             if (a.any { it.seed != null }) startPoll()
         }
     }
@@ -359,7 +363,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             com.rokid.context.phone.ui.settings.seedTicks(POLL_MS).takeWhile {
                 val a = runCatching { control.areas() }.getOrDefault(emptyList())
                 infos = a
-                _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, progress = SeedAreaList.progress(a)).keepSelection(a) }
+                _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, progress = SeedAreaList.progress(a)).keepSelection(a) }
                 a.any { it.seed != null }
             }.collect {}
         }
