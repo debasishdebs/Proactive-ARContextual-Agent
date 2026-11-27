@@ -57,5 +57,12 @@ abstract class DumpDao {
     @Query("SELECT * FROM canvas_label WHERE labelId IN (:ids) ORDER BY labelId") abstract suspend fun labelsByIds(ids: List<String>): List<CanvasLabelEntity>
     @Query("SELECT refId AS refId, momentId AS momentId FROM moment_part WHERE kind = 'MARK' AND refId IN (:labelIds) AND momentId NOT IN (SELECT momentId FROM moment_tombstone)")
     abstract suspend fun momentsOfMarks(labelIds: List<String>): List<DumpMarkMoment>
+    // --- Place attempts (v19 `place_card_log` rows with their eval and label). A row whose photo was FORGOTTEN never comes back; an EXPIRED photo (photoGone = 1) keeps its row and loses the photo link. ---
+    @Query("SELECT * FROM place_card_log WHERE at >= :fromMs AND at <= :toMs AND (at > :afterKey OR (at = :afterKey AND id > :afterId)) AND (frameId IS NULL OR photoGone = 1 OR frameId NOT IN (SELECT frameId FROM forget_tombstone)) ORDER BY at, id LIMIT :limit")
+    abstract suspend fun attemptsPage(fromMs: Long, toMs: Long, afterKey: Long, afterId: String, limit: Int): List<PlaceCardLogEntity>
+    @Query("SELECT * FROM place_card_log WHERE at >= :fromMs AND at <= :toMs AND (at < :beforeKey OR (at = :beforeKey AND id < :beforeId)) AND (frameId IS NULL OR photoGone = 1 OR frameId NOT IN (SELECT frameId FROM forget_tombstone)) ORDER BY at DESC, id DESC LIMIT :limit")
+    abstract suspend fun attemptsPageDesc(fromMs: Long, toMs: Long, beforeKey: Long, beforeId: String, limit: Int): List<PlaceCardLogEntity>
+    @Query("SELECT COUNT(*) FROM place_card_log WHERE frameId IS NULL OR photoGone = 1 OR frameId NOT IN (SELECT frameId FROM forget_tombstone)") abstract suspend fun attemptCount(): Int
+    @Query("SELECT COUNT(*) FROM place_card_log WHERE label IS NOT NULL AND (frameId IS NULL OR photoGone = 1 OR frameId NOT IN (SELECT frameId FROM forget_tombstone))") abstract suspend fun attemptLabelledCount(): Int
     @Query("SELECT momentId FROM moment_tombstone WHERE momentId IN (:ids)") abstract suspend fun tombstonedMoments(ids: List<String>): List<String>
 }

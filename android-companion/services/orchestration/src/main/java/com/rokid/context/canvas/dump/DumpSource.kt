@@ -18,6 +18,8 @@ interface DumpSource {
     suspend fun scenes(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean = true): List<DumpItem>
     /** Marks (not their intent rows) in [fromMs, toMs], after the cursor [after] (`<atMs>:<labelId>`). */
     suspend fun marks(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean = true): List<DumpItem>
+    /** B3 (opt-in object type `place_attempt`): the place card history rows with their layer record and label, in [fromMs, toMs] on their time, after the cursor [after] (`<atMs>:<rowId>`). Place ids, numbers and tokens only. */
+    suspend fun placeAttempts(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean = true): List<DumpItem> = emptyList()
     /** The user's pins (a small list: no paging). */
     suspend fun pins(): List<JsonObject>
     /** The stored JPEG (or PNG, WebP) bytes of a live photo and its content type, null when the photo is gone, forgotten, unreadable or over [MAX_PHOTO_BYTES]. */

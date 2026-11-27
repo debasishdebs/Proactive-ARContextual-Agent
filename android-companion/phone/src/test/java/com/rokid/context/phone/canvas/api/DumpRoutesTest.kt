@@ -38,6 +38,8 @@ class DumpRoutesTest {
         var markList: List<DumpItem> = emptyList()
         override suspend fun scenes(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean): List<DumpItem> = sceneList.sortedBy { ms(it) }.let { if (ascending) it else it.reversed() }.filter { ms(it) in fromMs..toMs }.take(limit)
         override suspend fun marks(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean): List<DumpItem> = markList.sortedBy { it.json["atMs"]!!.jsonPrimitive.content.toLong() }.let { if (ascending) it else it.reversed() }.filter { it.json["atMs"]!!.jsonPrimitive.content.toLong() in fromMs..toMs }.take(limit)
+        var attemptList: List<DumpItem> = emptyList()
+        override suspend fun placeAttempts(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean): List<DumpItem> { lastArgs += "attempts|$fromMs|$toMs|$after|$limit" + (if (ascending) "" else "|desc"); return attemptList.sortedBy { it.json["atMs"]!!.jsonPrimitive.content.toLong() }.let { if (ascending) it else it.reversed() }.filter { it.json["atMs"]!!.jsonPrimitive.content.toLong() in fromMs..toMs }.take(limit) }
         override suspend fun pins(): List<JsonObject> = listOf(buildJsonObject { put("id", "p1"); put("lat", 1.5); put("pinnedAt", 2500) }, buildJsonObject { put("id", "p2"); put("lat", 2.5) })
         override suspend fun photo(frameId: String): DumpPhoto? = if (frameId == "f1") DumpPhoto(byteArrayOf(1, 2, 3), "image/jpeg") else null
     }
@@ -264,5 +266,36 @@ class DumpRoutesTest {
     @Test fun itemsAreDeveloperOnlyAndGetOnly() {
         dev = false; assertEquals(403, get("/api/dump/items")!!.status); dev = true
         assertEquals(405, get("/api/dump/items", m = "POST")!!.status)
+    }
+
+    // ---- B3: place attempts ----
+    private fun attempts() { src.attemptList = (1..3).map { n -> DumpItem("${n * 1000}:a$n", buildJsonObject { put("id", "a$n"); put("atMs", n * 1000L); put("kind", "PHOTO"); put("label", if (n == 2) "RIGHT" else null as String?) }) } }
+
+    @Test fun placeAttemptsRouteHasThePageBehaviourOfTheOtherRoutes() {
+        attempts()
+        val r = get("/api/dump/place_attempts", mapOf("limit" to "2"))!!; assertEquals(200, r.status)
+        assertEquals(listOf("a1", "a2"), ids(r)); assertEquals("2000:a2", json(r)["next"]!!.jsonPrimitive.content)
+        assertEquals(listOf("a3", "a2"), ids(get("/api/dump/place_attempts", mapOf("order" to "desc", "limit" to "2"))))
+        assertEquals("the cursor and the range reach the reader", "attempts|0|2500|1000:a1|200", src.lastArgs.also { get("/api/dump/place_attempts", mapOf("after" to "1000:a1", "to" to "2500")) }.last())
+        val one = json(get("/api/dump/place_attempts", mapOf("fields" to "label")))["items"]!!.jsonArray[0].jsonObject
+        assertEquals(setOf("id", "label"), one.keys)
+        assertEquals(400, get("/api/dump/place_attempts", mapOf("limit" to "0"))!!.status); assertEquals(400, get("/api/dump/place_attempts", mapOf("order" to "sideways"))!!.status); assertEquals(400, get("/api/dump/place_attempts", mapOf("after" to "no way"))!!.status)
+    }
+
+    @Test fun placeAttemptIsOptInInTheMergedStreamAndTagged() {
+        attempts(); withOthers()
+        assertFalse("not in the default set", ids(get("/api/dump/items")).any { it.startsWith("a") })
+        val r = get("/api/dump/items", mapOf("object_type" to "place_attempt,mark"))!!; assertEquals(200, r.status)
+        assertEquals(listOf("a1", "k1", "a2", "a3"), ids(r))
+        assertEquals(setOf("place_attempt", "mark"), json(r)["items"]!!.jsonArray.map { it.jsonObject["object_type"]!!.jsonPrimitive.content }.toSet())
+        assertEquals(listOf("a1", "a2", "a3"), ids(get("/api/dump/items", mapOf("object_type[]" to "place_attempt"))))
+        assertEquals(setOf("id", "label", "object_type"), json(get("/api/dump/items", mapOf("object_type" to "place_attempt", "fields" to "label")))["items"]!!.jsonArray[0].jsonObject.keys)
+    }
+
+    @Test fun placeAttemptsAreDeveloperOnlyGetOnlyAndWipeSafe() {
+        attempts()
+        dev = false; assertEquals(403, get("/api/dump/place_attempts")!!.status); dev = true
+        assertEquals(405, get("/api/dump/place_attempts", m = "POST")!!.status)
+        val before = src.lastArgs.size; dev = false; get("/api/dump/place_attempts"); dev = true; assertEquals("a refused call reads nothing", before, src.lastArgs.size)
     }
 }

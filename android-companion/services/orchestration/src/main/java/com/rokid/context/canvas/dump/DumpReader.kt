@@ -59,6 +59,7 @@ class DumpReader(
             put("dump_id", dumpId); put("generatedAtMs", clock()); put("appVersion", appVersion); put("contextDbSchema", schema)
             put("counts", buildJsonObject {
                 put("moments", moments); put("scenes", scenes); put("marks", marks); put("pins", pinList.size); put("frames", frames); put("locations", locations); put("modelAttributions", attributed)
+                put("placeAttempts", dump.attemptCount()); put("placeAttemptsLabelled", dump.attemptLabelledCount())
                 put("vectors_nomic_text", nomicText); put("vectors_nomic_image", nomicImage); put("vectors_siglip2", siglip)
             })
             put("range", buildJsonObject {
@@ -75,6 +76,7 @@ class DumpReader(
                 put("location", JsonArray(listOf("lat", "lon", "accuracyM", "source", "speedClass", "method", "atMs", "fixAgeMs").map(::JsonPrimitive)))
                 put("scene", JsonArray(listOf("id", "startMs", "endMs", "hourStartMs", "boundaryRule", "startTrigger", "endTrigger", "activity", "membershipRev", "buildRev", "builtAt", "momentIds", "derived", "clusters").map(::JsonPrimitive)))
                 put("mark", JsonArray(listOf("id", "atMs", "source", "name", "frameId", "momentId", "photo", "createdAt").map(::JsonPrimitive)))
+                put("place_attempt", JsonArray(listOf("id", "atMs", "kind", "placeId", "confPct", "delivery", "shown", "held", "layer", "eval", "label", "labelAt", "frameId", "momentId", "photoGone").map(::JsonPrimitive)))
                 put("pin", JsonArray(listOf("id", "name", "kind", "lat", "lon", "radiusM", "parentId", "note", "momentId", "pinnedAt").map(::JsonPrimitive)))
             })
             // not stored in context.db, so not in the dump: the audio transcript always; which model wrote a caption or summary only while no `model_attribution` row exists (v18 WP11a records them from now on; older text has none)
@@ -218,6 +220,31 @@ class DumpReader(
         return rows.map { l ->
             DumpItem("${l.atMs}:${l.labelId}", buildJsonObject {
                 put("id", l.labelId); put("atMs", l.atMs); put("source", l.source); put("name", l.name); put("frameId", l.frameId?.takeIf { it in liveFrames }); put("momentId", moments[l.labelId]); put("photo", l.photo); put("createdAt", l.createdAt)
+            })
+        }
+    }
+
+    override suspend fun placeAttempts(fromMs: Long, toMs: Long, after: String?, limit: Int, ascending: Boolean): List<DumpItem> {
+        val n = limit.coerceIn(1, DumpSource.MAX_PAGE_ITEMS)
+        val rows = if (ascending) (splitCursor(after) ?: (Long.MIN_VALUE to "")).let { (k, i) -> dump.attemptsPage(fromMs, toMs, k, i, n) }
+        else (splitCursor(after) ?: (Long.MAX_VALUE to "\uffff")).let { (k, i) -> dump.attemptsPageDesc(fromMs, toMs, k, i, n) }
+        if (rows.isEmpty()) return emptyList()
+        val frames = rows.filter { it.photoGone == 0 }.mapNotNull { it.frameId }.distinct()
+        val metas = frames.chunked(CHUNK).flatMap { dump.frameMetaByIds(it) }.associateBy { it.frameId }
+        val momentOf = frames.associateWith { f -> metas[f]?.capturedAtMs?.let { try { MomentId.ofMs(it) } catch (_: IllegalArgumentException) { null } } }
+        val dead = momentOf.values.filterNotNull().distinct().chunked(CHUNK).flatMap { dump.tombstonedMoments(it) }.toSet()
+        return rows.map { r ->
+            val live = r.photoGone == 0 && r.frameId != null
+            val moment = if (live) momentOf[r.frameId]?.takeIf { it !in dead } else null
+            val eval = r.eval?.let { try { Json.parseToJsonElement(it) as? JsonObject } catch (_: Exception) { null } }
+            DumpItem("${r.at}:${r.id}", buildJsonObject {
+                put("id", r.id); put("atMs", r.at); put("kind", r.kind); put("placeId", r.placeId); put("confPct", r.confPct)
+                put("delivery", r.delivery); put("shown", com.rokid.context.work.frames.place.PlaceEval.shown(com.rokid.context.work.frames.place.HistoryKind.values().firstOrNull { it.name == r.kind }, r.delivery))
+                put("held", if (com.rokid.context.work.frames.place.PlaceEval.isHeld(r.delivery)) JsonPrimitive(r.delivery) else JsonNull)
+                put("layer", (eval?.get("layer") as? JsonPrimitive)?.takeIf { it.isString }?.content)
+                put("eval", eval ?: JsonNull)
+                put("label", r.label); put("labelAt", r.labelAt)
+                put("frameId", if (live) r.frameId else null); put("momentId", moment); put("photoGone", r.photoGone == 1)
             })
         }
     }

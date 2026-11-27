@@ -46,6 +46,7 @@ This folder holds YOUR private data (saved locations, place names, photos, notes
 - scenes/YYYY-MM-DD.json   the Scenes that start that (local) day
 - marks.json               every mark (voice/tap "remember this")
 - pins.json                the user's pinned places (coordinates, note, attached Moment)
+- place_attempts.json      every place card attempt with its layer record (eval) and your label (Right / Wrong / Not a place); read it with tools/measure/place_eval_report.py
 
 ## moment.json fields
 id, startMs, endMs (epoch ms, phone clock; endMs = startMs + 999), type (FRAME or MARK Moment), text (timestamp + visible memory text),
@@ -70,6 +71,9 @@ id, atMs, source, name, frameId, momentId, photo, createdAt
 
 ## pins.json
 id, name, kind, lat, lon, radiusM, parentId, note, momentId, pinnedAt
+
+## place_attempts.json
+id, atMs, kind, placeId, confPct, delivery, shown, held, layer (L1 | L2 | L3 | PIN | LOC | NONE), eval (the layer record as an object), label (RIGHT | WRONG | NOT_A_PLACE | null), labelAt, frameId, momentId, photoGone
 
 ## privacy
 Read-only copy. It never contains the database key, pairing tokens, API keys or app settings. Forgotten items are not in it.
@@ -232,7 +236,7 @@ def find_photo(mdir, fid):
 
 
 def pull(api, out, args, say=print):
-    counts = dict(moments=0, moments_skipped=0, photos=0, photos_skipped=0, photos_missing=0, scenes=0, marks=0, pins=0)
+    counts = dict(moments=0, moments_skipped=0, photos=0, photos_skipped=0, photos_missing=0, scenes=0, marks=0, pins=0, place_attempts=0)
     man = api.json("/api/dump/manifest")
     c = man.get("counts", {})
     say("manifest: moments=%s scenes=%s marks=%s pins=%s frames=%s locations=%s" % tuple(c.get(k, "?") for k in ("moments", "scenes", "marks", "pins", "frames", "locations")))
@@ -298,6 +302,13 @@ def pull(api, out, args, say=print):
     if not os.path.exists(os.path.join(out, "pins.json")):
         dump_json(os.path.join(out, "pins.json"), pins)
 
+    # B3: the place attempts (eval + label); only a phone build with context.db v19 says so in its manifest counts
+    if "placeAttempts" in c:
+        attempts = list(api.pages("/api/dump/place_attempts", q))
+        counts["place_attempts"] = len(attempts)
+        if not os.path.exists(os.path.join(out, "place_attempts.json")):
+            dump_json(os.path.join(out, "place_attempts.json"), attempts)
+
     say("done: " + " ".join("%s=%d" % kv for kv in counts.items()))
     return out, counts
 
@@ -352,7 +363,7 @@ def selftest():
                 if state["throttle"]:
                     state["throttle"] = 0
                     return self.send(429, b'{"error":"rate_limited"}', extra={"Retry-After": "1"})
-                return self.js({"dump_id": "dump-selftest", "counts": {"moments": 2, "scenes": 2, "marks": 1, "pins": 1, "frames": 4, "locations": 2}, "fieldsAbsent": ["model_name"]})
+                return self.js({"dump_id": "dump-selftest", "counts": {"moments": 2, "scenes": 2, "marks": 1, "pins": 1, "frames": 4, "locations": 2, "placeAttempts": 1}, "fieldsAbsent": ["model_name"]})
             if p in ("/api/dump/moments", "/api/dump/scenes"):
                 items = moments if p.endswith("moments") else scenes
                 after = q.get("after")
@@ -362,6 +373,8 @@ def selftest():
                 return self.js({"items": page, "count": len(page), "next": (key(page[-1]) if len(rest) > 1 else None)})
             if p == "/api/dump/marks":
                 return self.js({"items": [{"id": "mk:1:1", "atMs": ms1}], "count": 1, "next": None})
+            if p == "/api/dump/place_attempts":
+                return self.js({"items": [{"id": "pa1", "atMs": ms1, "kind": "PHOTO", "shown": True, "label": "RIGHT"}], "count": 1, "next": None})
             if p == "/api/dump/pins":
                 return self.js({"items": [{"id": "user:1", "name": "Pin", "lat": 9.0, "lon": 8.0}], "count": 1, "next": None})
             m = re.match(r"^/api/dump/frames/([^/]+)/photo$", p)
@@ -403,6 +416,7 @@ def selftest():
         check(os.path.isfile(os.path.join(out, "scenes", d1 + ".json")) and os.path.isfile(os.path.join(out, "scenes", d2 + ".json")), "scene files per day")
         check(json.load(open(os.path.join(out, "pins.json")))[0]["lat"] == 9.0, "pins.json")
         check(json.load(open(os.path.join(out, "marks.json")))[0]["id"] == "mk:1:1", "marks.json")
+        check(json.load(open(os.path.join(out, "place_attempts.json")))[0]["label"] == "RIGHT", "place_attempts.json")
         check(json.load(open(os.path.join(out, d1, moments[0]["id"], "moment.json")))["location"]["lat"] == 1.5, "location kept in moment.json")
         check(os.path.isfile(os.path.join(out, "README.md")) and os.path.isfile(os.path.join(out, "manifest.json")), "README and manifest")
         check((os.stat(out).st_mode & 0o777) == 0o700, "folder mode 0700")

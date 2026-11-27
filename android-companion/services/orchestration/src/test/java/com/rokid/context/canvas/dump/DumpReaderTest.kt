@@ -242,4 +242,63 @@ class DumpReaderTest {
         others.forEach { assertFalse(it, "41.123456" in it || "73.654321" in it) }
         assertTrue("41.123456" in all(r).single().json.toString())
     }
+
+    // ---- B3: place attempts (the opt-in object type `place_attempt`) ----
+    private fun attempt(id: String, at: Long, frame: String?, kind: String = "PHOTO", delivery: String = "SENT", eval: String? = """{"v":1,"layer":"L2","shown":true}""", label: String? = null, photoGone: Int = 0, place: String = "wd:Q1") =
+        PlaceCardLogEntity(id, at, place, "Mirror Wall", kind, null, frame, 90, null, delivery, photoGone, eval, label, if (label != null) at + 5 else null)
+    private fun attempts(r: DumpReader = reader(), asc: Boolean = true, after: String? = null, limit: Int = 200) = runBlocking { r.placeAttempts(0, Long.MAX_VALUE, after, limit, asc) }
+    private fun JsonObject.s(k: String) = (this[k] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+
+    @Test fun placeAttemptItemCarriesTimeKindLayerShownLabelEvalAndTheMomentOfItsFrame() = runBlocking {
+        seed(5)
+        db.placeCardLogDao().put(attempt("a1", MS + 5000, "f5", label = "RIGHT"))
+        db.placeCardLogDao().put(attempt("a2", MS + 6000, null, "NO_MATCH", "HELD_NOT_CONFIRMED", eval = """{"v":1,"layer":"NONE","shown":false}"""))
+        db.placeCardLogDao().put(attempt("a3", MS + 7000, null, "NEARBY", "HELD_DATA_SAVER", eval = null))
+        val items = attempts()
+        assertEquals(listOf("${MS + 5000}:a1", "${MS + 6000}:a2", "${MS + 7000}:a3"), items.map { it.cursor })
+        val a = items[0].json
+        assertEquals("a1", a.s("id")); assertEquals((MS + 5000).toString(), a["atMs"]!!.jsonPrimitive.content); assertEquals("PHOTO", a.s("kind")); assertEquals("wd:Q1", a.s("placeId")); assertEquals("L2", a.s("layer"))
+        assertEquals("true", a["shown"]!!.jsonPrimitive.content); assertEquals(JsonNull, a["held"]); assertEquals("RIGHT", a.s("label")); assertEquals((MS + 5005).toString(), a["labelAt"]!!.jsonPrimitive.content)
+        assertEquals("f5", a.s("frameId")); assertEquals(id(5), a.s("momentId")); assertEquals("L2", a["eval"]!!.jsonObject.s("layer")); assertEquals("90", a["confPct"]!!.jsonPrimitive.content)
+        assertEquals("the eval is an OBJECT", true, a["eval"] is JsonObject)
+        val h = items[1].json
+        assertEquals("false", h["shown"]!!.jsonPrimitive.content); assertEquals("HELD_NOT_CONFIRMED", h.s("held")); assertEquals(JsonNull, h["frameId"]); assertEquals(JsonNull, h["momentId"]); assertEquals(JsonNull, h["label"]); assertEquals(JsonNull, h["labelAt"])
+        val old = items[2].json
+        assertEquals("a row older than v19 has no eval", JsonNull, old["eval"]); assertEquals(JsonNull, old["layer"]); assertEquals("false", old["shown"]!!.jsonPrimitive.content)
+        assertFalse("no title (a name) is in an item", items.joinToString { it.json.toString() }.contains("Mirror Wall"))
+    }
+
+    @Test fun placeAttemptsPageByCursorAndOrder() = runBlocking {
+        (1..5).forEach { db.placeCardLogDao().put(attempt("a$it", MS + it * 1000L, null, eval = null)) }
+        val p1 = attempts(limit = 2); assertEquals(listOf("a1", "a2"), p1.map { it.json.s("id") })
+        val p2 = attempts(after = p1.last().cursor, limit = 2); assertEquals(listOf("a3", "a4"), p2.map { it.json.s("id") })
+        assertEquals(listOf("a5", "a4"), attempts(asc = false, limit = 2).map { it.json.s("id") })
+        assertEquals(listOf("a3", "a2"), attempts(asc = false, after = "${MS + 4000}:a4", limit = 2).map { it.json.s("id") })
+        assertEquals("a range", listOf("a2", "a3"), runBlocking { reader().placeAttempts(MS + 2000, MS + 3000, null, 10, true) }.map { it.json.s("id") })
+    }
+
+    @Test fun aForgottenPhotoNeverComesBackAndAnExpiredOneKeepsTheRowWithoutThePhotoLink() = runBlocking {
+        seed(5, 6)
+        db.placeCardLogDao().put(attempt("live", MS + 5000, "f5")); db.placeCardLogDao().put(attempt("forgot", MS + 6000, "f6")); db.placeCardLogDao().put(attempt("expired", MS + 7000, "f6", photoGone = 1))
+        db.forgetDao().insertTombstone(ForgetTombstoneEntity("f6", 1))
+        val items = attempts()
+        assertEquals(listOf("live", "expired"), items.map { it.json.s("id") })
+        assertEquals(JsonNull, items[1].json["frameId"]); assertEquals(JsonNull, items[1].json["momentId"]); assertEquals("true", items[1].json["photoGone"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun aTombstonedMomentLosesItsIdButTheAttemptStays() = runBlocking {
+        seed(5)
+        db.placeCardLogDao().put(attempt("a1", MS + 5000, "f5"))
+        db.momentDao().insertTombstones(listOf(MomentTombstoneEntity(id(5), 1L)))
+        assertEquals(JsonNull, attempts().single().json["momentId"])
+    }
+
+    @Test fun manifestCountsAttemptsAndLabelsAndListsTheFields() = runBlocking {
+        seed(5, 6)
+        db.placeCardLogDao().put(attempt("a1", MS + 5000, "f5", label = "WRONG")); db.placeCardLogDao().put(attempt("a2", MS + 6000, "f6")); db.placeCardLogDao().put(attempt("a3", MS + 7000, null))
+        db.forgetDao().insertTombstone(ForgetTombstoneEntity("f6", 1))
+        val m = runBlocking { reader().manifest() }
+        assertEquals("2", m["counts"]!!.jsonObject["placeAttempts"]!!.jsonPrimitive.content); assertEquals("1", m["counts"]!!.jsonObject["placeAttemptsLabelled"]!!.jsonPrimitive.content)
+        assertTrue(m["fields"]!!.jsonObject["place_attempt"]!!.jsonArray.map { it.jsonPrimitive.content }.containsAll(listOf("eval", "label", "labelAt", "layer", "shown", "momentId")))
+    }
 }

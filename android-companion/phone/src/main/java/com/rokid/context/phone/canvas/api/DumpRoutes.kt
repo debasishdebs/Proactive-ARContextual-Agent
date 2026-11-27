@@ -40,7 +40,9 @@ class DumpRoutes(
         private val MS = Regex("^[0-9]{1,15}$")
         private val FIELD = Regex("^[A-Za-z][A-Za-z0-9_]{0,39}$")
         private const val MAX_FIELDS = 40
-        private val TYPES = listOf("moment", "scene", "mark", "pin")
+        private val TYPES = listOf("moment", "scene", "mark", "pin", "place_attempt")
+        /** `place_attempt` (by-exception content: place ids, scores, labels) is opt-in: named in `object_type` only, never part of the default stream. */
+        private val DEFAULT_TYPES = setOf("moment", "scene", "mark", "pin")
     }
 
     private class Bad : Exception()
@@ -71,6 +73,7 @@ class DumpRoutes(
                 seg == listOf("moments") -> page(req, "moments") { f, t, a, n, o -> source.moments(f, t, a, n, o) }
                 seg == listOf("scenes") -> page(req, "scenes") { f, t, a, n, o -> source.scenes(f, t, a, n, o) }
                 seg == listOf("marks") -> page(req, "marks") { f, t, a, n, o -> source.marks(f, t, a, n, o) }
+                seg == listOf("place_attempts") -> page(req, "place_attempts") { f, t, a, n, o -> source.placeAttempts(f, t, a, n, o) }
                 seg == listOf("pins") -> pins(req)
                 seg == listOf("items") -> items(req)
                 seg.size == 3 && seg[0] == "frames" && seg[2] == "photo" -> photo(seg[1])
@@ -164,6 +167,7 @@ class DumpRoutes(
         if ("moment" in types) add("moment", source.moments(f, t, null, readLimit, asc)) { num(it, "startMs") }
         if ("scene" in types) add("scene", source.scenes(f, t, null, readLimit, asc)) { num(it, "startMs") }
         if ("mark" in types) add("mark", source.marks(f, t, null, readLimit, asc)) { num(it, "atMs") }
+        if ("place_attempt" in types) add("place_attempt", source.placeAttempts(f, t, null, readLimit, asc)) { num(it, "atMs") }
         if ("pin" in types) {
             val pins = source.pins().filter { num(it, "pinnedAt") in f..t }
             // a pin carries no cursor of its own: its composite cursor is built the same way
@@ -206,7 +210,7 @@ class DumpRoutes(
     private fun objectTypes(req: HttpRequest): Set<String> {
         val a = req.query["object_type"]; val b = req.query["object_type[]"]
         if (a != null && b != null) throw Bad()
-        val v = a ?: b ?: return TYPES.toSet()
+        val v = a ?: b ?: return DEFAULT_TYPES
         val names = v.split(',').map { it.trim() }
         if (names.any { it !in TYPES } || names.toSet().size != names.size) throw Bad()
         return names.toSet()
