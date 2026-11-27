@@ -114,7 +114,7 @@ class ReferencePhotos(private val app: Context) {
             memories = ImportMemoryStore(app),
             build = { ids -> com.rokid.context.canvas.moment.MomentTriggers.builder(app).build(ids) },
             generation = { MemoryWipe.generation.get() },
-            discard = { frameId -> com.rokid.context.orchestration.forget.ForgetActions.forgetMoment(app, frameId) },
+            discard = { frameId -> com.rokid.context.orchestration.forget.ForgetActions.forgetMomentKeepPinsOutcome(app, frameId).committed }, // exactly this frame (never widened by the Forget scope), never a pin
         )
     }
 
@@ -122,7 +122,7 @@ class ReferencePhotos(private val app: Context) {
     suspend fun addTo(pinning: com.rokid.context.work.frames.place.PlacePinning, pinId: String, photo: PreparedPhoto, description: String): Boolean = withContext(Dispatchers.IO) {
         val made = maker().create(photo.jpeg, description) ?: return@withContext false
         if (pinning.setMoment(pinId, made.momentId)) return@withContext true
-        try { com.rokid.context.orchestration.forget.ForgetActions.forgetMoment(app, made.frameId) } catch (e: Exception) { /* the Moment stays as an ordinary photo Moment */ }
+        try { com.rokid.context.orchestration.forget.ForgetActions.forgetMomentKeepPinsOutcome(app, made.frameId) } catch (e: Exception) { /* the Moment stays as an ordinary photo Moment */ }
         false
     }
 
