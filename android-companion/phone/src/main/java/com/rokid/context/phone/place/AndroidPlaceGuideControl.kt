@@ -337,6 +337,8 @@ class AndroidPlaceHistoryControl(
         com.rokid.context.memory.MemoryGraph.get(app).db.frameDao().byIds(listOf(frameId)).firstOrNull()?.path?.takeIf { it.isNotBlank() && java.io.File(it).exists() }
 
     override suspend fun delete(id: String) = history().delete(id)
+    override suspend fun setLabel(id: String, label: String?) = history().setLabel(id, label)
+    override suspend fun labelSummary() = if (!historyOn) null else history().labelSummary()
 
     override fun showAgainBlock(row: com.rokid.context.memory.db.PlaceCardLogEntity): String? =
         if (!historyOn) com.rokid.context.phone.ui.settings.place.PlaceHistoryModel.OFF_LINE else

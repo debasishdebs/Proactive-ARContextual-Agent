@@ -15,7 +15,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.rokid.context.memory.place.CardDelivery
+import com.rokid.context.memory.db.CardLabel
 import com.rokid.context.memory.db.PlaceCardLogEntity
+import com.rokid.context.work.frames.place.LabelSummary
 import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.SecondaryAction
 import com.rokid.context.phone.ui.settings.SettingsCard
@@ -39,6 +41,10 @@ interface PlaceHistoryControl {
     /** The photo file of a LIVE frame (for the thumbnail); null = no photo (gone, or never linked). */
     suspend fun photoPath(frameId: String): String?
     suspend fun delete(id: String): Boolean
+    /** B3: the owner's one-tap label (`RIGHT`, `WRONG`, `NOT_A_PLACE`; null clears it). False = the row is gone or the label is unknown. */
+    suspend fun setLabel(id: String, label: String?): Boolean = false
+    /** B3: counts for the "Labelled: ..." line; null = this build has none. */
+    suspend fun labelSummary(): LabelSummary? = null
     /** Why "Show on glasses again" is off for [row] right now (null = allowed). Reads the switch, the zone state and the link. */
     fun showAgainBlock(row: PlaceCardLogEntity): String?
     /** Publishes a copy of the card (a user act: a new card id and a new history row of the same kind). False = nothing was shown. */
@@ -48,13 +54,13 @@ interface PlaceHistoryControl {
 /** One history row as the list shows it. */
 data class PlaceHistoryRowUi(
     val id: String, val title: String, val atMs: Long, val kind: String, val delivery: String, val placeId: String,
-    val members: List<String>, val frameId: String?, val photoGone: Boolean, val confPct: Int?,
+    val members: List<String>, val frameId: String?, val photoGone: Boolean, val confPct: Int?, val label: String? = null,
 ) {
     val kindText: String get() = PlaceHistoryModel.kindLabel(kind)
     val deliveryText: String get() = PlaceHistoryModel.deliveryLabel(delivery)
 }
 
-fun PlaceCardLogEntity.toUi() = PlaceHistoryRowUi(id, title, at, kind, delivery, placeId, members?.split(',')?.filter { it.isNotEmpty() }.orEmpty(), frameId, photoGone == 1, confPct)
+fun PlaceCardLogEntity.toUi() = PlaceHistoryRowUi(id, title, at, kind, delivery, placeId, members?.split(',')?.filter { it.isNotEmpty() }.orEmpty(), frameId, photoGone == 1, confPct, label)
 
 /** The detail of one row: the line (null = place gone), the live photo, and the reason "Show on glasses again" is off. */
 data class PlaceHistoryDetail(val row: PlaceHistoryRowUi, val line: String?, val photoPath: String?, val showAgainBlock: String?, val message: String? = null, /** B2: the credit line of the stored reference photo of the cited place (author, licence, Wikimedia Commons); null = none. */ val credit: String? = null, val busy: Boolean = false)
@@ -73,6 +79,13 @@ object PlaceHistoryModel {
     const val GONE_LINE = "This place is no longer in your pack"
     const val PHOTO_GONE = "Photo gone"
     const val PAGE = 20
+
+    /** B3: the three one-tap labels in the order they are shown, with their button text. */
+    val LABELS: List<Pair<String, String>> = listOf(CardLabel.RIGHT to "Right", CardLabel.WRONG to "Wrong", CardLabel.NOT_A_PLACE to "Not a place")
+    /** The counts-only progress line of the labels. */
+    fun labelSummaryLine(s: LabelSummary): String = "Labelled: ${s.right} right, ${s.wrong} wrong, ${s.notPlace} not a place; attempts shown: ${s.shown}"
+    /** Tapping the label a row already has clears it; any other tap sets it. */
+    fun nextLabel(current: String?, tapped: String): String? = if (current == tapped) null else tapped
 
     fun kindLabel(kind: String): String = when (kind) {
         "PHOTO" -> "photo match"
@@ -128,7 +141,7 @@ object PlaceHistoryModel {
 }
 
 /** The "Recent place cards" section of the Place Guide screen. */
-fun LazyListScope.placeHistoryItems(rows: List<PlaceHistoryRowUi>, shown: Int, zone: ZoneId, onOpen: (String) -> Unit, onMore: () -> Unit, historyOn: Boolean = true) {
+fun LazyListScope.placeHistoryItems(rows: List<PlaceHistoryRowUi>, shown: Int, zone: ZoneId, onOpen: (String) -> Unit, onMore: () -> Unit, historyOn: Boolean = true, summary: LabelSummary? = null, onLabel: (String, String?) -> Unit = { _, _ -> }) {
     if (!historyOn) {
         item(key = "place_history_head") { SettingsCard { NoticeText(PlaceHistoryModel.OFF_LINE, tag = "place_history_off") } }
         return
@@ -137,6 +150,7 @@ fun LazyListScope.placeHistoryItems(rows: List<PlaceHistoryRowUi>, shown: Int, z
         SettingsCard {
             Text(PlaceHistoryModel.SECTION, style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("place_history_title"))
             NoticeText(PlaceHistoryModel.NOTE, tag = "place_history_note")
+            summary?.let { NoticeText(PlaceHistoryModel.labelSummaryLine(it), tag = "place_history_label_summary") }
             if (rows.isEmpty()) NoticeText(PlaceHistoryModel.EMPTY, tag = "place_history_empty")
         }
     }
@@ -146,6 +160,14 @@ fun LazyListScope.placeHistoryItems(rows: List<PlaceHistoryRowUi>, shown: Int, z
                 Column(Modifier.fillMaxWidth().clickable { onOpen(r.id) }.testTag("place_history_row_${r.id}"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(r.title, style = MaterialTheme.typography.titleSmall)
                     NoticeText("${PlaceHistoryModel.timeLabel(r.atMs, zone)} · ${PlaceHistoryModel.summary(r)}", tag = "place_history_meta_${r.id}")
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    PlaceHistoryModel.LABELS.forEach { (key, text) ->
+                        val on = r.label == key
+                        TextButton({ onLabel(r.id, PlaceHistoryModel.nextLabel(r.label, key)) }, Modifier.testTag("place_history_label_${key.lowercase()}_${r.id}")) {
+                            Text(if (on) "$text \u2713" else text, style = if (on) MaterialTheme.typography.labelLarge else MaterialTheme.typography.labelMedium)
+                        }
+                    }
                 }
             }
         }

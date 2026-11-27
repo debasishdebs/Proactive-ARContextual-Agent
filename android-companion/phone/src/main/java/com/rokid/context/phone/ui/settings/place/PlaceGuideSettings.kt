@@ -96,6 +96,8 @@ data class PlaceGuideUiState(
     val history: List<PlaceHistoryRowUi> = emptyList(), val historyShown: Int = PlaceHistoryModel.PAGE, val historyDetail: PlaceHistoryDetail? = null,
     /** The history Developer flag (off by default): the list collapses to one line. */
     val historyOn: Boolean = true,
+    /** B3: the counts of the owner's labels (null = none read yet or no history). */
+    val labelSummary: com.rokid.context.work.frames.place.LabelSummary? = null,
     /** V2b "Offline place guess (Maybe)": the user's switch (default OFF) and its two Advanced fields (cut-off, candidate radius in metres). */
     /** 27 Nov: the "Extra place types" switches that are ON (all ON by default; see ExtraPlaceTypes). */
     val extraTypes: Set<String> = com.rokid.context.connectors.place.ExtraPlaceTypes.DEFAULT_ON,
@@ -833,7 +835,8 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
         val ui = rows.filter { it.kind != "NO_MATCH" || showAll }.map { it.toUi() } // a NO_MATCH attempt row is a Developer view ("Show all attempts")
         val open = _state.value.historyDetail
         val detail = if (open == null) null else rows.firstOrNull { it.id == open.row.id }?.let { buildDetail(h, it, open.message) }
-        _state.update { it.copy(history = ui, historyOn = on, historyDetail = if (!on) null else if (open == null) it.historyDetail else detail) }
+        val sum = if (on) runCatching { h.labelSummary() }.getOrNull() else null
+        _state.update { it.copy(history = ui, historyOn = on, labelSummary = sum, historyDetail = if (!on) null else if (open == null) it.historyDetail else detail) }
     }
 
     private suspend fun buildDetail(h: PlaceHistoryControl, r: com.rokid.context.memory.db.PlaceCardLogEntity, message: String? = null): PlaceHistoryDetail {
@@ -849,6 +852,15 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
             val row = runCatching { h.rows() }.getOrDefault(emptyList()).firstOrNull { it.id == id } ?: return@launch
             val d = buildDetail(h, row)
             _state.update { it.copy(historyDetail = d) }
+        }
+    }
+
+    /** B3: one tap on Right / Wrong / Not a place (the same tap again clears it). The row and the counts re-read at once; nothing is logged but a count. */
+    fun setLabel(id: String, label: String?) {
+        val h = control.history ?: return
+        viewModelScope.launch(work) {
+            runCatching { h.setLabel(id, label) }
+            refreshHistoryNow()
         }
     }
 
@@ -905,7 +917,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     }
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setExtraType = vm::setExtraType, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius, openManual = vm::openManual, updateManual = vm::updateManual, saveManual = vm::saveManual, cancelManual = vm::cancelManual, pickManualPhoto = vm::pickManualPhoto, fetchManualPhoto = vm::fetchManualPhoto, removeManualPhoto = vm::removeManualPhoto, saveManualWithoutPhoto = vm::saveManualWithoutPhoto, openPinPhoto = vm::openPinPhoto, updatePinPhoto = vm::updatePinPhoto, pickPinPhoto = vm::pickPinPhoto, fetchPinPhoto = vm::fetchPinPhoto, removePinPhoto = vm::removePinPhoto, savePinPhoto = vm::savePinPhoto, cancelPinPhoto = vm::cancelPinPhoto,
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, setLabel = vm::setLabel, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setExtraType = vm::setExtraType, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius, openManual = vm::openManual, updateManual = vm::updateManual, saveManual = vm::saveManual, cancelManual = vm::cancelManual, pickManualPhoto = vm::pickManualPhoto, fetchManualPhoto = vm::fetchManualPhoto, removeManualPhoto = vm::removeManualPhoto, saveManualWithoutPhoto = vm::saveManualWithoutPhoto, openPinPhoto = vm::openPinPhoto, updatePinPhoto = vm::updatePinPhoto, pickPinPhoto = vm::pickPinPhoto, fetchPinPhoto = vm::fetchPinPhoto, removePinPhoto = vm::removePinPhoto, savePinPhoto = vm::savePinPhoto, cancelPinPhoto = vm::cancelPinPhoto,
         setConfirmedOnly = vm::setConfirmedOnly, setPinCardsNearby = vm::setPinCardsNearby, setCheckMode = vm::setCheckMode, embedPhotosNow = vm::embedPhotosNow, setPhotoMatch = vm::setPhotoMatch, resetPhotoMatch = vm::resetPhotoMatch, setLayer = vm::setLayer))
 }
 
@@ -921,13 +933,13 @@ fun PlaceCardsRoute(control: PlaceGuideControl, back: () -> Unit, openFrame: ((S
     androidx.compose.runtime.LaunchedEffect(vm, lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { vm.historyChanges.collect { vm.refreshHistory() } }
     }
-    PlaceCardsScreen(state, back, PlaceGuideActions(openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame))
+    PlaceCardsScreen(state, back, PlaceGuideActions(openHistory = vm::openHistory, setLabel = vm::setLabel, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame))
 }
 
 @Composable
 fun PlaceCardsScreen(state: PlaceGuideUiState, back: () -> Unit, on: PlaceGuideActions = PlaceGuideActions()) {
     SettingsPage("Place cards", back, tag = "place_cards_settings") {
-        placeHistoryItems(state.history, state.historyShown, java.time.ZoneId.systemDefault(), on.openHistory, on.historyMore, state.historyOn)
+        placeHistoryItems(state.history, state.historyShown, java.time.ZoneId.systemDefault(), on.openHistory, on.historyMore, state.historyOn, state.labelSummary, on.setLabel)
     }
     state.historyDetail?.let { d -> PlaceHistoryDetailDialog(d, java.time.ZoneId.systemDefault(), on.closeHistory, on.showAgain, on.deleteHistory, on.openMoment) }
 }
@@ -946,7 +958,7 @@ class PlaceGuideActions(
     /** Opens the zones map to draw the box to seed; null hides the button (a build without the map). */
     val pickOnMap: (() -> Unit)? = null,
     /** B2: the place card history: open a row, close the detail, show more rows, "Show on glasses again", "Delete from history", and "Open Moment" (a live frame; null hides the button). */
-    val openHistory: (String) -> Unit = {}, val closeHistory: () -> Unit = {}, val historyMore: () -> Unit = {}, val showAgain: () -> Unit = {}, val deleteHistory: () -> Unit = {},
+    val openHistory: (String) -> Unit = {}, val setLabel: (String, String?) -> Unit = { _, _ -> }, val closeHistory: () -> Unit = {}, val historyMore: () -> Unit = {}, val showAgain: () -> Unit = {}, val deleteHistory: () -> Unit = {},
     val openMoment: ((String) -> Unit)? = null,
     /** S3: cancels the active background seed(s). */
     val cancelSeeds: () -> Unit = {},
@@ -1002,7 +1014,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 NoticeText("Places this close are compared with the photo. Default 150 m, up to 500 m.", tag = "candidate_radius_note")
             }
         }
-        placeHistoryItems(state.history, state.historyShown, java.time.ZoneId.systemDefault(), on.openHistory, on.historyMore, state.historyOn)
+        placeHistoryItems(state.history, state.historyShown, java.time.ZoneId.systemDefault(), on.openHistory, on.historyMore, state.historyOn, state.labelSummary, on.setLabel)
         if (state.developerMode) item {
             SettingsCard {
                 Text("Photo check layers (Developer)", style = MaterialTheme.typography.titleMedium)
