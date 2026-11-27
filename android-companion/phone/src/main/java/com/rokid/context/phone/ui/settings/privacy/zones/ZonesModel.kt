@@ -144,6 +144,15 @@ object ZoneDrafts {
         return d.copy(south = deg(s), west = deg(w), north = deg(n), east = deg(e))
     }
 
+    /** The draft with its four bounds set from [b] (south, west, north, east): a handle drag on the map. Name and buffer are kept. A box that is not finite or not in order changes nothing. */
+    fun withBox(d: ZoneDraft, b: DoubleArray): ZoneDraft {
+        if (b.size != 4 || b.any { !it.isFinite() } || b[0] >= b[2] || b[1] >= b[3]) return d
+        return d.copy(south = deg(b[0]), west = deg(b[1]), north = deg(b[2]), east = deg(b[3]))
+    }
+
+    /** The draft without a box (the "Clear box" button): name and buffer are kept. */
+    fun withoutBox(d: ZoneDraft): ZoneDraft = d.copy(south = "", west = "", north = "", east = "")
+
     fun deg(v: Double): String = String.format(Locale.US, "%.5f", v)
 
     const val MIN_SPAN_DEG = 0.0005

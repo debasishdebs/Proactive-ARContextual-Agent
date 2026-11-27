@@ -30,7 +30,7 @@ sealed interface DrawnShape {
 }
 
 /** The corner or point the finger is on. */
-enum class Handle { NW, NE, SW, SE, CENTRE, RADIUS }
+enum class Handle { NW, NE, SW, SE, CENTRE, RADIUS, N, S, E, W }
 
 sealed interface Hit {
     data class OnHandle(val handle: Handle) : Hit
@@ -111,10 +111,10 @@ object ShapeEdit {
     }
 
     /** What is under the finger at ([x], [y]): a handle first (the nearest within [touchPx] / 2), then the body, else a miss. */
-    fun hit(v: MapViewport, s: DrawnShape, x: Float, y: Float, touchPx: Float): Hit {
+    fun hit(v: MapViewport, s: DrawnShape, x: Float, y: Float, touchPx: Float, edges: Boolean = false): Hit {
         if (!(x.isFinite() && y.isFinite() && touchPx.isFinite()) || touchPx <= 0f) return Hit.Miss
         val half = touchPx / 2
-        val handles = handlePoints(v, s) ?: return Hit.Miss
+        val handles = handlePoints(v, s, edges) ?: return Hit.Miss
         var best: Handle? = null; var bestD = Float.MAX_VALUE
         for ((h, p) in handles) {
             val dx = abs(p.first - x); val dy = abs(p.second - y)
@@ -125,12 +125,17 @@ object ShapeEdit {
     }
 
     /** The on-screen position of each handle (null when the shape cannot be placed). */
-    fun handlePoints(v: MapViewport, s: DrawnShape): List<Pair<Handle, Pair<Float, Float>>>? {
+    /** [edges]: a rectangle also gets a handle in the middle of each side (resizes one side). */
+    fun handlePoints(v: MapViewport, s: DrawnShape, edges: Boolean = false): List<Pair<Handle, Pair<Float, Float>>>? {
         val b = box(s) ?: return null
         val tl = v.toPx(b[2], b[1]); val br = v.toPx(b[0], b[3])
         if (!(tl.x.isFinite() && tl.y.isFinite() && br.x.isFinite() && br.y.isFinite())) return null
         return when (s) {
-            is DrawnShape.Rect -> listOf(Handle.NW to (tl.x to tl.y), Handle.NE to (br.x to tl.y), Handle.SW to (tl.x to br.y), Handle.SE to (br.x to br.y))
+            is DrawnShape.Rect -> {
+                val mx = (tl.x + br.x) / 2; val my = (tl.y + br.y) / 2
+                listOf(Handle.NW to (tl.x to tl.y), Handle.NE to (br.x to tl.y), Handle.SW to (tl.x to br.y), Handle.SE to (br.x to br.y)) +
+                    if (edges) listOf(Handle.N to (mx to tl.y), Handle.S to (mx to br.y), Handle.W to (tl.x to my), Handle.E to (br.x to my)) else emptyList()
+            }
             is DrawnShape.Circle -> {
                 val c = v.toPx(s.lat, s.lon)
                 val r = (br.x - tl.x) / 2 / CircleBox.SAFETY.toFloat() // the drawn radius (the box is grown by the safety margin)
@@ -178,6 +183,10 @@ object ShapeEdit {
                     Handle.NE -> { north = max(lat, south + MIN_SPAN_DEG); east = max(lon, west + MIN_SPAN_DEG) }
                     Handle.SW -> { south = min(lat, north - MIN_SPAN_DEG); west = min(lon, east - MIN_SPAN_DEG) }
                     Handle.SE -> { south = min(lat, north - MIN_SPAN_DEG); east = max(lon, west + MIN_SPAN_DEG) }
+                    Handle.N -> north = max(lat, south + MIN_SPAN_DEG)
+                    Handle.S -> south = min(lat, north - MIN_SPAN_DEG)
+                    Handle.E -> east = max(lon, west + MIN_SPAN_DEG)
+                    Handle.W -> west = min(lon, east - MIN_SPAN_DEG)
                     else -> return s
                 }
                 val next = DrawnShape.Rect(south, west, north, east)

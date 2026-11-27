@@ -125,6 +125,8 @@ fun MapCanvas(
     cells: Coverage? = null,
     /** No network (owner 6e): the plain grid is drawn on white. */
     blank: Boolean = false,
+    /** A rectangle draft also gets a handle on each side (new drafts only; a stored pause zone being reshaped keeps its four corners). */
+    edgeHandles: Boolean = false,
 ) {
     val measurer = rememberTextMeasurer()
     val fitSig = items.map { it.id }
@@ -170,6 +172,7 @@ fun MapCanvas(
     val onTapNow by rememberUpdatedState(onTap)
     val snapNow by rememberUpdatedState(snapTargets)
     val dblNow by rememberUpdatedState(doubleTapZoom)
+    val edgesNow by rememberUpdatedState(edgeHandles)
     var lastTap by remember { mutableStateOf<Triple<Long, Float, Float>?>(null) }
     var preview by remember { mutableStateOf<Pair<Offset, Offset>?>(null) }
 
@@ -197,7 +200,7 @@ fun MapCanvas(
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val v0 = view.vp ?: return@awaitEachGesture
                     val sh = shapeNow
-                    val hit = if (sh != null) ShapeEdit.hit(v0, sh, down.position.x, down.position.y, touch) else Hit.Miss
+                    val hit = if (sh != null) ShapeEdit.hit(v0, sh, down.position.x, down.position.y, touch, edgesNow) else Hit.Miss
                     if (sh != null && hit !is Hit.Miss) {
                         // Edit drag: a handle resizes, the body moves. The first finger on a handle never also pans the map.
                         var cur: DrawnShape = sh
@@ -306,7 +309,7 @@ fun MapCanvas(
             }
             for (c in MapOverview.clusters(items, v, minPx, layers)) drawChip(v, c, measurer)
             selected?.let { s -> items.firstOrNull { it.id == s.id && (it.type == ItemType.PAUSE) == (s.kind == SelectionKind.PAUSE) }?.let { drawSelected(v, it.box, minPx) } }
-            shape?.let { drawDraft(v, it) }
+            shape?.let { drawDraft(v, it, edgeHandles) }
             preview?.let { (a, b) ->
                 if (kindNow == ShapeKind.RECT) drawRect(DraftInk, Offset(min(a.x, b.x), min(a.y, b.y)), Size(kotlin.math.abs(a.x - b.x), kotlin.math.abs(a.y - b.y)), style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))))
                 else drawCircle(DraftInk, kotlin.math.hypot(b.x - a.x, b.y - a.y), a, style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))))
@@ -374,7 +377,7 @@ private fun DrawScope.drawSelected(v: MapViewport, box: DoubleArray, minPx: Floa
 }
 
 /** The shape being drawn: a dark dashed outline with white handles (drawn at 12 dp, touched at 48 dp). */
-private fun DrawScope.drawDraft(v: MapViewport, s: DrawnShape) {
+private fun DrawScope.drawDraft(v: MapViewport, s: DrawnShape, edges: Boolean = false) {
     val dash = PathEffect.dashPathEffect(floatArrayOf(14f, 10f))
     val b = ShapeEdit.box(s) ?: return
     val tl = v.toPx(b[2], b[1]); val br = v.toPx(b[0], b[3])
@@ -389,7 +392,7 @@ private fun DrawScope.drawDraft(v: MapViewport, s: DrawnShape) {
             drawCircle(DraftInk, r, Offset(c.x, c.y), style = Stroke(2.dp.toPx(), pathEffect = dash))
         }
     }
-    for ((_, p) in ShapeEdit.handlePoints(v, s).orEmpty()) {
+    for ((_, p) in ShapeEdit.handlePoints(v, s, edges).orEmpty()) {
         drawCircle(DraftInk, (ShapeEdit.HANDLE_DRAW_DP / 2 + 2).dp.toPx(), Offset(p.first, p.second))
         drawCircle(Color.White, (ShapeEdit.HANDLE_DRAW_DP / 2).dp.toPx(), Offset(p.first, p.second))
     }

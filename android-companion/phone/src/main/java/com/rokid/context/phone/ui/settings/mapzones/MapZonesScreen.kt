@@ -201,7 +201,7 @@ fun MapZonesScreen(
                 resize = { g -> ui.shape?.let { on.reshape(ShapeSteps.resize(it, g)) } },
                 selectNext = { ShapeSteps.nextSelection(items, ui.selected, layers)?.let { on.select(it) } },
             ),
-            snapTargets = snapTargets, doubleTapZoom = p23 != null, density = if (dens?.on == true) dens.blobs else emptyList(), cells = p23?.cells?.coverage,
+            snapTargets = snapTargets, doubleTapZoom = p23 != null, density = if (dens?.on == true) dens.blobs else emptyList(), cells = p23?.cells?.coverage, edgeHandles = ui.editingId == null,
         )
         Row(Modifier.align(Alignment.TopStart).fillMaxWidth().background(PcColors.SurfaceSoft.copy(alpha = 0.9f)).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(on.back, Modifier.testTag("mapzones_back"), enabled = !ui.saving) { Text("Back") }
@@ -267,6 +267,8 @@ private fun DraftBar(ui: MapZonesUiState, on: MapZonesCallbacks, p23: MapP23?) {
         FilterChip(shape.kind == ShapeKind.CIRCLE, { on.setKind(ShapeKind.CIRCLE) }, { Text("Circle") }, Modifier.testTag("mapzones_kind_circle"), enabled = ui.editingId == null)
     }
     NoticeText(ShapeEdit.sizeText(shape), tag = "mapzones_size")
+    // The live cell count of the box (it follows every drag of a handle): what seeding it would cover.
+    if (ui.editingId == null) SeedEstimate.boxOf(ui.box).let { NoticeText(SeedEstimate.line(it), tag = "mapzones_cells_live") }
     if (p23 != null) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             SecondaryAction("Undo", p23.undo, tag = "mapzones_undo", enabled = ui.history.canUndo && !ui.saving)
@@ -275,7 +277,7 @@ private fun DraftBar(ui: MapZonesUiState, on: MapZonesCallbacks, p23: MapP23?) {
         CoordinateEditor(ui, shape, p23)
     }
     PrimaryAction("Next", on.next, tag = "mapzones_next", enabled = ui.box != null)
-    SecondaryAction("Cancel", on.cancelDraw, tag = "mapzones_cancel", enabled = !ui.saving)
+    SecondaryAction(if (ui.editingId == null) "Clear box" else "Cancel", on.cancelDraw, tag = "mapzones_cancel", enabled = !ui.saving)
 }
 
 @Composable
@@ -336,6 +338,7 @@ private fun SeedSheet(ui: MapZonesUiState, seed: SeedPanel?, level: SeedLevel, o
     if (seed == null) NoticeText("Place Guide is not available in this build.", error = true, tag = "mapzones_seed_unavailable")
     PrimaryAction("Seed now", on.seedNow, tag = "seed_box", enabled = seed != null && !seed.ui.seeding && box != null && level != SeedLevel.TOO_LARGE && level != SeedLevel.EMPTY)
     SecondaryAction("Back", on.backSheet, tag = "mapzones_back_sheet")
+    SecondaryAction("Clear box", on.cancelDraw, tag = "mapzones_seed_clear", enabled = !ui.saving)
 }
 
 @Composable

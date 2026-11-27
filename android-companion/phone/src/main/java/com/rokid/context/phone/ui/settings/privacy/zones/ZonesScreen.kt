@@ -7,6 +7,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
+import com.rokid.context.phone.ui.settings.mapzones.DrawnShape
+import com.rokid.context.phone.ui.settings.mapzones.Hit
+import com.rokid.context.phone.ui.settings.mapzones.ShapeEdit
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -328,7 +334,7 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
             }
         }
         state.message?.let { m -> item { SettingsCard { NoticeText(m, error = state.messageIsError, tag = "zone_message"); SecondaryAction("Dismiss", on.dismissMessage, tag = "zone_message_dismiss") } } }
-        seed?.let { p -> item { SeedCard(state, p) } }
+        seed?.let { p -> item { SeedCard(state, p, on) } }
         online?.let { p -> item { OnlineMapCard(p) } }
         offline?.let { p -> item { OfflineMapCard(p) } }
         if (!seedMode) item { NewZoneCard(state, on, networkOnline) }
@@ -383,13 +389,15 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
 
 /** The box drawn above, its cell estimate and the seed button. The seed itself is the existing Place Guide seed, with its Offline only and Wi-Fi rules. */
 @Composable
-private fun SeedCard(state: ZonesUiState, p: SeedPanel) {
+private fun SeedCard(state: ZonesUiState, p: SeedPanel, on: ZonesCallbacks) {
     val box = SeedEstimate.boxOf(state.draft.box())
     val cells = box?.let { SeedEstimate.cells(it) } ?: 0L
     SettingsCard {
         Text("Seed places in the box", style = MaterialTheme.typography.titleMedium)
         NoticeText(SeedEstimate.estimate(box, p.ui.rates), error = SeedEstimate.level(cells) == SeedLevel.TOO_LARGE, tag = "seed_estimate")
         PrimaryAction("Seed places in this box", { p.seedBox(box) }, tag = "seed_box", enabled = !p.ui.seeding && box != null && SeedEstimate.level(cells) != SeedLevel.TOO_LARGE)
+        if (box != null) SecondaryAction("Clear box", { on.editDraft { ZoneDrafts.withoutBox(it) } }, tag = "seed_clear_box", enabled = !p.ui.seeding)
+        else NoticeText("Draw a box with Draw a box above, then drag its handles to resize it or drag inside it to move it.", tag = "seed_box_hint")
         p.ui.message?.let { m -> NoticeText(m, error = p.ui.messageIsError, tag = "seed_message"); SecondaryAction("Dismiss", p.dismiss, tag = "seed_message_dismiss") }
         SeedProgressRows(p)
         NoticeText(SeedAreaList.ATTRIBUTION, tag = "seed_attribution")
@@ -495,6 +503,9 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
     var fitKey by remember { mutableStateOf(0) }
     var dragA by remember { mutableStateOf<Offset?>(null) }
     var dragB by remember { mutableStateOf<Offset?>(null) }
+    val draftNow by rememberUpdatedState(state.draft)
+    val drawingNow by rememberUpdatedState(state.drawing)
+    val editDraftNow by rememberUpdatedState(on.editDraft)
     val zones = state.rows.map { it.zone }
     val areas = seed?.areas.orEmpty()
     val pins = seed?.pins.orEmpty()
@@ -557,6 +568,29 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
                     } else {
                         detectTransformGestures { centroid, pan, zoom, _ -> vp = vp?.panned(pan.x, pan.y)?.zoomed(zoom.toDouble(), centroid.x, centroid.y) }
                     }
+                }
+                // Innermost: a finger that lands on a handle of the drawn box (corner or side) resizes it, inside the box moves it; it never also pans the map. The box is only the draft: nothing is saved by a drag.
+                .pointerInput(Unit) {
+                    val touch = ShapeEdit.HANDLE_TOUCH_DP.dp.toPx()
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val v0 = vp ?: return@awaitEachGesture
+                        val b0 = if (drawingNow) null else draftNow.box()
+                        if (b0 == null) return@awaitEachGesture
+                        var cur: DrawnShape = DrawnShape.Rect(b0[0], b0[1], b0[2], b0[3])
+                        val hit = ShapeEdit.hit(v0, cur, down.position.x, down.position.y, touch, edges = true)
+                        if (hit is Hit.Miss) return@awaitEachGesture
+                        var last = down.position
+                        down.consume()
+                        drag(down.id) { change ->
+                            val v = vp ?: return@drag
+                            val next = if (hit is Hit.OnHandle) ShapeEdit.resize(cur, hit.handle, v.toLatLon(change.position.x, change.position.y))
+                            else { val a = v.toLatLon(last.x, last.y); val c = v.toLatLon(change.position.x, change.position.y); ShapeEdit.move(cur, c.lat - a.lat, c.lon - a.lon) }
+                            last = change.position
+                            if (next != cur) { cur = next; ShapeEdit.box(next)?.let { nb -> editDraftNow { d -> ZoneDrafts.withBox(d, nb) } } }
+                            change.consume()
+                        }
+                    }
                 },
         ) {
             val v = vp ?: return@Canvas
@@ -572,7 +606,12 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
             areas.firstOrNull { it.id == seed?.selectedId }?.let { drawSeedArea(v, it, measurer, selected = true) } // the tapped area on top, with its name
             for (r in state.rows) drawZone(v, r.zone, measurer, active = r.zone.enabled)
             for (p in pins) drawPin(v, p)
-            state.draft.box()?.let { drawBox(v, it, ZoneRed, filled = false, dashed = true) }
+            state.draft.box()?.let { b ->
+                drawBox(v, b, ZoneRed, filled = false, dashed = true)
+                if (!state.drawing) for ((_, p) in ShapeEdit.handlePoints(v, DrawnShape.Rect(b[0], b[1], b[2], b[3]), edges = true).orEmpty()) {
+                    drawCircle(Color(0xFF111827), (ShapeEdit.HANDLE_DRAW_DP / 2 + 2).dp.toPx(), Offset(p.first, p.second)); drawCircle(Color.White, (ShapeEdit.HANDLE_DRAW_DP / 2).dp.toPx(), Offset(p.first, p.second))
+                }
+            }
             val a = dragA; val b = dragB
             if (a != null && b != null) drawRect(ZoneRed, Offset(min(a.x, b.x), min(a.y, b.y)), Size(abs(a.x - b.x), abs(a.y - b.y)), style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))))
             (centreReq?.at ?: state.you)?.let { y -> val p = v.toPx(y.lat, y.lon); drawCircle(Color.White, 9.dp.toPx(), Offset(p.x, p.y)); drawCircle(PcColors.Sky, 6.dp.toPx(), Offset(p.x, p.y)) }
