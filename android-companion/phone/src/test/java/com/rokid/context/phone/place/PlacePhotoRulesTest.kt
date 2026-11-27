@@ -31,6 +31,12 @@ class PlacePhotoRulesTest {
         assertEquals(setOf("\"https://\$wikidata", "\"https://\$wiki", "\"https://\$commons", "\"https://\${PlaceImageRules.COMMONS_HOST}"), lits)
     }
 
+    @Test fun theEmbedWorkerRetriesTheWaitsInsteadOfFinishingWithWorkLeft() {
+        val c = code(named("PlacePhotoWorker.kt"))
+        assertTrue(c.contains("EmbedEnd.NOT_CHARGING, EmbedEnd.NO_SPACE -> if (runAttemptCount < MAX_WAITS) Result.retry()"))
+        assertTrue("a finished embed run asks the fetch phase again (budget may be free)", c.contains("if (end == EmbedEnd.DONE) runCatching { PlacePhotoWork(applicationContext).ensureIfNeeded(pack) }"))
+    }
+
     @Test fun storedPhotosAndVectorsAreNeverReadByAModelCall() {
         val users = all().filter { f -> code(f).let { it.contains("imageVectorsFor(") || it.contains("imagesOf(") } }.map { it.name }.toSet()
         // the matcher reference path, the pack, the embed glue, the credit line and the fetcher: none of them builds a model request

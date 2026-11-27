@@ -171,9 +171,11 @@ class PlaceEmbedWorker(appContext: Context, params: WorkerParameters) : Coroutin
         val end = withContext(Dispatchers.Default) { e.run(ignoreCharging = force) }
         val how = end.name; val ok = e.embedded; val failed = e.failed; val n = if (force) 1 else 0
         PcLog.i(TAG, "photo embed how=$how ok=$ok failed=$failed force=$n")
-        return when (end) { EmbedEnd.HOT -> Result.retry(); else -> Result.success() }
+        // Waits are retried (WorkManager brings the charging constraint back; a model not ready yet is asked again with backoff), a few times; the app start queues it again too. A finished run may have freed budget for the fetch.
+        if (end == EmbedEnd.DONE) runCatching { PlacePhotoWork(applicationContext).ensureIfNeeded(pack) }
+        return when (end) { EmbedEnd.HOT -> Result.retry(); EmbedEnd.NOT_CHARGING, EmbedEnd.NO_SPACE -> if (runAttemptCount < MAX_WAITS) Result.retry() else Result.success(); else -> Result.success() }
     }
-    companion object { const val FORCE = "force"; const val UNIQUE = "place_photo_embed"; const val UNIQUE_NOW = "place_photo_embed_now"; private const val TAG = "PcPlacePhotos" }
+    companion object { const val FORCE = "force"; const val UNIQUE = "place_photo_embed"; const val MAX_WAITS = 6; const val UNIQUE_NOW = "place_photo_embed_now"; private const val TAG = "PcPlacePhotos" }
 }
 
 /** Queues and cancels the two photo works. Every call is cheap and idempotent (KEEP). */
