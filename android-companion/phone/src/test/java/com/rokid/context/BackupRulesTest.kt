@@ -118,6 +118,8 @@ class BackupRulesTest {
         com.rokid.context.orchestration.MemoryExport.CLEANUP_PREFS,
         // 3b WP2: the helper capability grants (py_exec, default off) are per-install consent: a restore never turns a grant on.
         com.rokid.context.phone.canvas.helper.HelperGrants.PREFS,
+        // Seeded-area colours (hashed area key to palette index): per-device, default again after a restore.
+        com.rokid.context.phone.ui.settings.privacy.zones.SeedColourStore.PREFS,
     )
 
     /** Slice 3a folders under `files/`: sealed sensor traces, pulled imports and their tmp files. Sensor and label data: never backed up or transferred. */

@@ -195,5 +195,5 @@ class SeedWork(private val app: Context, private val wifiOnly: () -> Boolean = {
 
 /** Delete all: the queued and running seeds are cancelled with the rest of the user's data. */
 class SeedWipeListener(private val app: Context) : com.rokid.context.memory.forget.ForgetListener {
-    override suspend fun onDeleteAll() { SeedWork(app).cancelAll() }
+    override suspend fun onDeleteAll() { com.rokid.context.phone.ui.settings.privacy.zones.SeedColourStore.of(app).clearAll(); SeedWork(app).cancelAll() }
 }

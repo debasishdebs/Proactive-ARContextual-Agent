@@ -184,6 +184,7 @@ class SeedMapViewModelTest {
         val renamed = mutableListOf<Pair<String, String?>>()
         override suspend fun rename(id: String, name: String?): Boolean { renamed += id to name; areas = areas.map { if (it.id == id) it.copy(name = name?.trim()?.takeIf { n -> n.isNotEmpty() }) else it }; return true }
         override suspend fun remove(id: String, withPlaces: Boolean) { removed += id; removedWithPlaces += withPlaces; areas = areas.filterNot { it.id == id } }
+        override suspend fun setColour(id: String, index: Int) { areas = areas.map { if (it.id == id) it.copy(savedColour = index) else it } }
     }
 
     private val fake = Fake()
@@ -195,6 +196,38 @@ class SeedMapViewModelTest {
     @Test fun refreshLoadsAreasAndPins() = runTest {
         val v = vm(); v.refresh()
         assertEquals(1, v.state.value.areas.size); assertEquals(1, v.state.value.pins.size)
+    }
+
+    @Test fun tapSelectsTheAreaAndAsksForScrollAndFitWithAMargin() = runTest {
+        val v = vm(); v.refresh()
+        assertNull(v.state.value.selectedId); assertEquals(0, v.state.value.focusSeq)
+        v.focusArea("seed:1")
+        val s = v.state.value
+        assertEquals("seed:1", s.selectedId); assertEquals(1, s.focusSeq)
+        val fit = s.focusBox!!
+        assertTrue(fit[0] < 27.0 && fit[1] < 88.0 && fit[2] > 27.1 && fit[3] > 88.1) // a margin on every side
+        v.focusArea("seed:1") // a second tap keeps it focused and asks for another fit
+        assertEquals("seed:1", v.state.value.selectedId); assertEquals(2, v.state.value.focusSeq)
+        v.focusArea("nope"); assertEquals(2, v.state.value.focusSeq)
+    }
+
+    @Test fun mapBackgroundTapClearsTheHighlightAndRemovalClearsItToo() = runTest {
+        val v = vm(); v.refresh(); v.focusArea("seed:1")
+        v.clearFocus(); assertNull(v.state.value.selectedId); assertNull(v.state.value.focusBox)
+        v.focusArea("seed:1"); v.askRemove("seed:1"); v.confirmRemove()
+        assertNull(v.state.value.selectedId)
+    }
+
+    @Test fun colourDefaultsCycleByOrderAndAChosenColourIsKept() = runTest {
+        fake.areas = (0 until 11).map { SeedAreaInfo("seed:$it", 1.0 + it, 1.0, 1.1 + it, 1.1, AREA_DONE) }
+        val v = vm(); v.refresh()
+        assertEquals(0, v.state.value.areas[0].colour); assertEquals(1, v.state.value.areas[1].colour)
+        assertEquals(0, v.state.value.areas[SeedPalette.colours.size].colour) // cycles
+        assertEquals(v.state.value.areas.map { it.colour }, v.state.value.rows.map { it.colour })
+        v.setColour("seed:1", 5)
+        assertEquals(5, v.state.value.areas[1].colour); assertEquals(5, v.state.value.rows[1].colour)
+        v.setColour("seed:1", 99) // not a palette index: ignored
+        assertEquals(5, v.state.value.areas[1].colour)
     }
 
     @Test fun renameStoresTheLabelAndTheListAndOverlayShowIt() = runTest {

@@ -37,7 +37,9 @@ data class SeedAreaInfo(val id: String, val south: Double, val west: Double, val
     /** The last seed was cancelled and the stored cells do not cover the area (nothing is running; "Seed again" resumes). */
     val cancelled: Boolean = false,
     /** A done area: how many of its cells have no OSM extras (a count only). */
-    val noOsm: Int = 0) {
+    val noOsm: Int = 0,
+    /** The owner's saved colour (a palette index), or null = the default for the area's order. */
+    val savedColour: Int? = null) {
     val box: DoubleArray get() = doubleArrayOf(south, west, north, east)
 }
 
@@ -62,6 +64,8 @@ interface SeedMapControl {
     suspend fun rates(): SeedRates = SeedRates.ROUGH
     /** Map zones "Show cells" (read only): the stored status of each 5 km cell touching [box]; a missing cell is absent. The default is empty (nothing known). */
     suspend fun cellStatuses(box: GeoBox): Map<String, String> = emptyMap()
+    /** Saves the owner's colour (a [SeedPalette] index) for the area; kept in a small prefs file keyed by a hash of the id. */
+    suspend fun setColour(id: String, index: Int) {}
 }
 
 /**
@@ -174,7 +178,9 @@ object SeedEstimate {
 enum class AreaLook { DONE, PARTIAL, SEEDING }
 
 /** One seeded area to draw: its box, its look (blue / amber with a badge / moving dash) and the list label. */
-data class SeedOverlay(val id: String, val box: DoubleArray, val look: AreaLook, val label: String, val failedCells: Int = 0)
+data class SeedOverlay(val id: String, val box: DoubleArray, val look: AreaLook, val label: String, val failedCells: Int = 0,
+    /** The [SeedPalette] index the area is drawn in (its saved choice, else the default for its order). */
+    val colour: Int = 0)
 
 /** The pure overlay model: what the canvas draws and the legend line. No Compose, no coordinates in any text. */
 object SeedOverlays {
@@ -185,7 +191,7 @@ object SeedOverlays {
 
     fun of(areas: List<SeedAreaInfo>): List<SeedOverlay> = areas.mapIndexed { i, a ->
         val look = look(a.status)
-        SeedOverlay(a.id, a.box, if (a.seed != null) AreaLook.SEEDING else look, (a.name?.takeIf { it.isNotBlank() } ?: "Seeded area ${i + 1}") + if (a.seed != null) " (${a.seed.text.replaceFirstChar { it.lowercase() }})" else when (look) { AreaLook.DONE -> ""; AreaLook.PARTIAL -> if (a.failedCells > 0) " (FAILED: ${a.failedCells} cell${if (a.failedCells == 1) "" else "s"})" else if (a.cancelled) " (cancelled, seed again)" else " (not finished, seed again)"; AreaLook.SEEDING -> " (not finished, seed again)" }, a.failedCells)
+        SeedOverlay(a.id, a.box, if (a.seed != null) AreaLook.SEEDING else look, (a.name?.takeIf { it.isNotBlank() } ?: "Seeded area ${i + 1}") + if (a.seed != null) " (${a.seed.text.replaceFirstChar { it.lowercase() }})" else when (look) { AreaLook.DONE -> ""; AreaLook.PARTIAL -> if (a.failedCells > 0) " (FAILED: ${a.failedCells} cell${if (a.failedCells == 1) "" else "s"})" else if (a.cancelled) " (cancelled, seed again)" else " (not finished, seed again)"; AreaLook.SEEDING -> " (not finished, seed again)" }, a.failedCells, SeedPalette.resolve(a.savedColour, i))
     }
 
     /** The legend: counts of what is drawn. Pause zones are counted by the caller's own list. */
@@ -230,10 +236,26 @@ data class SeedMapUiState(
     val rows: List<SeedAreaRow> = emptyList(),
     /** The header line above the list ("2 seeded areas · 120 places stored"); null while there are no areas. */
     val header: String? = null,
+    /** The tapped seeded area (highlighted on the map, its name drawn); null = none. */
+    val selectedId: String? = null,
+    /** Counts up on every row tap (a second tap on the same row re-fits); the screen scrolls to the map card and fits [focusBox] when it changes. */
+    val focusSeq: Int = 0,
+    /** The selected area's box grown by a small margin ([SeedFocus.fitBox]): what the map fits. No text shows it. */
+    val focusBox: DoubleArray? = null,
 )
 
+/** The pure part of "tap a seeded area": the box the map fits (the area plus a margin) and the row tap and map tap results. */
+object SeedFocus {
+    /** The share of the area's size added on every side so the outline is never against the map edge. */
+    const val MARGIN = 0.15
+    fun fitBox(box: DoubleArray): DoubleArray {
+        val dLat = (box[2] - box[0]).coerceAtLeast(1e-4) * MARGIN; val dLon = (box[3] - box[1]).coerceAtLeast(1e-4) * MARGIN
+        return doubleArrayOf((box[0] - dLat).coerceAtLeast(-90.0), (box[1] - dLon).coerceAtLeast(-180.0), (box[2] + dLat).coerceAtMost(90.0), (box[3] + dLon).coerceAtMost(180.0))
+    }
+}
+
 /** One row of the seeded-areas list: the line to show and the area id. No name of a place, no coordinates. */
-data class SeedAreaRow(val id: String, val text: String)
+data class SeedAreaRow(val id: String, val text: String, val colour: Int = 0)
 
 object SeedAreaList {
     const val ATTRIBUTION = "Place text from Wikipedia (CC BY-SA), Wikidata (CC0) and (c) OpenStreetMap contributors (ODbL). Licence names are from the projects' standard terms."
@@ -285,7 +307,7 @@ object SeedAreaList {
     }
     /** The progress area: every active seed, then every area that ended with failed cells (so a failure stays visible with its Retry button). */
     fun progress(areas: List<SeedAreaInfo>): List<SeedProgressRow> = areas.mapNotNull { x -> x.seed?.let { SeedProgressRow(x.id, it.text) } ?: x.takeIf { it.failedCells > 0 }?.let { SeedProgressRow(it.id, statusText(it), it.failedCells) } }
-    fun rows(areas: List<SeedAreaInfo>): List<SeedAreaRow> = areas.mapIndexed { i, a -> SeedAreaRow(a.id, row(i, a)) }
+    fun rows(areas: List<SeedAreaInfo>): List<SeedAreaRow> = areas.mapIndexed { i, a -> SeedAreaRow(a.id, row(i, a), SeedPalette.resolve(a.savedColour, i)) }
 }
 
 /** One line of the progress area: an active seed (Cancel) or a FAILED one ([failed] > 0: "Retry failed cells"). */
@@ -301,16 +323,33 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
     /** The raw areas (for fitting the map). */
     fun areaInfos(): List<SeedAreaInfo> = infos
 
+    /** A row tap: selects the area (highlight and name on the map) and asks the screen to scroll to the map and fit it. A second tap on the same row keeps it selected and fits again. */
+    fun focusArea(id: String) {
+        val a = infos.firstOrNull { it.id == id } ?: return
+        _state.update { it.copy(selectedId = id, focusBox = SeedFocus.fitBox(a.box), focusSeq = it.focusSeq + 1) }
+    }
+
+    /** A tap on the map background clears the highlight (the map keeps its view). */
+    fun clearFocus() = _state.update { if (it.selectedId == null) it else it.copy(selectedId = null, focusBox = null) }
+
+    /** The owner picked colour [index] (a palette index) for the area: saved, then the overlay and the row redraw in it. */
+    fun setColour(id: String, index: Int) {
+        if (index !in SeedPalette.colours.indices) return
+        viewModelScope.launch(work) { runCatching { control.setColour(id, index) }; refresh() }
+    }
+
     fun refresh() {
         viewModelScope.launch(work) {
             val a = runCatching { control.areas() }.getOrDefault(emptyList())
             val p = runCatching { control.pins() }.getOrDefault(emptyList())
             val r = runCatching { control.rates() }.getOrDefault(SeedRates.ROUGH)
             infos = a
-            _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, rates = r, pins = p, progress = SeedAreaList.progress(a)) }
+            _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, rates = r, pins = p, progress = SeedAreaList.progress(a)).keepSelection(a) }
             if (a.any { it.seed != null }) startPoll()
         }
     }
+
+    private fun SeedMapUiState.keepSelection(a: List<SeedAreaInfo>) = if (selectedId != null && a.none { it.id == selectedId }) copy(selectedId = null, focusBox = null) else this
 
     private var poll: kotlinx.coroutines.Job? = null
     /** While a background seed is active the rows are re-read every few seconds; it stops when none is (and with the screen: viewModelScope). */
@@ -320,7 +359,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             com.rokid.context.phone.ui.settings.seedTicks(POLL_MS).takeWhile {
                 val a = runCatching { control.areas() }.getOrDefault(emptyList())
                 infos = a
-                _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, progress = SeedAreaList.progress(a)) }
+                _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, progress = SeedAreaList.progress(a)).keepSelection(a) }
                 a.any { it.seed != null }
             }.collect {}
         }

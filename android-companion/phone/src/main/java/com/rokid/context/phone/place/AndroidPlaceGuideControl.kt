@@ -163,6 +163,8 @@ object SeedGate {
 /** The zones map's view of Place Guide: the seeded areas and pins to draw, and the existing seed path ([guide].seed, with its Offline only and Wi-Fi refusals) for a drawn box. */
 class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGuideControl) : com.rokid.context.phone.ui.settings.privacy.zones.SeedMapControl {
     private val seedWork by lazy { SeedWork(app) }
+    private val colours by lazy { com.rokid.context.phone.ui.settings.privacy.zones.SeedColourStore.of(app) }
+    override suspend fun setColour(id: String, index: Int) { colours.set(id, index) }
     override suspend fun areas(): List<com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo> {
         val pack = PlaceGraph.readyPack(app)
         runCatching { seedWork.reconcile(pack) } // an area marked seeding with no live work becomes partial
@@ -181,7 +183,7 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
             val stored = if (check) runCatching { pack.cellStatuses(box) }.getOrNull() else null
             val t = com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaList.truth(status, live != null, st?.phase, failed, wanted, stored)
             val noOsm = if (t.status == com.rokid.context.memory.place.AREA_DONE && stored == null) (st?.counts?.noOsm ?: 0) else t.noOsm
-            com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, t.status, it.name, live, stats[it.blueZoneId]?.places, stats[it.blueZoneId]?.bytes ?: 0, it.seededAt, t.failed, t.cancelled, noOsm)
+            com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, t.status, it.name, live, stats[it.blueZoneId]?.places, stats[it.blueZoneId]?.bytes ?: 0, it.seededAt, t.failed, t.cancelled, noOsm, savedColour = colours.get(it.blueZoneId))
         }
     }
     override suspend fun rates(): com.rokid.context.phone.ui.settings.privacy.zones.SeedRates {
@@ -206,7 +208,7 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
     override suspend fun rename(id: String, name: String?) = PlaceGraph.readyPack(app).setAreaName(id, name)
     override suspend fun pins() = guide.pinning?.pins().orEmpty().map { com.rokid.context.phone.ui.settings.privacy.zones.PinInfo(it.lat, it.lon, it.radiusM) }
     override suspend fun seed(box: GeoBox) = guide.seed(box)
-    override suspend fun remove(id: String, withPlaces: Boolean) { seedWork.cancel(id); PlaceGraph.readyPack(app).removeArea(id, withPlaces) }
+    override suspend fun remove(id: String, withPlaces: Boolean) { seedWork.cancel(id); PlaceGraph.readyPack(app).removeArea(id, withPlaces); colours.clear(id) }
     override suspend fun cellStatuses(box: GeoBox) = PlaceGraph.readyPack(app).cellStatuses(box)
 }
 
