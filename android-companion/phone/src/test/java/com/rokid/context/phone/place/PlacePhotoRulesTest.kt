@@ -28,7 +28,8 @@ class PlacePhotoRulesTest {
         assertTrue(c.contains("val HOSTS: Set<String> = setOf(UPLOAD_HOST)")); assertTrue(c.contains("const val UPLOAD_HOST = \"upload.wikimedia.org\""))
         assertTrue("https only", c.contains("u.protocol == \"https\" && u.host in PlaceImageRules.HOSTS && u.userInfo == null")); assertTrue(c.contains("c.instanceFollowRedirects = false"))
         val lits = Regex("\"https://[^\"/]*").findAll(code(named("PlaceImages.kt"))).map { it.value }.toSet()
-        assertEquals(setOf("\"https://\$wikidata", "\"https://\$wiki", "\"https://\$commons", "\"https://\${PlaceImageRules.COMMONS_HOST}"), lits)
+        // thumb.wikimedia.org is only the SOURCE of a rewrite to the upload host (Commons answers thumbnail links there); it is never downloaded from.
+        assertEquals(setOf("\"https://\$wikidata", "\"https://\$wiki", "\"https://\$commons", "\"https://\${PlaceImageRules.COMMONS_HOST}", "\"https://thumb.wikimedia.org", "\"https://\${PlaceImageRules.UPLOAD_HOST}"), lits)
     }
 
     @Test fun theEmbedWorkerRetriesTheWaitsInsteadOfFinishingWithWorkLeft() {
@@ -41,7 +42,7 @@ class PlacePhotoRulesTest {
         val w = code(named("PlacePhotoWorker.kt"))
         assertTrue("new name", w.contains("const val UNIQUE = \"place_photo_embed_v2\""))
         assertTrue("the old name is cancelled once", w.contains("const val LEGACY_UNIQUE = \"place_photo_embed\"") && w.contains("cancelUniqueWork(PlaceEmbedWorker.LEGACY_UNIQUE)"))
-        assertTrue("one line when it starts", w.contains("\"photo embed start\""))
+        assertTrue("one line when it starts", w.contains("\"photo embed start "))
     }
 
     @Test fun storedPhotosAndVectorsAreNeverReadByAModelCall() {
