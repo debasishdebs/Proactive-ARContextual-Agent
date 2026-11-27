@@ -140,7 +140,7 @@ object PlaceGraph {
         photoHttp = http
         val source = PlaceCellSource(WikipediaHttpSource(http), WikidataHttpSource(http), OverpassMirrorSource.default(http) { PcLog.i(TAG, it) }, extraTypes = { PlaceGuideSettings.of(app).extraTypes }, log = { PcLog.i(TAG, it) }) // counts and class names only
         val bulk = com.rokid.context.connectors.place.WikidataBulkSource(http, extraTypes = { PlaceGuideSettings.of(app).extraTypes }, log = { PcLog.i(TAG, it) }) // used only by a seed that asks for it (Developer flag bulkSeed, default ON)
-        return PlacePack(PlacesDatabase.build(app), source, budgetBytes = PlaceGuideSettings.of(app).budgetMb * 1024L * 1024L, log = { PcLog.i(TAG, it) }, net = guard, bulk = bulk)
+        return PlacePack(PlacesDatabase.build(app), source, budgetBytes = PlaceGuideSettings.of(app).budgetMb * 1024L * 1024L, log = { PcLog.i(TAG, it) }, net = guard, bulk = bulk, onPlacesRemoved = { p -> com.rokid.context.memory.place.PlaceRefSweep.links(com.rokid.context.memory.MemoryGraph.get(app).db, p) })
     }
 
     /** The seed summary's tail: network type token (no SSID), battery saver, data saver, the worker's state token. Numbers and fixed tokens only. */

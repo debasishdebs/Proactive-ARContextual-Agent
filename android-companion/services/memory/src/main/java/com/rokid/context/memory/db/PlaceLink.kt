@@ -28,6 +28,9 @@ abstract class PlaceLinkDao {
     /** INSERT OR IGNORE: one link per (place, Moment); a second photo of the same Moment does nothing. Returns the new rowid, or -1. */
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun insertIfAbsent(row: PlaceLinkEntity): Long
     @Query("SELECT COUNT(*) FROM place_link") abstract suspend fun count(): Int
+    /** Sweep: the places (not user pins, whose rows go with the pin) that have a pure REF link. */
+    @Query("SELECT DISTINCT placeId FROM place_link WHERE role = 'REF' AND placeId NOT LIKE 'user:%'") abstract suspend fun refPlaceIdsOfPack(): List<String>
+    @Query("DELETE FROM place_link WHERE role = 'REF' AND placeId IN (:ids)") abstract suspend fun deleteRefLinksOf(ids: List<String>): Int
     @Query("SELECT momentId FROM place_link WHERE placeId = :placeId ORDER BY atMs, momentId") abstract suspend fun momentIdsOf(placeId: String): List<String>
     /** The capture time of a photo (phone clock), or null when the photo row or its time is absent. */
     @Query("SELECT capturedAtMs FROM frame_meta WHERE frameId = :frameId") abstract suspend fun capturedAtOf(frameId: String): Long?

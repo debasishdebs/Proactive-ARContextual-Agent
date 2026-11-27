@@ -125,7 +125,13 @@ class PlacePack(
     private val net: PlaceNetGuard = PlaceNetGuard(log = log),
     /** The bulk discovery path (null = none): used only by a seed that asks for it ([seedArea]'s `bulk`). */
     private val bulk: BulkSource? = null,
+    /** Called AFTER places were deleted (area removal, Clear fetched, Delete all), outside the lock and the transaction: production drops the context.db `place_link` REF rows of places that are gone ([PlaceRefSweep]). A failure is ignored (the start-up sweep catches up). */
+    private val onPlacesRemoved: suspend (PlacePack) -> Unit = {},
 ) {
+    private suspend fun removed() { try { onPlacesRemoved(this) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (_: Exception) { } }
+    /** The ids among [ids] that still exist as a place (read only). */
+    suspend fun existingIds(ids: List<String>): Set<String> = chunked(ids.distinct()) { dao.byIds(it) }.map { it.id }.toSet()
+
     private val dao = db.dao()
 
     /** The budget in bytes: [setBudget] changes it (the Place Guide screen offers 25/50/100/200 MB). */
@@ -205,7 +211,7 @@ class PlacePack(
      * "Clear fetched places": removes the fetched places (not seeded, not pinned: user pins stay) and forgets the cells outside the seeded areas so those are fetched again. Recency is kept (unlike
      * [deleteAll]). Returns how many places were removed.
      */
-    suspend fun clearFetched(): Int = fetchLock.withLock { wipeEpoch.incrementAndGet(); db.withTransaction { clearFetchedLocked(resetRecency = false) } }
+    suspend fun clearFetched(): Int = fetchLock.withLock { wipeEpoch.incrementAndGet(); db.withTransaction { clearFetchedLocked(resetRecency = false) } }.also { removed() }
 
     /**
      * Makes the cell fresh when it is not, and says how it stands. One fetch at a time.
@@ -503,6 +509,7 @@ class PlacePack(
             }
             log("area removed remaining=$left places=$gone")
         }
+        removed()
     }
 
     /** C1: stores reference captions for places that exist (a caption for an unknown place is dropped). The caller has the user's explicit confirmation from seed time; nothing here runs on its own. Returns how many were stored. */
@@ -580,6 +587,7 @@ class PlacePack(
         fetchLock.withLock {
             db.withTransaction { clearFetchedLocked(resetRecency = true) }
         }
+        removed()
     }
 
     private suspend fun clearFetchedLocked(resetRecency: Boolean): Int {
