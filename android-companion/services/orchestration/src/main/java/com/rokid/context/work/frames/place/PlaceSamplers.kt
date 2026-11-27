@@ -161,6 +161,7 @@ object PlaceSamplers {
             ownRefs = refs::vectorsForAll, refsStillValid = refs::stillValid,
             centroids = { space, ids -> centroids.read(space, ids).byPin },
             storedVector = { id, space -> db().frameVectorDao().get(id, space)?.let { runCatching { com.rokid.context.memory.retrieval.VectorCodec.decode(it.blob) }.getOrNull() } },
+            webRefs = { space, ids -> PlaceGraph.pack(app).imageVectorsFor(ids, space) },
             glance = { id, space, windowMs -> glanceOf(db(), gate(), id, space, windowMs) },
             config = { PlaceGuideSettings.of(app).photoMatch },
             multiFrame = { if (!DeveloperFlags.placeMultiFrame(app)) null else com.rokid.context.memory.retrieval.MultiFrameConfig(mode = if (PlaceGuideSettings.of(app).bestOfK) com.rokid.context.memory.retrieval.QueryMode.BEST_OF_K else com.rokid.context.memory.retrieval.QueryMode.MEAN) },

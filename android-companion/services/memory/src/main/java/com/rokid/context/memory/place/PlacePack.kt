@@ -47,6 +47,9 @@ class BulkTooBig(why: String) : java.io.IOException(why)
 /** The seeded places in one area's box (S5). */
 data class AreaStats(val places: Int, val bytes: Long)
 
+/** B1: the reference photos for the budget screen: all rows, rows with a photo state OK, bytes (thumbnails + vectors) and the cap. */
+data class ImageStats(val rows: Int, val ok: Int, val bytes: Long, val capBytes: Long)
+
 data class PackStats(val pinned: Int, val seeded: Int, val fetched: Int, val bytes: Long, val budgetBytes: Long)
 
 /**
@@ -183,7 +186,7 @@ class PlacePack(
             val old = dao.userPlaces().associateBy { it.id }
             dao.putPlaces(good.map { it.toEntity(old[it.id]?.lastUsedDay ?: 0) })
             eachChunk(old.keys.filter { k -> good.none { it.id == k } }) { dao.deletePlaces(it) }
-            dao.deleteOrphanRefs()
+            dao.deleteOrphanRefs(); dao.deleteOrphanImages()
         }
         log("user places synced count=${good.size}")
     }
@@ -485,7 +488,7 @@ class PlacePack(
                 dao.clearSeeded()
                 val rest = dao.areas()
                 for (a in rest) for (c in Geohash5.cellsCovering(a.box)) Geohash5.bounds(c)?.let { dao.markSeeded(it.south, it.north, it.west, it.east) }
-                dao.deleteOrphanRefs()
+                dao.deleteOrphanRefs(); dao.deleteOrphanImages()
                 rest.size
             }
             log("area removed remaining=$left places=$gone")
@@ -506,6 +509,56 @@ class PlacePack(
     /** The ids that have a reference caption: the start-up sweep of `model_attribution` kind PLACE_REF keeps exactly these. */
     suspend fun refPlaceIds(): List<String> = dao.refPlaceIds()
 
+    // ---- B1: reference photos of seeded places (place_image). Nothing here fetches or embeds (B2). ----
+
+    /** Stores photo rows for places that exist (never a user pin); a row for an unknown place is dropped. Then trims to [IMAGE_CAP_BYTES]. Returns how many were stored. */
+    suspend fun putImages(rows: List<PlaceImageEntity>): Int = fetchLock.withLock {
+        db.withTransaction {
+            val known = chunked(rows.map { it.placeId }.distinct()) { dao.byIds(it) }.map { it.id }.filter { !UserPlace.isUserId(it) }.toSet()
+            val keep = rows.filter { it.placeId in known }
+            dao.putImages(keep)
+            trimImagesLocked(IMAGE_CAP_BYTES)
+            keep.size
+        }
+    }
+
+    suspend fun imagesOf(ids: List<String>): List<PlaceImageEntity> = chunked(ids) { dao.imagesOf(it) }
+    suspend fun imageStats(): ImageStats = ImageStats(dao.imageCount(), dao.imageOkCount(), dao.imageBytes(), IMAGE_CAP_BYTES)
+
+    /** The matcher's read: ONE decoded vector per place that has one in [space]; a vector whose length is not its stored dimension (or unreadable) is dropped. Read only, no lock. */
+    suspend fun imageVectorsFor(ids: List<String>, space: String): Map<String, FloatArray> {
+        val out = HashMap<String, FloatArray>()
+        chunked(ids.distinct()) { dao.vectorsFor(it, space) }.forEach { r ->
+            val v = runCatching { com.rokid.context.memory.retrieval.VectorCodec.decode(r.vector) }.getOrNull() ?: return@forEach
+            if (v.isNotEmpty() && (r.dim == null || r.dim == v.size)) out[r.placeId] = v
+        }
+        return out
+    }
+
+    /** Records the vector of a photo (the active space); false when the row is gone or has no photo state OK. */
+    suspend fun markEmbedded(id: String, space: String, vector: FloatArray, version: Int, at: Long): Boolean = fetchLock.withLock {
+        val blob = com.rokid.context.memory.retrieval.VectorCodec.encode(vector)
+        db.withTransaction { dao.markEmbedded(id, space, vector.size, blob, version, at, blob.size) > 0 }
+    }
+
+    suspend fun deleteImages(ids: List<String>): Int = fetchLock.withLock { db.withTransaction { var n = 0; eachChunk(ids) { n += dao.deleteImages(it) }; n } }
+    suspend fun needsFetch(space: String, maxTries: Int, limit: Int): List<String> = dao.needsFetch(space, maxTries, limit)
+    suspend fun needsEmbed(space: String, limit: Int): List<String> = dao.needsEmbed(space, limit)
+
+    /** Brings the photos under [capBytes]: the oldest thumbnails go first, and only those whose vector stays (so every place with a vector keeps its reference; a photo that has no vector yet is never trimmed). Returns how many thumbnails were dropped. */
+    suspend fun trimImages(capBytes: Long = IMAGE_CAP_BYTES): Int = fetchLock.withLock { db.withTransaction { trimImagesLocked(capBytes) } }
+
+    private suspend fun trimImagesLocked(capBytes: Long): Int {
+        var total = dao.imageBytes()
+        var dropped = 0
+        while (total > capBytes) {
+            val batch = dao.trimmable(EVICT_BATCH)
+            if (batch.isEmpty()) break
+            for (r in batch) { if (total <= capBytes) break; dao.dropThumbnail(r.placeId, r.vecBytes); total -= (r.bytes - r.vecBytes).coerceAtLeast(0); dropped++ }
+        }
+        return dropped
+    }
+
     suspend fun pin(id: String, pinned: Boolean): Boolean = dao.setPinned(id, pinned) > 0
 
     /**
@@ -522,7 +575,7 @@ class PlacePack(
     private suspend fun clearFetchedLocked(resetRecency: Boolean): Int {
         partialStreak.clear()
         val removed = dao.deleteFetched()
-        dao.deleteOrphanRefs()
+        dao.deleteOrphanRefs(); dao.deleteOrphanImages()
         if (resetRecency) dao.resetRecency()
         val areas = dao.areas().map { it.box }
         val stale = dao.cells().map { it.geohash5 }.filter { c -> val b = Geohash5.bounds(c); b == null || areas.none { it.intersects(b) } }
@@ -595,7 +648,7 @@ class PlacePack(
             val drop = ArrayList<PlaceEntity>()
             for (p in batch) { if (total <= budgetBytes) break; drop += p; total -= p.bytes }
             eachChunk(drop.map { it.id }) { dao.deletePlaces(it) }
-            dao.deleteOrphanRefs()
+            dao.deleteOrphanRefs(); dao.deleteOrphanImages()
             val cellsDropped = drop.map { Geohash5.encode(it.lat, it.lon) }.filter { it != keepCell }.distinct()
             eachChunk(cellsDropped) { dao.deleteCells(it) }
             cellsDropped.forEach { partialStreak.remove(it) } // an evicted cell is forgotten, with its backoff
@@ -643,6 +696,8 @@ class PlacePack(
         const val MAX_ATTEMPTS = 5
         fun retryBackoffMs(round: Int): Long = (RETRY_BACKOFF_MS shl (round - 1).coerceIn(0, 10)).coerceAtMost(RETRY_BACKOFF_MAX_MS)
         private const val EVICT_BATCH = 200
+        /** Decision D2: the reference photos (thumbnails + vectors) may take 250 MB in total. */
+        const val IMAGE_CAP_BYTES = 250L * 1024 * 1024
         private const val SQL_CHUNK = 500
 
         fun sizeOf(p: PlaceEntity): Int =

@@ -66,7 +66,7 @@ class PlacesMigration2To3Test {
     @Test fun theUpgradedFileOpensThroughRoomWithTheProductionMigrationList() = runBlocking {
         helper.createDatabase(name, 2).use { seedPack(it) }
         val ctx = ApplicationProvider.getApplicationContext<Context>()
-        val room = Room.databaseBuilder(ctx, PlacesDatabase::class.java, name).addMigrations(PlacesDatabase.MIGRATION_PLACES_1_2, PlacesDatabase.MIGRATION_PLACES_2_3).allowMainThreadQueries().build()
+        val room = Room.databaseBuilder(ctx, PlacesDatabase::class.java, name).addMigrations(PlacesDatabase.MIGRATION_PLACES_1_2, PlacesDatabase.MIGRATION_PLACES_2_3, PlacesDatabase.MIGRATION_PLACES_3_4).allowMainThreadQueries().build()
         try { assertEquals(2, room.dao().placeCount()); assertEquals(1, room.dao().cells().size); assertEquals(1, room.dao().areas().size); assertEquals(null, room.dao().areas().single().name); assertEquals(1, room.dao().setAreaName("z1", "Fort")); assertEquals("Fort", room.dao().areaName("z1")) } finally { room.close() }
     }
 }

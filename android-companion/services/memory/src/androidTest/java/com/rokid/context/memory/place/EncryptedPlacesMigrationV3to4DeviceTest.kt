@@ -1,0 +1,85 @@
+package com.rokid.context.memory.place
+
+import androidx.room.Room
+import androidx.room.testing.MigrationTestHelper
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.rokid.context.memory.DbKeyStore
+import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.memory.db.EncryptionMigrator
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.io.File
+
+/**
+ * places.db v3 -> v4 (B1, `place_image`) on a REAL ENCRYPTED file (SQLCipher, Keystore-backed key), inside the androidTest APK sandbox only. The v3 file (the shape installed on the owner's phone) is built from the exported `3.json` with representative synthetic rows
+ * (seeded places, a pinned user place as the pins mirror, a cell, an area; reference captions included); the result is validated against `4.json` and reopened through Room with the production migration list. Emulator only.
+ */
+@RunWith(AndroidJUnit4::class)
+class EncryptedPlacesMigrationV3to4DeviceTest {
+    private val inst = InstrumentationRegistry.getInstrumentation()
+    private val ctx = inst.targetContext
+    private val name = "enc-places-migration-34.db"
+    private val file: File get() = ctx.getDatabasePath(name)
+    private val key: ByteArray by lazy { DbKeyStore.passphrase(ctx) }
+
+    @get:Rule val helper = MigrationTestHelper(inst, PlacesDatabase::class.java, emptyList(), SupportOpenHelperFactory(DbKeyStore.passphrase(InstrumentationRegistry.getInstrumentation().targetContext).also { System.loadLibrary("sqlcipher") }))
+
+    @Before fun guardAndClean() { check(ctx.packageName.endsWith(".test")) { "refusing to run outside the androidTest APK sandbox" }; clean() }
+    @After fun cleanUp() { if (ctx.packageName.endsWith(".test")) clean() }
+    private fun clean() { listOf("", "-wal", "-shm", "-journal").forEach { File(file.path + it).delete() } }
+    private fun assertEncryptedOnDisk() { assertFalse("the file must not be plaintext SQLite", EncryptionMigrator.isPlaintextSqlite(file)); assertTrue(file.length() > 0) }
+
+    private fun count(db: SupportSQLiteDatabase, t: String) = db.query("SELECT COUNT(*) FROM `$t`").use { it.moveToFirst(); it.getInt(0) }
+    private fun tables(db: SupportSQLiteDatabase) = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('android_metadata','room_master_table')").use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
+
+    private fun seed(db: SupportSQLiteDatabase) {
+        for (i in 1..5) db.execSQL("INSERT INTO place (id,parentId,name,kind,lat,lon,radiusM,summary,source,sourceRev,fetchedAt,seeded,pinned,lastUsedDay,bytes) VALUES ('wd:Q$i',NULL,'Site $i','monument',1.5,2.5,100,'Summary $i','wikidata','r1',111,1,0,0,10)")
+        for (i in 1..2) db.execSQL("INSERT INTO place (id,parentId,name,kind,lat,lon,radiusM,summary,source,sourceRev,fetchedAt,seeded,pinned,lastUsedDay,bytes) VALUES ('user:00000000-0000-0000-0000-00000000000$i','wd:Q1','Pin $i','room',1.5,2.5,10,'','user','',112,0,1,0,5)")
+        db.execSQL("INSERT INTO cell (geohash5,fetchedAt,status) VALUES ('s0000',222,'OK')")
+        db.execSQL("INSERT INTO area (blueZoneId,south,west,north,east,seededAt,status) VALUES ('z1',1.0,2.0,3.0,4.0,333,'DONE')")
+        db.execSQL("UPDATE area SET name = 'Old town'")
+        db.execSQL("INSERT INTO place_ref (placeId,caption,imageUrl,author,licence,capturedAt,bytes) VALUES ('wd:Q1','a stone gate',NULL,NULL,NULL,1,12)")
+    }
+
+    @Test fun encryptedV3UpgradesToV4KeepingThePackAndIsIdempotent() = runBlocking(Dispatchers.IO) {
+        helper.createDatabase(name, 3).use { seed(it) }
+        assertEncryptedOnDisk()
+        val v4 = helper.runMigrationsAndValidate(name, 4, true, PlacesDatabase.MIGRATION_PLACES_3_4) // validated against the exported 4.json
+        assertEquals(7, count(v4, "place")); assertEquals(1, count(v4, "cell")); assertEquals(1, count(v4, "area")); assertEquals(1, count(v4, "place_ref"))
+        assertEquals(2, v4.query("SELECT COUNT(*) FROM place WHERE pinned = 1").use { it.moveToFirst(); it.getInt(0) })
+        v4.query("SELECT name FROM place WHERE id = 'user:00000000-0000-0000-0000-000000000002'").use { assertTrue(it.moveToFirst()); assertEquals("Pin 2", it.getString(0)) }
+        v4.query("SELECT name FROM area").use { assertTrue(it.moveToFirst()); assertEquals("Old town", it.getString(0)) }
+        assertEquals(setOf("place", "cell", "area", "place_ref", "place_image"), tables(v4)); assertEquals(0, count(v4, "place_image"))
+        assertEquals("ok", v4.query("PRAGMA integrity_check").use { it.moveToFirst(); it.getString(0) })
+        PlacesDatabase.MIGRATION_PLACES_3_4.migrate(v4) // a retried upgrade is a no-op
+        assertEquals(0, count(v4, "place_image")); assertEquals(7, count(v4, "place"))
+        v4.close(); assertEncryptedOnDisk()
+
+        repeat(2) {
+            val db = Room.databaseBuilder(ctx, PlacesDatabase::class.java, name)
+                .openHelperFactory(DatabaseFactory.ensureOpenParams({ key.copyOf() }))
+                .addMigrations(PlacesDatabase.MIGRATION_PLACES_1_2, PlacesDatabase.MIGRATION_PLACES_2_3, PlacesDatabase.MIGRATION_PLACES_3_4).build()
+            try {
+                assertEquals(4, db.openHelper.writableDatabase.version)
+                runBlocking {
+                    assertEquals(7, db.dao().placeCount()); assertEquals(2, db.dao().pinnedCount()); assertEquals(1, db.dao().cells().size); assertEquals(1, db.dao().areas().size); assertEquals(1, db.dao().refCount())
+                    assertEquals(0, db.dao().imageCount())
+                    db.dao().putImages(listOf(PlaceImageEntity("wd:Q1", ImageState.OK, 0, ByteArray(8) { 1 }, 330, 220, null, null, null, null, null, "sp", 2, ByteArray(8), 1, 5, 6, 16)))
+                    assertEquals(1, db.dao().vectorsFor(listOf("wd:Q1"), "sp").size); assertEquals(1, db.dao().deleteImages(listOf("wd:Q1")))
+                }
+            } finally { db.close() }
+            assertEncryptedOnDisk()
+        }
+    }
+}

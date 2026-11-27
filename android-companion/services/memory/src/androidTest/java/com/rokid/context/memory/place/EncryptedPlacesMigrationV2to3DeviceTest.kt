@@ -66,9 +66,9 @@ class EncryptedPlacesMigrationV2to3DeviceTest {
         repeat(2) {
             val db = Room.databaseBuilder(ctx, PlacesDatabase::class.java, name)
                 .openHelperFactory(DatabaseFactory.ensureOpenParams({ key.copyOf() }))
-                .addMigrations(PlacesDatabase.MIGRATION_PLACES_1_2, PlacesDatabase.MIGRATION_PLACES_2_3).build()
+                .addMigrations(PlacesDatabase.MIGRATION_PLACES_1_2, PlacesDatabase.MIGRATION_PLACES_2_3, PlacesDatabase.MIGRATION_PLACES_3_4).build()
             try {
-                assertEquals(3, db.openHelper.writableDatabase.version)
+                assertEquals(4, db.openHelper.writableDatabase.version) // the production list now ends at v4: this is the v2 -> v3 -> v4 chain from an old phone
                 runBlocking {
                     assertEquals(7, db.dao().placeCount()); assertEquals(2, db.dao().pinnedCount()); assertEquals(1, db.dao().cells().size); assertEquals(1, db.dao().areas().size)
                     assertEquals(1, db.dao().setAreaName("z1", "Fort"))

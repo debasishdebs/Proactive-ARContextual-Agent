@@ -95,6 +95,7 @@ object DeletionGraph {
         s("place", "fetched places (public text) are deleted by Delete all and their recency reset; seeded areas, what they seeded and pinned places stay (`PlacePack.deleteAll`)"),
         s("cell", "fetched 5 km cells: Delete all removes the cells that no seeded area covers"),
         s("place_ref", "reference captions of pack places (public-image text and credit, written only after the user confirmed at seed time): deleted with their place on every place delete (evict, Clear fetched, Delete all for fetched places, area removal with its places, pin removal); a seeded place keeps its caption"),
+        s("place_image", "public reference photos of seeded places (a 330 px Wikimedia thumbnail, its credit and its vector; no visit, no user photo): deleted with their place on every place delete (evict, Clear fetched, Delete all for fetched places, area removal with its places, pin removal); a seeded place keeps its photo through Delete all"),
         k("area", "seeded download areas (a bounding box and a state): the user's own download choice; Delete all keeps them"),
     )
 

@@ -22,7 +22,7 @@ class FamilyInventoryTest {
     private val placeTables = tablesOf("com.rokid.context.memory.place.PlacesDatabase")
     private val all = contextTables + placeTables
 
-    @Test fun theScanFindsBothDatabases() { assertTrue(contextTables.size >= 50); assertEquals(setOf("place", "cell", "area", "place_ref"), placeTables.toSet()); assertTrue("place_card_log is in context.db (v18)", "place_card_log" in contextTables) }
+    @Test fun theScanFindsBothDatabases() { assertTrue(contextTables.size >= 50); assertEquals(setOf("place", "cell", "area", "place_ref", "place_image"), placeTables.toSet()); assertTrue("place_card_log is in context.db (v18)", "place_card_log" in contextTables) }
 
     @Test fun everyTableHasExactlyOneOwner() {
         val owners = all.associateWith { t -> Families.ALL.filter { t in it.tables }.map { it.family } }
@@ -59,12 +59,12 @@ class FamilyInventoryTest {
     // ---- the Place Guide surface (places.db, the pause zones, the published card) ----
 
     @Test fun thePlacePackIsNotPhotoDerivedAndDeleteAllKeepsItsSeededAreas() {
-        assertEquals(Family.PLACE_PACK, Families.ownerOfTable("place")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("cell")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("area")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("place_ref"))
+        assertEquals(Family.PLACE_PACK, Families.ownerOfTable("place")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("cell")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("area")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("place_ref")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("place_image"))
         assertEquals(Family.PLACE_HISTORY, Families.ownerOfTable("place_card_log"))
         assertEquals(Family.SCENE_CENTROID, Families.ownerOfTable("scene_centroid"))
         assertEquals(Family.MODEL_ATTRIBUTION, Families.ownerOfTable("model_attribution"))
         val fate = DeletionGraph.TABLES.associate { it.name to it.fate }
-        assertEquals("fetched places and recency are cleared", DeletionGraph.Fate.SCRUBBED, fate["place"]); assertEquals(DeletionGraph.Fate.SCRUBBED, fate["cell"]); assertEquals("reference captions go with their fetched place", DeletionGraph.Fate.SCRUBBED, fate["place_ref"])
+        assertEquals("fetched places and recency are cleared", DeletionGraph.Fate.SCRUBBED, fate["place"]); assertEquals(DeletionGraph.Fate.SCRUBBED, fate["cell"]); assertEquals("reference captions go with their fetched place", DeletionGraph.Fate.SCRUBBED, fate["place_ref"]); assertEquals("reference photos go with their fetched place, seeded ones stay", DeletionGraph.Fate.SCRUBBED, fate["place_image"])
         assertEquals("seeded areas are kept", DeletionGraph.Fate.KEPT, fate["area"])
         assertEquals("the card history is WIPED by Delete all (context.db v18, WP3)", DeletionGraph.Fate.WIPED, fate["place_card_log"])
     }

@@ -75,6 +75,55 @@ data class PlaceRefEntity(
     val bytes: Int,
 )
 
+/** The states of a [PlaceImageEntity] row (stored as text). */
+object ImageState {
+    /** A thumbnail was fetched (it may have been trimmed later, see [PlaceImageEntity.jpeg]). */
+    const val OK = "OK"
+    /** No free photo exists for this place. */
+    const val NONE = "NONE"
+    /** Not stored on purpose (kind, mime, licence, size, cap). */
+    const val SKIPPED = "SKIPPED"
+    /** The fetch failed; [PlaceImageEntity.tries] counts the attempts. */
+    const val FAILED = "FAILED"
+}
+
+/**
+ * B1 (design 2026-11-27 section 4.2, owner decisions D1-D4): the PUBLIC reference photo of a seeded place, for offline matching only (Layer 1, kind WEB). A 330 px JPEG thumbnail of a free-licence Wikipedia/Commons file, its credit
+ * ([author], [licence], [licenceUrl], [filePage] = the public Commons file page) and the vector of that thumbnail in the ACTIVE image space ([space], [dim], [vecVersion]; replaced when the space changes). No visit, no user photo, no name, no
+ * coordinate (the place row has those). [bytes] = thumbnail + vector, what the 250 MB cap counts. Deleted with its place on every place delete ([PlacesDao.deleteOrphanImages]); a thumbnail trimmed by the cap keeps its vector ([jpeg] null).
+ * ByteArray fields: row identity is [placeId] (the primary key), so equality is by key only.
+ */
+@Entity(tableName = "place_image")
+class PlaceImageEntity(
+    @PrimaryKey val placeId: String,
+    val status: String,
+    val tries: Int,
+    val jpeg: ByteArray?,
+    val width: Int?,
+    val height: Int?,
+    val sha1: String?,
+    val filePage: String?,
+    val author: String?,
+    val licence: String?,
+    val licenceUrl: String?,
+    val space: String?,
+    val dim: Int?,
+    val vector: ByteArray?,
+    val vecVersion: Int?,
+    val embeddedAt: Long?,
+    val fetchedAt: Long,
+    val bytes: Int,
+) {
+    override fun equals(other: Any?) = other is PlaceImageEntity && other.placeId == placeId
+    override fun hashCode() = placeId.hashCode()
+}
+
+/** The vector of one place's reference photo, as stored (decode with `VectorCodec`). */
+class PlaceImageVector(val placeId: String, val vector: ByteArray, val dim: Int?)
+
+/** What the cap trim looks at: a row that has a thumbnail AND a vector (its thumbnail may go, its vector stays). */
+class PlaceImageTrimRow(val placeId: String, val bytes: Int, val vecBytes: Int)
+
 /** The delivery states of a history row (stored as text). Later states (SHOWN, SKIPPED_*) are reserved for a glasses report. */
 object CardDelivery {
     const val PENDING = "PENDING"
@@ -148,6 +197,29 @@ interface PlacesDao {
     @Query("DELETE FROM place_ref WHERE placeId NOT IN (SELECT id FROM place)") suspend fun deleteOrphanRefs(): Int
     @Query("DELETE FROM place_ref WHERE placeId IN (:ids)") suspend fun deleteRefs(ids: List<String>): Int
 
+    // ---- B1: reference photos (place_image) ----
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putImages(rows: List<PlaceImageEntity>)
+    @Query("SELECT * FROM place_image WHERE placeId IN (:ids)") suspend fun imagesOf(ids: List<String>): List<PlaceImageEntity>
+    @Query("SELECT COUNT(*) FROM place_image") suspend fun imageCount(): Int
+    /** Rows that hold a thumbnail or a vector (not the NONE/SKIPPED/FAILED markers). */
+    @Query("SELECT COUNT(*) FROM place_image WHERE status = 'OK'") suspend fun imageOkCount(): Int
+    @Query("SELECT COALESCE(SUM(bytes), 0) FROM place_image") suspend fun imageBytes(): Long
+    /** The matcher's read: the vectors of [space] for these places (a row of another space, or without a vector, is not returned). */
+    @Query("SELECT placeId, vector, dim FROM place_image WHERE placeId IN (:ids) AND space = :space AND vector IS NOT NULL") suspend fun vectorsFor(ids: List<String>, space: String): List<PlaceImageVector>
+    @Query("UPDATE place_image SET space = :space, dim = :dim, vector = :vector, vecVersion = :version, embeddedAt = :at, bytes = bytes - COALESCE(LENGTH(vector), 0) + :vecBytes WHERE placeId = :id AND status = 'OK'")
+    suspend fun markEmbedded(id: String, space: String, dim: Int, vector: ByteArray, version: Int, at: Long, vecBytes: Int): Int
+    @Query("DELETE FROM place_image WHERE placeId IN (:ids)") suspend fun deleteImages(ids: List<String>): Int
+    /** Removes the reference photos whose place is gone. Run in the same transaction as every place delete (evict, clear fetched, area removal, pin removal). */
+    @Query("DELETE FROM place_image WHERE placeId NOT IN (SELECT id FROM place)") suspend fun deleteOrphanImages(): Int
+    /** Oldest first: the rows whose thumbnail can go because their vector stays. */
+    @Query("SELECT placeId, bytes, COALESCE(LENGTH(vector), 0) AS vecBytes FROM place_image WHERE jpeg IS NOT NULL AND vector IS NOT NULL ORDER BY fetchedAt ASC, placeId ASC LIMIT :n") suspend fun trimmable(n: Int): List<PlaceImageTrimRow>
+    @Query("UPDATE place_image SET jpeg = NULL, bytes = :newBytes WHERE placeId = :id") suspend fun dropThumbnail(id: String, newBytes: Int): Int
+    /** Seeded places (never user pins) with no photo row yet, a FAILED row with tries left, or a trimmed thumbnail whose vector is missing or of another space: the fetch worker's queue (B2). */
+    @Query("SELECT p.id FROM place p LEFT JOIN place_image i ON i.placeId = p.id WHERE p.seeded = 1 AND substr(p.id, 1, 5) <> 'user:' AND (i.placeId IS NULL OR (i.status = 'FAILED' AND i.tries < :maxTries) OR (i.status = 'OK' AND i.jpeg IS NULL AND (i.vector IS NULL OR i.space IS NOT :space))) ORDER BY p.id LIMIT :n")
+    suspend fun needsFetch(space: String, maxTries: Int, n: Int): List<String>
+    /** Rows with a thumbnail and no vector of the active [space] yet: the embed worker's queue (B2). */
+    @Query("SELECT placeId FROM place_image WHERE status = 'OK' AND jpeg IS NOT NULL AND (vector IS NULL OR space IS NOT :space) ORDER BY fetchedAt ASC, placeId ASC LIMIT :n") suspend fun needsEmbed(space: String, n: Int): List<String>
+
     @Query("SELECT * FROM cell WHERE geohash5 = :cell") suspend fun cell(cell: String): CellEntity?
     @Query("SELECT * FROM cell") suspend fun cells(): List<CellEntity>
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putCell(row: CellEntity)
@@ -162,10 +234,10 @@ interface PlacesDao {
 }
 
 /**
- * The place pack's own database (spec 2026-11-16 §B3): `places.db`, Room v3 (v1 -> v2 added `place_card_log`, [MIGRATION_PLACES_1_2]; v2 -> v3 drops it again, [MIGRATION_PLACES_2_3]: the card history lives in `context.db` v18), separate from the main `context.db`. Encrypted with SQLCipher under the SAME key as the
+ * The place pack's own database (spec 2026-11-16 §B3): `places.db`, Room v4 (v3 -> v4 adds `place_image`, [MIGRATION_PLACES_3_4]; v1 -> v2 added `place_card_log`, [MIGRATION_PLACES_1_2]; v2 -> v3 drops it again, [MIGRATION_PLACES_2_3]: the card history lives in `context.db` v18), separate from the main `context.db`. Encrypted with SQLCipher under the SAME key as the
  * main database ([DbKeyStore]). It holds public place text only, never a position or a visit; it is excluded from backup and transfer (BackupRulesTest) and is never part of a settings export.
  */
-@Database(entities = [PlaceEntity::class, CellEntity::class, AreaEntity::class, PlaceRefEntity::class], version = 3, exportSchema = true)
+@Database(entities = [PlaceEntity::class, CellEntity::class, AreaEntity::class, PlaceRefEntity::class, PlaceImageEntity::class], version = 4, exportSchema = true)
 abstract class PlacesDatabase : RoomDatabase() {
     abstract fun dao(): PlacesDao
 
@@ -193,11 +265,21 @@ abstract class PlacesDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v3 -> v4 (B1, layered place confirmation): ONE additive table `place_image` (reference photos of seeded places, empty on every phone until the fetch phase B2 runs). CREATE TABLE IF NOT EXISTS: idempotent, no data rewrite, no existing table or index touched, no destructive fallback. The SQL equals the exported 4.json.
+         * Runs on the INSTALLED SQLCipher file at first open of this build; the encrypted path is rehearsed on the emulator only.
+         */
+        val MIGRATION_PLACES_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `place_image` (`placeId` TEXT NOT NULL, `status` TEXT NOT NULL, `tries` INTEGER NOT NULL, `jpeg` BLOB, `width` INTEGER, `height` INTEGER, `sha1` TEXT, `filePage` TEXT, `author` TEXT, `licence` TEXT, `licenceUrl` TEXT, `space` TEXT, `dim` INTEGER, `vector` BLOB, `vecVersion` INTEGER, `embeddedAt` INTEGER, `fetchedAt` INTEGER NOT NULL, `bytes` INTEGER NOT NULL, PRIMARY KEY(`placeId`))")
+            }
+        }
+
         /** The app's pack database: opened lazily, encrypted, never on Main (the Keystore is read at first open). */
         fun build(context: Context, passphrase: () -> ByteArray = { DbKeyStore.passphrase(context) }): PlacesDatabase =
             Room.databaseBuilder(context.applicationContext, PlacesDatabase::class.java, NAME)
                 .openHelperFactory(DeferredOpenHelperFactory({ true }, passphrase))
-                .addMigrations(MIGRATION_PLACES_1_2, MIGRATION_PLACES_2_3)
+                .addMigrations(MIGRATION_PLACES_1_2, MIGRATION_PLACES_2_3, MIGRATION_PLACES_3_4)
                 .build()
 
         fun inMemory(context: Context): PlacesDatabase =
