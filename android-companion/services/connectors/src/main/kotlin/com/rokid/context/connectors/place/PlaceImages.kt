@@ -143,7 +143,8 @@ class PlaceImageHttpSource(private val http: PlaceHttp, private val wiki: String
                 val name = canonicalFile(title)
                 val page = info["descriptionurl"].str()?.takeIf { runCatching { java.net.URL(it) }.getOrNull()?.let { u -> u.protocol == "https" && u.host == PlaceImageRules.COMMONS_HOST } == true }
                     ?: "https://${PlaceImageRules.COMMONS_HOST}/wiki/File:" + name.replace(' ', '_')
-                val thumb = info["thumburl"].str()?.takeIf { runCatching { java.net.URL(it) }.getOrNull()?.let { u -> u.protocol == "https" && u.host == PlaceImageRules.UPLOAD_HOST } == true }
+                // Commons now answers thumbnail links on thumb.wikimedia.org; the same path is served by the upload host, which stays the only host we download from.
+                val thumb = info["thumburl"].str()?.let { if (it.startsWith("https://thumb.wikimedia.org/")) "https://${PlaceImageRules.UPLOAD_HOST}/" + it.removePrefix("https://thumb.wikimedia.org/") else it }?.takeIf { runCatching { java.net.URL(it) }.getOrNull()?.let { u -> u.protocol == "https" && u.host == PlaceImageRules.UPLOAD_HOST } == true }
                 val licence = m("LicenseShortName")
                 out[name] = CommonsFile(name, thumb, info["mime"].str(), page, PlaceImageLicence.plain(m("Artist")), licence?.take(60), PlaceImageLicence.safeUrl(m("LicenseUrl")), PlaceImageLicence.isFree(licence, m("NonFree")))
             }
