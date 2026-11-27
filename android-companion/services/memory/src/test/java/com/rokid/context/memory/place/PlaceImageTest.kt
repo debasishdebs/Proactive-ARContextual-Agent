@@ -58,6 +58,21 @@ class PlaceImageTest {
         assertTrue(p.imageVectorsFor(listOf("wd:Q1"), "sp").isEmpty())
     }
 
+    @Test fun theMatchedCountIsPerAreaNotForTheWholePhone() = run {
+        val p = pack()
+        // area A around (lat, lon), area B about 1 degree north: two seeded places with a photo in each; only A's are matched
+        db.dao().putPlaces(listOf(place("wd:QA1"), place("wd:QA2"), place("wd:QB1", la = lat + 1.0), place("wd:QB2", la = lat + 1.0)))
+        db.dao().putArea(AreaEntity("A", lat - 0.1, lon - 0.1, lat + 0.1, lon + 0.1, 1L, AREA_DONE))
+        db.dao().putArea(AreaEntity("B", lat + 0.9, lon - 0.1, lat + 1.1, lon + 0.1, 1L, AREA_DONE))
+        p.putImages(listOf(img("wd:QA1"), img("wd:QA2"), img("wd:QB1"), img("wd:QB2")))
+        assertTrue(p.markEmbedded("wd:QA1", "sp", floatArrayOf(1f, 0f), 1, 5)); assertTrue(p.markEmbedded("wd:QA2", "sp", floatArrayOf(0f, 1f), 1, 5))
+        val st = p.areaStats("sp")
+        assertEquals(2, st.getValue("A").photoOk); assertEquals(2, st.getValue("A").photoMatched)
+        assertEquals(2, st.getValue("B").photoOk); assertEquals("B has nothing matched yet", 0, st.getValue("B").photoMatched)
+        assertEquals("another space matches nothing", 0, p.areaStats("other").getValue("A").photoMatched)
+        assertEquals("no space known: nothing counted as matched", 0, p.areaStats(null).getValue("A").photoMatched)
+    }
+
     @Test fun markEmbeddedStoresTheVectorAndCountsItsBytes() = run {
         val p = pack(); db.dao().putPlaces(listOf(place("wd:Q1"), place("wd:Q2")))
         p.putImages(listOf(img("wd:Q1", jpegLen = 100), img("wd:Q2", jpegLen = 0, status = ImageState.NONE)))

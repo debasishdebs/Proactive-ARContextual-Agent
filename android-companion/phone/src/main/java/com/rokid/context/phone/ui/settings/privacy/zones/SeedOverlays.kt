@@ -46,7 +46,7 @@ data class SeedAreaInfo(val id: String, val south: Double, val west: Double, val
 }
 
 /** B2: [ok] places with a photo, [none] without one (none free, skipped or failed for good) of [total] seeded places; [note] = why the rest waits (null = nothing to say). */
-data class AreaPhotos(val ok: Int, val none: Int, val total: Int, val note: String? = null, /** Downloaded photos already matched, of all downloaded photos on the phone (counts only). */ val matched: Int = 0, val toMatch: Int = 0) {
+data class AreaPhotos(val ok: Int, val none: Int, val total: Int, val note: String? = null, /** Of this area's downloaded photos, how many are already matched (counts only). */ val matched: Int = 0, val toMatch: Int = 0) {
     val done: Int get() = (ok + none).coerceAtMost(total)
     val complete: Boolean get() = total <= 0 || done >= total
     val matching: Boolean get() = complete && toMatch > 0 && matched < toMatch

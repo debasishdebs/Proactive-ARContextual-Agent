@@ -45,7 +45,7 @@ class BulkTooBig(why: String) : java.io.IOException(why)
 
 /** The pack as the budget screen shows it. [pinned] counts user pins; [seeded] and [fetched] exclude pinned rows. */
 /** The seeded places in one area's box (S5). */
-data class AreaStats(val places: Int, val bytes: Long, /** B2: reference photos of this area's seeded places: with a photo, and without one (none free, skipped or failed for good). The rest are still waiting. */ val photoOk: Int = 0, val photoNone: Int = 0)
+data class AreaStats(val places: Int, val bytes: Long, /** B2: reference photos of this area's seeded places: with a photo, and without one (none free, skipped or failed for good). The rest are still waiting. */ val photoOk: Int = 0, val photoNone: Int = 0, /** Of [photoOk], how many already have a vector in the active image space (this area only). */ val photoMatched: Int = 0)
 
 /** B2: seeded places [seeded], those with a photo [ok] and those without one for good [none]. */
 data class PhotoTotals(val seeded: Int, val ok: Int, val none: Int) { val waiting: Int get() = (seeded - ok - none).coerceAtLeast(0) }
@@ -156,10 +156,12 @@ class PlacePack(
     suspend fun areas(): List<AreaEntity> = dao.areas()
 
     /** S5: per area id, how many seeded places lie in its box and their text bytes (read only, from places.db, no network). User pins are not counted. */
-    suspend fun areaStats(): Map<String, AreaStats> = dao.areas().associate { a ->
+    suspend fun areaStats(space: String? = null): Map<String, AreaStats> = dao.areas().associate { a ->
         val ps = dao.inBox(a.south, a.north, a.west, a.east).filter { it.seeded && !it.id.startsWith("user:") }
         val st = dao.imageStatusIn(a.south, a.north, a.west, a.east).associate { it.status to it.n }
-        a.blueZoneId to AreaStats(ps.size, ps.sumOf { it.bytes.toLong() }, st[ImageState.OK] ?: 0, (st[ImageState.NONE] ?: 0) + (st[ImageState.SKIPPED] ?: 0) + (st[ImageState.FAILED] ?: 0))
+        val ok = st[ImageState.OK] ?: 0
+        val matched = if (space == null || ok == 0) 0 else dao.imageMatchedIn(space, a.south, a.north, a.west, a.east).coerceIn(0, ok)
+        a.blueZoneId to AreaStats(ps.size, ps.sumOf { it.bytes.toLong() }, ok, (st[ImageState.NONE] ?: 0) + (st[ImageState.SKIPPED] ?: 0) + (st[ImageState.FAILED] ?: 0), matched)
     }
 
     /** B2: all seeded places (never a user pin) and how many of them have a photo / have none, for the budget line and the phase's "N of M". Read only. */

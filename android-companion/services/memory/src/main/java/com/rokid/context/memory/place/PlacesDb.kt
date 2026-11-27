@@ -213,6 +213,9 @@ interface PlacesDao {
     suspend fun markEmbedded(id: String, space: String, dim: Int, vector: ByteArray, version: Int, at: Long, vecBytes: Int): Int
     @Query("SELECT i.status AS status, COUNT(*) AS n FROM place p JOIN place_image i ON i.placeId = p.id WHERE p.seeded = 1 AND substr(p.id, 1, 5) <> 'user:' AND p.lat BETWEEN :south AND :north AND p.lon BETWEEN :west AND :east GROUP BY i.status")
     suspend fun imageStatusIn(south: Double, north: Double, west: Double, east: Double): List<ImageStatusCount>
+    /** Photos of the seeded places in a box that already have a vector in [space] (the per-area "matched" count). */
+    @Query("SELECT COUNT(*) FROM place p JOIN place_image i ON i.placeId = p.id WHERE p.seeded = 1 AND substr(p.id, 1, 5) <> 'user:' AND p.lat BETWEEN :south AND :north AND p.lon BETWEEN :west AND :east AND i.status = 'OK' AND i.jpeg IS NOT NULL AND i.vector IS NOT NULL AND i.space = :space")
+    suspend fun imageMatchedIn(space: String, south: Double, north: Double, west: Double, east: Double): Int
     @Query("SELECT i.status AS status, COUNT(*) AS n FROM place p JOIN place_image i ON i.placeId = p.id WHERE p.seeded = 1 AND substr(p.id, 1, 5) <> 'user:' GROUP BY i.status") suspend fun imageStatusAll(): List<ImageStatusCount>
     @Query("SELECT COUNT(*) FROM place WHERE seeded = 1 AND substr(id, 1, 5) <> 'user:'") suspend fun photoSeededCount(): Int
     @Query("DELETE FROM place_image WHERE placeId IN (:ids)") suspend fun deleteImages(ids: List<String>): Int
