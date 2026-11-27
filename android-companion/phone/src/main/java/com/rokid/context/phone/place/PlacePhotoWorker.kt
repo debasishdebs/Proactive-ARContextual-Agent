@@ -14,6 +14,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.rokid.context.connectors.place.PhotoEnd
@@ -213,7 +214,33 @@ class PlacePhotoWork(private val app: Context, private val wm: () -> WorkManager
         wm().enqueueUniqueWork(PlaceEmbedWorker.UNIQUE_NOW, ExistingWorkPolicy.REPLACE, req)
     }
 
+    /** Counts only: (photos fetched, of those already embedded in the active space). */
+    suspend fun embedCounts(): Pair<Int, Int> {
+        val pack = PlaceGraph.readyPack(app)
+        val fetched = pack.imageStats().ok
+        val space = PlaceRefPhotos.activeSpace(app) ?: return fetched to 0
+        return fetched to (fetched - pack.needsEmbed(space, 100_000).size).coerceAtLeast(0)
+    }
+
     fun cancelAll() { wm().cancelUniqueWork(PlacePhotoWorker.UNIQUE); wm().cancelUniqueWork(PlaceEmbedWorker.UNIQUE); wm().cancelUniqueWork(PlaceEmbedWorker.UNIQUE_NOW); PhotoPhaseStore(app).clear() }
+}
+
+/** The status line under "Embed seed photos now": plain words from the work state and counts (no names). */
+object EmbedNowText {
+    data class Line(val text: String, val progress: Float? = null)
+    const val NO_PHOTOS = "No seed photos fetched yet; they download on free Wi-Fi first"
+    /** [state] null = never started. [attempts] = retries so far (a wait: hot phone or the model not ready). */
+    fun line(state: WorkInfo.State?, attempts: Int, embedded: Int, fetched: Int): Line? = when {
+        state == null -> null
+        state == WorkInfo.State.ENQUEUED && attempts > 0 -> Line("Waiting: the phone is too hot or the model is not ready; it tries again soon")
+        state == WorkInfo.State.ENQUEUED || state == WorkInfo.State.BLOCKED -> Line("Queued")
+        state == WorkInfo.State.RUNNING -> if (fetched <= 0) Line(NO_PHOTOS) else Line("Embedding photos: $embedded of $fetched", (embedded.toFloat() / fetched).coerceIn(0f, 1f))
+        state == WorkInfo.State.SUCCEEDED -> if (fetched <= 0) Line(NO_PHOTOS) else Line("Done: $embedded embedded" + if (embedded < fetched) " of $fetched fetched" else "")
+        state == WorkInfo.State.FAILED -> Line("Stopped: embedding failed")
+        else -> Line("Cancelled")
+    }
+    /** The fetch phase in one line, counts only (for the seeded-area list). */
+    fun photosLine(fetched: Int, embedded: Int, seeded: Int): String = "photos: $fetched of $seeded fetched, $embedded embedded"
 }
 
 /** The words of the photo phase for the lists (fixed phrases, no names). */

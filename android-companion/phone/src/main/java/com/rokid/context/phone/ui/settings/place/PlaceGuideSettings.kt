@@ -20,6 +20,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
@@ -1020,6 +1023,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 Text("Photo check layers (Developer)", style = MaterialTheme.typography.titleMedium)
                 SwitchRow("Reference photos of seeded places", "On: photos are fetched on free Wi-Fi only and prepared while charging and not hot. Off: neither runs.", state.layerRefPhotos, { on.setLayer("refphotos", it) }, tag = "place_layer_refphotos")
                 SecondaryAction("Embed seed photos now", on.embedPhotosNow, tag = "place_embed_photos_now")
+                EmbedNowStatus()
                 SwitchRow("Layer 1: photo vs reference photos", "On the phone. Off = kill switch: the photo is never compared with reference photos.", state.layerPhoto, { on.setLayer("photo", it) }, tag = "place_layer_photo")
                 SwitchRow("Layer 2: online vision check", "Off = the online vision model is never called for places.", state.layerOnline, { on.setLayer("online", it) }, tag = "place_layer_online")
                 SwitchRow("Layer 3: offline guess", "Off = no offline guess (Maybe). The user switch above and the downloaded model still apply.", state.layerOffline, { on.setLayer("offline", it) }, tag = "place_layer_offline")
@@ -1357,4 +1361,23 @@ private fun PhotoMatchFields(cfg: com.rokid.context.memory.retrieval.PhotoMatchC
         TextFieldRow("Floor (0 = off)", f, { f = it; commit(h, it, m) }, tag = "place_thr_${key}_floor", number = true)
         TextFieldRow("Margin", m, { m = it; commit(h, f, it) }, tag = "place_thr_${key}_margin", number = true)
     }
+}
+
+/** Status line and determinate bar under "Embed seed photos now": the work state plus counts of embedded vs fetched photos. */
+@Composable
+private fun EmbedNowStatus() {
+    val ctx = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val wm = remember { runCatching { androidx.work.WorkManager.getInstance(ctx) }.getOrNull() } ?: return
+    val infos by remember { wm.getWorkInfosForUniqueWorkFlow(com.rokid.context.phone.place.PlaceEmbedWorker.UNIQUE_NOW) }.collectAsState(initial = emptyList())
+    val info = infos.firstOrNull()
+    var counts by remember { mutableStateOf(0 to 0) }
+    LaunchedEffect(info?.state) {
+        do {
+            counts = runCatching { com.rokid.context.phone.place.PlacePhotoWork(ctx).embedCounts() }.getOrDefault(counts)
+            if (info?.state == androidx.work.WorkInfo.State.RUNNING) kotlinx.coroutines.delay(2_000)
+        } while (info?.state == androidx.work.WorkInfo.State.RUNNING)
+    }
+    val line = com.rokid.context.phone.place.EmbedNowText.line(info?.state, info?.runAttemptCount ?: 0, counts.second, counts.first) ?: return
+    Text(line.text, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("place_embed_status"))
+    line.progress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth().testTag("place_embed_progress")) }
 }

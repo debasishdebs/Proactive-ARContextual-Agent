@@ -13,7 +13,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -212,7 +215,7 @@ fun MapZonesScreen(
             snapTargets = snapTargets, doubleTapZoom = p23 != null, density = if (dens?.on == true) dens.blobs else emptyList(), cells = p23?.cells?.coverage, edgeHandles = ui.editingId == null,
             dots = paintedDots, selectedDot = seed?.ui?.dotSelectedId, onDot = seed?.tapDot ?: {},
         )
-        Row(Modifier.align(Alignment.TopStart).fillMaxWidth().background(PcColors.SurfaceSoft.copy(alpha = 0.9f)).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.align(Alignment.TopStart).fillMaxWidth().background(PcColors.SurfaceSoft.copy(alpha = 0.9f)).statusBarsPadding().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(on.back, Modifier.testTag("mapzones_back"), enabled = !ui.saving) { Text("Back") }
             Text("Map zones", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             TextButton({ view.zoom(1.6) }, Modifier.testTag("zone_zoom_in")) { Text("+") }
@@ -221,9 +224,9 @@ fun MapZonesScreen(
             if (online?.canCentre == true) TextButton(online.centreOnMe, Modifier.testTag("zone_centre"), enabled = !online.centreBusy) { Text(if (online.centreBusy) com.rokid.context.phone.ui.settings.privacy.zones.tiles.CentreWords.FINDING else "Me") }
             if (online?.centreBusy == true) TextButton(online.centreCancel, Modifier.testTag("zone_centre_cancel")) { Text("Cancel") }
         }
-        seed?.ui?.dotLabel?.let { l -> Text(l.text, style = MaterialTheme.typography.labelMedium, color = PcColors.Ink, modifier = Modifier.align(Alignment.TopCenter).padding(top = 52.dp).background(Color.White.copy(alpha = 0.92f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 3.dp).testTag("seed_dot_label")) }
-        if (!networkOnline) com.rokid.context.phone.ui.settings.privacy.zones.NoNetworkBanner(tag = "mapzones_no_network", modifier = Modifier.align(Alignment.TopStart).padding(top = 48.dp))
-        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().heightIn(max = 380.dp).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState()).padding(16.dp).testTag("mapzones_sheet"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        seed?.ui?.dotLabel?.let { l -> Text(l.text, style = MaterialTheme.typography.labelMedium, color = PcColors.Ink, modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 52.dp).background(Color.White.copy(alpha = 0.92f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 3.dp).testTag("seed_dot_label")) }
+        if (!networkOnline) com.rokid.context.phone.ui.settings.privacy.zones.NoNetworkBanner(tag = "mapzones_no_network", modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(top = 48.dp))
+        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.6f).dp).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 32.dp).navigationBarsPadding().testTag("mapzones_sheet"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (zones.protectedMode) NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.ZoneWords.PROTECTED_BANNER, error = true, tag = "zone_protected")
             online?.note?.let { n -> NoticeText(n, tag = "zone_centre_note"); SecondaryAction("Dismiss", online.dismissNote, tag = "zone_centre_note_dismiss") }
             if (zones.deniedBanner) { NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.ZoneWords.DENIED_BANNER, error = true, tag = "zone_denied"); PrimaryAction("Allow location", zoneOn.requestLocation, tag = "zone_allow_location") }
