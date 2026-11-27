@@ -127,6 +127,8 @@ class PlacePack(
     private val bulk: BulkSource? = null,
     /** Called AFTER places were deleted (area removal, Clear fetched, Delete all), outside the lock and the transaction: production drops the context.db `place_link` REF rows of places that are gone ([PlaceRefSweep]). A failure is ignored (the start-up sweep catches up). */
     private val onPlacesRemoved: suspend (PlacePack) -> Unit = {},
+    /** The reference-photo budget (tests lower it). */
+    private val imageCapBytes: Long = IMAGE_CAP_BYTES,
 ) {
     private suspend fun removed() { try { onPlacesRemoved(this) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (_: Exception) { } }
     /** The ids among [ids] that still exist as a place (read only). */
@@ -534,13 +536,13 @@ class PlacePack(
             val known = chunked(rows.map { it.placeId }.distinct()) { dao.byIds(it) }.map { it.id }.filter { !UserPlace.isUserId(it) }.toSet()
             val keep = rows.filter { it.placeId in known }
             dao.putImages(keep)
-            trimImagesLocked(IMAGE_CAP_BYTES)
+            trimImagesLocked(imageCapBytes)
             keep.size
         }
     }
 
     suspend fun imagesOf(ids: List<String>): List<PlaceImageEntity> = chunked(ids) { dao.imagesOf(it) }
-    suspend fun imageStats(): ImageStats = ImageStats(dao.imageCount(), dao.imageOkCount(), dao.imageBytes(), IMAGE_CAP_BYTES)
+    suspend fun imageStats(): ImageStats = ImageStats(dao.imageCount(), dao.imageOkCount(), dao.imageBytes(), imageCapBytes)
 
     /** The matcher's read: ONE decoded vector per place that has one in [space]; a vector whose length is not its stored dimension (or unreadable) is dropped. Read only, no lock. */
     suspend fun imageVectorsFor(ids: List<String>, space: String): Map<String, FloatArray> {
@@ -555,7 +557,7 @@ class PlacePack(
     /** Records the vector of a photo (the active space); false when the row is gone or has no photo state OK. */
     suspend fun markEmbedded(id: String, space: String, vector: FloatArray, version: Int, at: Long): Boolean = fetchLock.withLock {
         val blob = com.rokid.context.memory.retrieval.VectorCodec.encode(vector)
-        db.withTransaction { dao.markEmbedded(id, space, vector.size, blob, version, at, blob.size) > 0 }
+        db.withTransaction { (dao.markEmbedded(id, space, vector.size, blob, version, at, blob.size) > 0).also { if (it) trimImagesLocked(imageCapBytes) } } // a vector adds bytes: the cap holds here too, not only on a put
     }
 
     suspend fun deleteImages(ids: List<String>): Int = fetchLock.withLock { db.withTransaction { var n = 0; eachChunk(ids) { n += dao.deleteImages(it) }; n } }
@@ -563,7 +565,7 @@ class PlacePack(
     suspend fun needsEmbed(space: String, limit: Int): List<String> = dao.needsEmbed(space, limit)
 
     /** Brings the photos under [capBytes]: the oldest thumbnails go first, and only those whose vector stays (so every place with a vector keeps its reference; a photo that has no vector yet is never trimmed). Returns how many thumbnails were dropped. */
-    suspend fun trimImages(capBytes: Long = IMAGE_CAP_BYTES): Int = fetchLock.withLock { db.withTransaction { trimImagesLocked(capBytes) } }
+    suspend fun trimImages(capBytes: Long = imageCapBytes): Int = fetchLock.withLock { db.withTransaction { trimImagesLocked(capBytes) } }
 
     private suspend fun trimImagesLocked(capBytes: Long): Int {
         var total = dao.imageBytes()

@@ -89,6 +89,15 @@ class PlaceImageTest {
         assertEquals("in another space a trimmed photo cannot be embedded again: back to the fetch queue", setOf("wd:Q1", "wd:Q2", "wd:Q3"), p.needsFetch("other", 3, 10).toSet())
     }
 
+    @Test fun embeddingAddsBytesAndTheCapHoldsAfterTheVectorWrite() = run {
+        val p = PlacePack(db, null, PlacePack.DEFAULT_BUDGET_BYTES, { 1_000L }, { }, imageCapBytes = 300L)
+        db.dao().putPlaces(listOf(place("wd:Q1"), place("wd:Q2")))
+        p.putImages(listOf(img("wd:Q1", 100, at = 1), img("wd:Q2", 100, at = 2))) // 2 x 100 jpeg bytes: under the cap
+        assertTrue(p.markEmbedded("wd:Q1", "sp", floatArrayOf(1f, 0f, 0f, 0f, 0f, 0f, 0f, 0f), 1, 5)) // + 32 vector bytes still under
+        assertTrue(p.markEmbedded("wd:Q2", "sp", FloatArray(100) { 1f }, 1, 6)) // + 400 vector bytes: over the cap, the thumbnails go (the vectors stay)
+        assertEquals(2, p.imagesOf(listOf("wd:Q1", "wd:Q2")).count { it.vector != null && it.jpeg == null })
+    }
+
     @Test fun theCapIsEnforcedOnEveryPut() = run {
         val p = pack(); db.dao().putPlaces(listOf(place("wd:Q1")))
         p.putImages(listOf(img("wd:Q1", 100, vec(1f, 0f), "sp"))); assertEquals(0, p.trimImages()) // far below 250 MB: nothing goes

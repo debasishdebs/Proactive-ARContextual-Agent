@@ -264,7 +264,7 @@ class PlaceImagePhase(
 ) {
     suspend fun run(onBatch: suspend (com.rokid.context.memory.place.PhotoTotals) -> Unit = {}): PhotoEnd {
         while (true) {
-            if (pack.imageStats().bytes >= capBytes) return PhotoEnd.CAP_REACHED
+            if (pack.imageStats().bytes >= capBytes) { pack.trimImages(capBytes); if (pack.imageStats().bytes >= capBytes) return PhotoEnd.CAP_REACHED } // embedded thumbnails can go first: the cap is a budget, not a stop
             val ids = pack.needsFetch(space(), PlaceImageFetcher.MAX_TRIES, batch)
             if (ids.isEmpty()) return PhotoEnd.DONE
             val prior = pack.imagesOf(ids).associate { it.placeId to it.tries }
