@@ -331,7 +331,8 @@ class KeyframeHandle internal constructor(private val app: Context) {
     /** Battery saver, or battery <= 30% and not charging: today's deferral rules (spec §P2.5). */
     private fun batteryDeferral(): Boolean {
         if ((app.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isPowerSaveMode == true) return true
-        val i = app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return false
+        // A read that throws (the process or test environment is going away while a cancelled drain is still in flight) is "cannot tell": no deferral, and no exception reaching the thread's uncaught handler.
+        val i = try { app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) } catch (e: RuntimeException) { null } ?: return false
         val level = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
         val scale = i.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
         val status = i.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
