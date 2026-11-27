@@ -132,7 +132,10 @@ class ContextApp : Application() {
             runCatching { com.rokid.context.orchestration.EmbeddingWorker.enqueue(this) }.onFailure { PcLog.w("ContextApp", "index enqueue failed: ${it.javaClass.simpleName}") }
         }
         // S3: an area marked "seeding" that has no live work (killed, cancelled, cleared) becomes partial, so it can never stay "(seeding)" forever. Opens the pack off the main thread.
-        kotlin.concurrent.thread(name = "seed-reconcile") { runCatching { kotlinx.coroutines.runBlocking { com.rokid.context.phone.place.SeedWork(this@ContextApp).reconcile(com.rokid.context.work.frames.place.PlaceGraph.readyPack(this@ContextApp)) } } }
+        kotlin.concurrent.thread(name = "seed-reconcile") { runCatching { kotlinx.coroutines.runBlocking { com.rokid.context.phone.place.SeedWork(this@ContextApp).reconcile(com.rokid.context.work.frames.place.PlaceGraph.readyPack(this@ContextApp)) } }
+            // B2 catch-up: places of areas seeded earlier get their reference photo too (free Wi-Fi only; a no-op while nothing is missing), and fetched photos get their vector while charging.
+            runCatching { kotlinx.coroutines.runBlocking { com.rokid.context.phone.place.PlacePhotoWork(this@ContextApp).ensureIfNeeded(com.rokid.context.work.frames.place.PlaceGraph.readyPack(this@ContextApp)) } }
+        }
         // A restart with "I'm abroad" ON: model downloads queued earlier with "Allow mobile data" are made Wi-Fi only again (WorkManager and prefs reads: off the main thread).
         kotlin.concurrent.thread(name = "model-download-net") { runCatching { com.rokid.context.data.models.LocalModelStore(this).reevaluate() } }
         // rc1 fix: a committed Forget withdraws the answers of the asks it redacted wherever they may still show (phone voice card, glasses HUD through the hub's frames).

@@ -128,11 +128,16 @@ object PlaceGraph {
         return true
     }
 
+    /** B2: the photo phase's Wikimedia calls over the SAME http client (and so the same pause, Offline only gate and data ledger) as the seed. Built with the pack. */
+    @Volatile private var photoHttp: com.rokid.context.connectors.place.PlaceHttp? = null
+    fun photoApi(context: Context): com.rokid.context.connectors.place.PlaceImageApi { pack(context); return com.rokid.context.connectors.place.PlaceImageHttpSource(photoHttp ?: error("place http not built")) }
+
     fun pack(context: Context): PlacePack = pack ?: synchronized(this) { pack ?: build(context.applicationContext).also { pack = it } }
 
     private fun build(app: Context): PlacePack {
         val guard = com.rokid.context.memory.place.PlaceNetGuard(log = { PcLog.i(TAG, it) }, env = { netEnv(app) }) // one limiter + counters for the HTTP client and the pack
         val http = UrlConnectionPlaceHttp(guard = guard, gate = com.rokid.context.ai.datasaver.DataSaverGraph.get(app), privacy = { com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() }) // cell fetches count in the mobile-data ledger (class SMALL)
+        photoHttp = http
         val source = PlaceCellSource(WikipediaHttpSource(http), WikidataHttpSource(http), OverpassMirrorSource.default(http) { PcLog.i(TAG, it) }, extraTypes = { PlaceGuideSettings.of(app).extraTypes }, log = { PcLog.i(TAG, it) }) // counts and class names only
         val bulk = com.rokid.context.connectors.place.WikidataBulkSource(http, extraTypes = { PlaceGuideSettings.of(app).extraTypes }, log = { PcLog.i(TAG, it) }) // used only by a seed that asks for it (Developer flag bulkSeed, default ON)
         return PlacePack(PlacesDatabase.build(app), source, budgetBytes = PlaceGuideSettings.of(app).budgetMb * 1024L * 1024L, log = { PcLog.i(TAG, it) }, net = guard, bulk = bulk)

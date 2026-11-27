@@ -1,0 +1,521 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.13/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+
+> Configure project :glasses
+:glasses: release signing: no usable keystore.properties, release APK will be UNSIGNED
+
+> Configure project :phone
+:phone: release signing: no usable keystore.properties, release APK will be UNSIGNED
+
+> Configure project :watch
+:watch: release signing: no usable keystore.properties, release APK will be UNSIGNED
+
+> Task :core:capture:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core:model:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core:model:compileKotlin UP-TO-DATE
+> Task :core:model:compileJava NO-SOURCE
+> Task :core:model:processResources NO-SOURCE
+> Task :core:model:classes UP-TO-DATE
+> Task :core:model:jar UP-TO-DATE
+> Task :core:capture:compileKotlin UP-TO-DATE
+> Task :core:capture:compileJava NO-SOURCE
+> Task :core:capture:processResources NO-SOURCE
+> Task :core:capture:classes UP-TO-DATE
+> Task :core:capture:jar UP-TO-DATE
+> Task :nexus-port:preBuild UP-TO-DATE
+> Task :nexus-port:preDebugBuild UP-TO-DATE
+> Task :nexus-port:compileDebugAidl UP-TO-DATE
+> Task :nexus-port:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :nexus-port:generateDebugResValues UP-TO-DATE
+> Task :nexus-port:generateDebugResources UP-TO-DATE
+> Task :nexus-port:packageDebugResources UP-TO-DATE
+> Task :nexus-port:processDebugNavigationResources UP-TO-DATE
+> Task :nexus-port:parseDebugLocalResources UP-TO-DATE
+> Task :nexus-port:generateDebugRFile UP-TO-DATE
+> Task :nexus-port:compileDebugKotlin UP-TO-DATE
+> Task :nexus-port:javaPreCompileDebug UP-TO-DATE
+> Task :nexus-port:compileDebugJavaWithJavac UP-TO-DATE
+> Task :nexus-port:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :nexus-port:processDebugJavaRes UP-TO-DATE
+> Task :nexus-port:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :phone:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :phone:preBuild UP-TO-DATE
+> Task :phone:preDebugBuild UP-TO-DATE
+> Task :phone:generateDebugBuildConfig UP-TO-DATE
+> Task :nexus-port:compileDebugLibraryResources UP-TO-DATE
+> Task :nexus-port:writeDebugAarMetadata UP-TO-DATE
+> Task :core:hud:preBuild UP-TO-DATE
+> Task :core:hud:preDebugBuild UP-TO-DATE
+> Task :core:hud:writeDebugAarMetadata UP-TO-DATE
+> Task :core:ui:preBuild UP-TO-DATE
+> Task :core:ui:preDebugBuild UP-TO-DATE
+> Task :core:ui:writeDebugAarMetadata UP-TO-DATE
+> Task :services:ai:preBuild UP-TO-DATE
+> Task :services:ai:preDebugBuild UP-TO-DATE
+> Task :services:ai:writeDebugAarMetadata UP-TO-DATE
+> Task :services:connectors:preBuild UP-TO-DATE
+> Task :services:connectors:preDebugBuild UP-TO-DATE
+> Task :services:connectors:writeDebugAarMetadata UP-TO-DATE
+> Task :services:glasses-link:preBuild UP-TO-DATE
+> Task :services:glasses-link:preDebugBuild UP-TO-DATE
+> Task :services:glasses-link:writeDebugAarMetadata UP-TO-DATE
+> Task :services:memory:preBuild UP-TO-DATE
+> Task :services:memory:preDebugBuild UP-TO-DATE
+> Task :services:memory:writeDebugAarMetadata UP-TO-DATE
+> Task :services:orchestration:preBuild UP-TO-DATE
+> Task :services:orchestration:preDebugBuild UP-TO-DATE
+> Task :services:orchestration:writeDebugAarMetadata UP-TO-DATE
+> Task :services:vision-local:preBuild UP-TO-DATE
+> Task :services:vision-local:preDebugBuild UP-TO-DATE
+> Task :services:vision-local:writeDebugAarMetadata UP-TO-DATE
+> Task :services:voice:preBuild UP-TO-DATE
+> Task :services:voice:preDebugBuild UP-TO-DATE
+> Task :services:voice:writeDebugAarMetadata UP-TO-DATE
+> Task :phone:checkDebugAarMetadata UP-TO-DATE
+> Task :core:hud:processDebugNavigationResources UP-TO-DATE
+> Task :core:ui:processDebugNavigationResources UP-TO-DATE
+> Task :services:ai:processDebugNavigationResources UP-TO-DATE
+> Task :services:connectors:processDebugNavigationResources UP-TO-DATE
+> Task :services:glasses-link:processDebugNavigationResources UP-TO-DATE
+> Task :services:memory:processDebugNavigationResources UP-TO-DATE
+> Task :services:orchestration:processDebugNavigationResources UP-TO-DATE
+> Task :services:vision-local:processDebugNavigationResources UP-TO-DATE
+> Task :services:voice:processDebugNavigationResources UP-TO-DATE
+> Task :phone:processDebugNavigationResources UP-TO-DATE
+> Task :phone:compileDebugNavigationResources UP-TO-DATE
+> Task :phone:generateDebugResValues UP-TO-DATE
+> Task :core:hud:generateDebugResValues UP-TO-DATE
+> Task :core:hud:generateDebugResources UP-TO-DATE
+> Task :core:hud:packageDebugResources UP-TO-DATE
+> Task :core:ui:generateDebugResValues UP-TO-DATE
+> Task :core:ui:generateDebugResources UP-TO-DATE
+> Task :core:ui:packageDebugResources UP-TO-DATE
+> Task :services:ai:generateDebugResValues UP-TO-DATE
+> Task :services:ai:generateDebugResources UP-TO-DATE
+> Task :services:ai:packageDebugResources UP-TO-DATE
+> Task :services:connectors:generateDebugResValues UP-TO-DATE
+> Task :services:connectors:generateDebugResources UP-TO-DATE
+> Task :services:connectors:packageDebugResources UP-TO-DATE
+> Task :services:glasses-link:generateDebugResValues UP-TO-DATE
+> Task :services:glasses-link:generateDebugResources UP-TO-DATE
+> Task :services:glasses-link:packageDebugResources UP-TO-DATE
+> Task :services:memory:generateDebugResValues UP-TO-DATE
+> Task :services:memory:generateDebugResources UP-TO-DATE
+> Task :services:memory:packageDebugResources UP-TO-DATE
+> Task :services:orchestration:generateDebugResValues UP-TO-DATE
+> Task :services:orchestration:generateDebugResources UP-TO-DATE
+> Task :services:orchestration:packageDebugResources UP-TO-DATE
+> Task :services:vision-local:generateDebugResValues UP-TO-DATE
+> Task :services:vision-local:generateDebugResources UP-TO-DATE
+> Task :services:vision-local:packageDebugResources UP-TO-DATE
+> Task :services:voice:generateDebugResValues UP-TO-DATE
+> Task :services:voice:generateDebugResources UP-TO-DATE
+> Task :services:voice:packageDebugResources UP-TO-DATE
+> Task :phone:mapDebugSourceSetPaths UP-TO-DATE
+> Task :phone:generateDebugResources UP-TO-DATE
+> Task :phone:mergeDebugResources UP-TO-DATE
+> Task :phone:packageDebugResources UP-TO-DATE
+> Task :phone:parseDebugLocalResources UP-TO-DATE
+> Task :phone:createDebugCompatibleScreenManifests UP-TO-DATE
+> Task :nexus-port:extractDeepLinksDebug UP-TO-DATE
+> Task :nexus-port:processDebugManifest UP-TO-DATE
+> Task :phone:extractDeepLinksDebug UP-TO-DATE
+> Task :core:hud:extractDeepLinksDebug UP-TO-DATE
+> Task :core:hud:processDebugManifest UP-TO-DATE
+> Task :core:ui:extractDeepLinksDebug UP-TO-DATE
+> Task :core:ui:processDebugManifest UP-TO-DATE
+> Task :services:ai:extractDeepLinksDebug UP-TO-DATE
+> Task :services:ai:processDebugManifest UP-TO-DATE
+> Task :services:connectors:extractDeepLinksDebug UP-TO-DATE
+> Task :services:connectors:processDebugManifest UP-TO-DATE
+> Task :services:glasses-link:extractDeepLinksDebug UP-TO-DATE
+> Task :services:glasses-link:processDebugManifest UP-TO-DATE
+> Task :services:memory:extractDeepLinksDebug UP-TO-DATE
+> Task :services:memory:processDebugManifest UP-TO-DATE
+> Task :services:orchestration:extractDeepLinksDebug UP-TO-DATE
+> Task :services:orchestration:processDebugManifest UP-TO-DATE
+> Task :services:vision-local:extractDeepLinksDebug UP-TO-DATE
+> Task :services:vision-local:processDebugManifest UP-TO-DATE
+> Task :services:voice:extractDeepLinksDebug UP-TO-DATE
+> Task :services:voice:processDebugManifest UP-TO-DATE
+> Task :phone:processDebugMainManifest UP-TO-DATE
+> Task :phone:processDebugManifest UP-TO-DATE
+> Task :phone:processDebugManifestForPackage UP-TO-DATE
+> Task :core:hud:compileDebugLibraryResources UP-TO-DATE
+> Task :core:hud:parseDebugLocalResources UP-TO-DATE
+> Task :core:hud:generateDebugRFile UP-TO-DATE
+> Task :core:ui:compileDebugLibraryResources UP-TO-DATE
+> Task :core:ui:parseDebugLocalResources UP-TO-DATE
+> Task :core:ui:generateDebugRFile UP-TO-DATE
+> Task :services:ai:compileDebugLibraryResources UP-TO-DATE
+> Task :services:ai:parseDebugLocalResources UP-TO-DATE
+> Task :services:ai:generateDebugRFile UP-TO-DATE
+> Task :services:connectors:compileDebugLibraryResources UP-TO-DATE
+> Task :services:connectors:parseDebugLocalResources UP-TO-DATE
+> Task :services:connectors:generateDebugRFile UP-TO-DATE
+> Task :services:glasses-link:compileDebugLibraryResources UP-TO-DATE
+> Task :services:glasses-link:parseDebugLocalResources UP-TO-DATE
+> Task :services:glasses-link:generateDebugRFile UP-TO-DATE
+> Task :services:memory:compileDebugLibraryResources UP-TO-DATE
+> Task :services:memory:parseDebugLocalResources UP-TO-DATE
+> Task :services:memory:generateDebugRFile UP-TO-DATE
+> Task :services:orchestration:compileDebugLibraryResources UP-TO-DATE
+> Task :services:orchestration:parseDebugLocalResources UP-TO-DATE
+> Task :services:orchestration:generateDebugRFile UP-TO-DATE
+> Task :services:vision-local:compileDebugLibraryResources UP-TO-DATE
+> Task :services:vision-local:parseDebugLocalResources UP-TO-DATE
+> Task :services:vision-local:generateDebugRFile UP-TO-DATE
+> Task :services:voice:compileDebugLibraryResources UP-TO-DATE
+> Task :services:voice:parseDebugLocalResources UP-TO-DATE
+> Task :services:voice:generateDebugRFile UP-TO-DATE
+> Task :phone:processDebugResources UP-TO-DATE
+> Task :core:hud:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core:hud:compileDebugKotlin UP-TO-DATE
+> Task :core:hud:javaPreCompileDebug UP-TO-DATE
+> Task :core:hud:compileDebugJavaWithJavac NO-SOURCE
+> Task :core:hud:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :core:ui:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core:ui:compileDebugKotlin UP-TO-DATE
+> Task :core:ui:javaPreCompileDebug UP-TO-DATE
+> Task :core:ui:compileDebugJavaWithJavac NO-SOURCE
+> Task :core:ui:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :services:ai:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :services:memory:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :services:memory:kspDebugKotlin UP-TO-DATE
+> Task :services:memory:compileDebugKotlin UP-TO-DATE
+> Task :services:memory:javaPreCompileDebug UP-TO-DATE
+> Task :services:memory:compileDebugJavaWithJavac UP-TO-DATE
+> Task :services:memory:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :services:ai:compileDebugKotlin UP-TO-DATE
+> Task :services:ai:javaPreCompileDebug UP-TO-DATE
+> Task :services:ai:compileDebugJavaWithJavac NO-SOURCE
+> Task :services:ai:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :services:connectors:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :services:connectors:compileDebugKotlin UP-TO-DATE
+> Task :services:connectors:javaPreCompileDebug UP-TO-DATE
+> Task :services:connectors:compileDebugJavaWithJavac NO-SOURCE
+> Task :services:connectors:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :services:glasses-link:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :services:glasses-link:compileDebugKotlin UP-TO-DATE
+> Task :services:glasses-link:javaPreCompileDebug UP-TO-DATE
+> Task :services:glasses-link:compileDebugJavaWithJavac NO-SOURCE
+> Task :services:glasses-link:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :services:orchestration:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :services:orchestration:compileDebugKotlin UP-TO-DATE
+> Task :services:orchestration:javaPreCompileDebug UP-TO-DATE
+> Task :services:orchestration:compileDebugJavaWithJavac NO-SOURCE
+> Task :services:orchestration:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :services:vision-local:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :services:vision-local:compileDebugKotlin UP-TO-DATE
+> Task :services:vision-local:javaPreCompileDebug UP-TO-DATE
+> Task :services:vision-local:compileDebugJavaWithJavac NO-SOURCE
+> Task :services:vision-local:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :services:voice:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :services:voice:compileDebugKotlin UP-TO-DATE
+> Task :services:voice:javaPreCompileDebug UP-TO-DATE
+> Task :services:voice:compileDebugJavaWithJavac NO-SOURCE
+> Task :services:voice:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :phone:javaPreCompileDebug UP-TO-DATE
+> Task :phone:preDebugUnitTestBuild UP-TO-DATE
+> Task :phone:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :nexus-port:mergeDebugShaders UP-TO-DATE
+> Task :nexus-port:compileDebugShaders NO-SOURCE
+> Task :nexus-port:generateDebugAssets UP-TO-DATE
+> Task :nexus-port:mergeDebugAssets UP-TO-DATE
+> Task :phone:mergeDebugShaders UP-TO-DATE
+> Task :phone:compileDebugShaders NO-SOURCE
+> Task :phone:generateDebugAssets UP-TO-DATE
+> Task :core:hud:mergeDebugShaders UP-TO-DATE
+> Task :core:hud:compileDebugShaders NO-SOURCE
+> Task :core:hud:generateDebugAssets UP-TO-DATE
+> Task :core:hud:mergeDebugAssets UP-TO-DATE
+> Task :core:ui:mergeDebugShaders UP-TO-DATE
+> Task :core:ui:compileDebugShaders NO-SOURCE
+> Task :core:ui:generateDebugAssets UP-TO-DATE
+> Task :core:ui:mergeDebugAssets UP-TO-DATE
+> Task :services:ai:mergeDebugShaders UP-TO-DATE
+> Task :services:ai:compileDebugShaders NO-SOURCE
+> Task :services:ai:generateDebugAssets UP-TO-DATE
+> Task :services:ai:mergeDebugAssets UP-TO-DATE
+> Task :services:connectors:mergeDebugShaders UP-TO-DATE
+> Task :services:connectors:compileDebugShaders NO-SOURCE
+> Task :services:connectors:generateDebugAssets UP-TO-DATE
+> Task :services:connectors:mergeDebugAssets UP-TO-DATE
+> Task :services:glasses-link:mergeDebugShaders UP-TO-DATE
+> Task :services:glasses-link:compileDebugShaders NO-SOURCE
+> Task :services:glasses-link:generateDebugAssets UP-TO-DATE
+> Task :services:glasses-link:mergeDebugAssets UP-TO-DATE
+> Task :services:memory:mergeDebugShaders UP-TO-DATE
+> Task :services:memory:compileDebugShaders NO-SOURCE
+> Task :services:memory:generateDebugAssets UP-TO-DATE
+> Task :services:memory:mergeDebugAssets UP-TO-DATE
+> Task :services:orchestration:mergeDebugShaders UP-TO-DATE
+> Task :services:orchestration:compileDebugShaders NO-SOURCE
+> Task :services:orchestration:generateDebugAssets UP-TO-DATE
+> Task :services:orchestration:mergeDebugAssets UP-TO-DATE
+> Task :services:vision-local:mergeDebugShaders UP-TO-DATE
+> Task :services:vision-local:compileDebugShaders NO-SOURCE
+> Task :services:vision-local:generateDebugAssets UP-TO-DATE
+> Task :services:vision-local:mergeDebugAssets UP-TO-DATE
+> Task :services:voice:mergeDebugShaders UP-TO-DATE
+> Task :services:voice:compileDebugShaders NO-SOURCE
+> Task :services:voice:generateDebugAssets UP-TO-DATE
+> Task :services:voice:mergeDebugAssets UP-TO-DATE
+> Task :phone:mergeDebugAssets UP-TO-DATE
+> Task :phone:packageDebugUnitTestForUnitTest UP-TO-DATE
+> Task :phone:processDebugUnitTestManifest UP-TO-DATE
+> Task :phone:generateDebugUnitTestConfig UP-TO-DATE
+> Task :core:hud:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :core:hud:processDebugJavaRes UP-TO-DATE
+> Task :core:ui:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :core:ui:processDebugJavaRes UP-TO-DATE
+> Task :services:ai:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :services:ai:processDebugJavaRes UP-TO-DATE
+> Task :services:connectors:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :services:connectors:processDebugJavaRes UP-TO-DATE
+> Task :services:glasses-link:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :services:glasses-link:processDebugJavaRes UP-TO-DATE
+> Task :services:memory:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :services:memory:processDebugJavaRes UP-TO-DATE
+> Task :services:orchestration:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :services:orchestration:processDebugJavaRes UP-TO-DATE
+> Task :services:vision-local:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :services:vision-local:processDebugJavaRes UP-TO-DATE
+> Task :services:voice:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :services:voice:processDebugJavaRes UP-TO-DATE
+
+> Task :phone:compileDebugKotlin
+e: The daemon has terminated unexpectedly on startup attempt #1 with error code: 0. The daemon process output:
+    1. Kotlin compile daemon is ready
+w: file:///Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/phone/src/main/java/com/rokid/context/phone/ui/settings/place/PlaceGuideSettings.kt:1067:26 Condition is always 'true'.
+w: file:///Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/phone/src/main/java/com/rokid/context/phone/ui/settings/place/PlaceGuideSettings.kt:1073:131 Condition is always 'true'.
+w: file:///Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/phone/src/main/java/com/rokid/context/phone/ui/settings/privacy/zones/ZonesScreen.kt:194:17 'val LocalLifecycleOwner: ProvidableCompositionLocal<LifecycleOwner>' is deprecated. Moved to lifecycle-runtime-compose library in androidx.lifecycle.compose package.
+w: file:///Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/phone/src/main/java/com/rokid/context/phone/ui/settings/privacy/zones/ZonesScreen.kt:658:28 Condition is always 'true'.
+
+> Task :phone:compileDebugJavaWithJavac UP-TO-DATE
+> Task :phone:bundleDebugClassesToRuntimeJar
+> Task :phone:bundleDebugClassesToCompileJar
+> Task :phone:processDebugJavaRes UP-TO-DATE
+> Task :phone:compileDebugUnitTestKotlin
+> Task :phone:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :phone:processDebugUnitTestJavaRes UP-TO-DATE
+
+> Task :phone:testDebugUnitTest
+
+ManualPhotoDialogUiTest > fetchIsOffForANonHttpsLinkAndAFailureAndTheAddWithoutPhotoChoiceShow STARTED
+
+ManualPhotoDialogUiTest > fetchIsOffForANonHttpsLinkAndAFailureAndTheAddWithoutPhotoChoiceShow FAILED
+    androidx.test.espresso.AppNotIdleException: Compose did not get idle after 72610 attempts in 60 SECONDS. Please check your measure/layout lambdas, they may be causing an infinite composition loop. Or set Espresso's master idling policy if you require a longer timeout. The following Idle Conditions failed .
+        at androidx.test.espresso.AppNotIdleException.create(AppNotIdleException.java:11)
+        at androidx.compose.ui.test.RobolectricIdlingStrategy$runUntilIdle$1.invoke(RobolectricIdlingStrategy.android.kt:55)
+        at androidx.compose.ui.test.RobolectricIdlingStrategy$runUntilIdle$1.invoke(RobolectricIdlingStrategy.android.kt:48)
+        at androidx.compose.ui.test.AndroidSynchronization_androidKt.runOnUiThread(AndroidSynchronization.android.kt:33)
+        at androidx.compose.ui.test.RobolectricIdlingStrategy.runUntilIdle(RobolectricIdlingStrategy.android.kt:48)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment.waitForIdle(ComposeUiTest.android.kt:346)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment.access$waitForIdle(ComposeUiTest.android.kt:219)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment$AndroidComposeUiTestImpl.waitForIdle(ComposeUiTest.android.kt:416)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment$AndroidComposeUiTestImpl.setContent(ComposeUiTest.android.kt:499)
+        at androidx.compose.ui.test.junit4.AndroidComposeTestRule.setContent(AndroidComposeTestRule.android.kt:348)
+        at com.rokid.context.phone.ui.settings.place.ManualPhotoDialogUiTest.show(ManualPhotoDialogUiTest.kt:31)
+        at com.rokid.context.phone.ui.settings.place.ManualPhotoDialogUiTest.show$default(ManualPhotoDialogUiTest.kt:30)
+        at com.rokid.context.phone.ui.settings.place.ManualPhotoDialogUiTest.fetchIsOffForANonHttpsLinkAndAFailureAndTheAddWithoutPhotoChoiceShow(ManualPhotoDialogUiTest.kt:45)
+
+ManualPhotoDialogUiTest > fetchIsReachableAndVisibleInAShortDialogAndEnabledForAnHttpsLink STARTED
+
+ManualPhotoDialogUiTest > fetchIsReachableAndVisibleInAShortDialogAndEnabledForAnHttpsLink FAILED
+    androidx.test.espresso.AppNotIdleException: Compose did not get idle after 71109 attempts in 60 SECONDS. Please check your measure/layout lambdas, they may be causing an infinite composition loop. Or set Espresso's master idling policy if you require a longer timeout. The following Idle Conditions failed .
+        at androidx.test.espresso.AppNotIdleException.create(AppNotIdleException.java:11)
+        at androidx.compose.ui.test.RobolectricIdlingStrategy$runUntilIdle$1.invoke(RobolectricIdlingStrategy.android.kt:55)
+        at androidx.compose.ui.test.RobolectricIdlingStrategy$runUntilIdle$1.invoke(RobolectricIdlingStrategy.android.kt:48)
+        at androidx.compose.ui.test.AndroidSynchronization_androidKt.runOnUiThread(AndroidSynchronization.android.kt:33)
+        at androidx.compose.ui.test.RobolectricIdlingStrategy.runUntilIdle(RobolectricIdlingStrategy.android.kt:48)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment.waitForIdle(ComposeUiTest.android.kt:346)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment.access$waitForIdle(ComposeUiTest.android.kt:219)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment$AndroidComposeUiTestImpl.waitForIdle(ComposeUiTest.android.kt:416)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment$AndroidComposeUiTestImpl.setContent(ComposeUiTest.android.kt:499)
+        at androidx.compose.ui.test.junit4.AndroidComposeTestRule.setContent(AndroidComposeTestRule.android.kt:348)
+        at com.rokid.context.phone.ui.settings.place.ManualPhotoDialogUiTest.show(ManualPhotoDialogUiTest.kt:31)
+        at com.rokid.context.phone.ui.settings.place.ManualPhotoDialogUiTest.show$default(ManualPhotoDialogUiTest.kt:30)
+        at com.rokid.context.phone.ui.settings.place.ManualPhotoDialogUiTest.fetchIsReachableAndVisibleInAShortDialogAndEnabledForAnHttpsLink(ManualPhotoDialogUiTest.kt:35)
+
+ManualPhotoDialogUiTest > aReadyPhotoShowsItsThumbnailSizeAndRemove STARTED
+
+ManualPhotoDialogUiTest > aReadyPhotoShowsItsThumbnailSizeAndRemove FAILED
+    androidx.test.espresso.AppNotIdleException: Compose did not get idle after 62553 attempts in 60 SECONDS. Please check your measure/layout lambdas, they may be causing an infinite composition loop. Or set Espresso's master idling policy if you require a longer timeout. The following Idle Conditions failed .
+        at androidx.test.espresso.AppNotIdleException.create(AppNotIdleException.java:11)
+        at androidx.compose.ui.test.RobolectricIdlingStrategy$runUntilIdle$1.invoke(RobolectricIdlingStrategy.android.kt:55)
+        at androidx.compose.ui.test.RobolectricIdlingStrategy$runUntilIdle$1.invoke(RobolectricIdlingStrategy.android.kt:48)
+        at androidx.compose.ui.test.AndroidSynchronization_androidKt.runOnUiThread(AndroidSynchronization.android.kt:33)
+        at androidx.compose.ui.test.RobolectricIdlingStrategy.runUntilIdle(RobolectricIdlingStrategy.android.kt:48)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment.waitForIdle(ComposeUiTest.android.kt:346)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment.access$waitForIdle(ComposeUiTest.android.kt:219)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment$AndroidComposeUiTestImpl.waitForIdle(ComposeUiTest.android.kt:416)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment$AndroidComposeUiTestImpl.setContent(ComposeUiTest.android.kt:499)
+        at androidx.compose.ui.test.junit4.AndroidComposeTestRule.setContent(AndroidComposeTestRule.android.kt:348)
+        at com.rokid.context.phone.ui.settings.place.ManualPhotoDialogUiTest.show(ManualPhotoDialogUiTest.kt:31)
+        at com.rokid.context.phone.ui.settings.place.ManualPhotoDialogUiTest.show$default(ManualPhotoDialogUiTest.kt:30)
+        at com.rokid.context.phone.ui.settings.place.ManualPhotoDialogUiTest.aReadyPhotoShowsItsThumbnailSizeAndRemove(ManualPhotoDialogUiTest.kt:57)
+
+ManualPhotoDialogUiTest > aPinThatNeedsAMomentHasAnAddPhotoButtonAndOneWithAMomentHasNone STARTED
+
+ManualPhotoDialogUiTest > theAddPhotoDialogHasTheSameFlow STARTED
+
+ManualPhotoDialogUiTest > theAddPhotoDialogHasTheSameFlow FAILED
+    androidx.test.espresso.AppNotIdleException: Compose did not get idle after 150759 attempts in 60 SECONDS. Please check your measure/layout lambdas, they may be causing an infinite composition loop. Or set Espresso's master idling policy if you require a longer timeout. The following Idle Conditions failed .
+        at androidx.test.espresso.AppNotIdleException.create(AppNotIdleException.java:11)
+        at androidx.compose.ui.test.RobolectricIdlingStrategy$runUntilIdle$1.invoke(RobolectricIdlingStrategy.android.kt:55)
+        at androidx.compose.ui.test.RobolectricIdlingStrategy$runUntilIdle$1.invoke(RobolectricIdlingStrategy.android.kt:48)
+        at androidx.compose.ui.test.AndroidSynchronization_androidKt.runOnUiThread(AndroidSynchronization.android.kt:33)
+        at androidx.compose.ui.test.RobolectricIdlingStrategy.runUntilIdle(RobolectricIdlingStrategy.android.kt:48)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment.waitForIdle(ComposeUiTest.android.kt:346)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment.access$waitForIdle(ComposeUiTest.android.kt:219)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment$AndroidComposeUiTestImpl.waitForIdle(ComposeUiTest.android.kt:416)
+        at androidx.compose.ui.test.AndroidComposeUiTestEnvironment$AndroidComposeUiTestImpl.setContent(ComposeUiTest.android.kt:499)
+        at androidx.compose.ui.test.junit4.AndroidComposeTestRule.setContent(AndroidComposeTestRule.android.kt:348)
+        at com.rokid.context.phone.ui.settings.place.ManualPhotoDialogUiTest.show(ManualPhotoDialogUiTest.kt:31)
+        at com.rokid.context.phone.ui.settings.place.ManualPhotoDialogUiTest.theAddPhotoDialogHasTheSameFlow(ManualPhotoDialogUiTest.kt:65)
+
+ManualPhotoViewModelTest > addWithAnUnfetchedLinkFetchesFirstThenCreatesThePin STARTED
+
+ManualPhotoViewModelTest > thePinRowSaysWaitingOrIndexedFromTheCountsOnly STARTED
+
+ManualPhotoViewModelTest > fetchStatesGoIdleFetchingReady STARTED
+
+ManualPhotoViewModelTest > everyFailureReasonIsPlainAndNotHttpsNeverLeavesThePhone STARTED
+
+ManualPhotoViewModelTest > addPhotoWithAnUnfetchedLinkFetchesThenAttaches STARTED
+
+ManualPhotoViewModelTest > thePickerResultIsCheckedAndACancelDoesNothing STARTED
+
+ManualPhotoViewModelTest > addPhotoOpensOnlyForDeveloperModeAndAPinThatNeedsAMoment STARTED
+
+ManualPhotoViewModelTest > savingWithAPhotoMakesThePinThenOneReferenceMomentWithTheDescription STARTED
+
+ManualPhotoViewModelTest > aFailedFetchOnAddMakesNoPinAndOffersAddWithoutPhoto STARTED
+
+ManualPhotoViewModelTest > addPhotoFailuresLeaveNoOrphanAndKeepTheDialog STARTED
+
+ManualPhotoViewModelTest > addPhotoOnAnExistingPinAttachesExactlyOneMomentAndLinksIt STARTED
+
+ManualPhotoViewModelTest > fetchPutsAPreviewInTheFormAndClearsTheLink STARTED
+
+ManualPhotoViewModelTest > theDialogAndItsPhotoSectionExistOnlyUnderDeveloperMode STARTED
+
+ManualPhotoViewModelTest > withoutAPhotoNothingIsAddedAndABadFormWritesNoMoment STARTED
+
+ManualPhotoViewModelTest > aRefusedFetchShowsTheFixedReasonAndKeepsNothing STARTED
+
+ManualPhotoViewModelTest > cancelBeforeSaveWritesNothing STARTED
+
+ManualPhotoViewModelTest > aFailedMomentWriteLeavesThePinWithoutALinkAndSaysSo STARTED
+
+ManualPhotoViewModelTest > theViewModelRefusesWithoutDeveloperMode STARTED
+
+ManualPlaceViewModelTest > savingMakesARealPinListedWithSourceManualAndDeletableLikeAnyPin STARTED
+
+ManualPlaceViewModelTest > theFormIsDeveloperOnly STARTED
+
+ManualPlaceViewModelTest > aBadFormStaysOpenWithAClearErrorAndStoresNothing STARTED
+
+ManualPlaceViewModelTest > insideAPauseZoneIsRefusedWithAClearMessage STARTED
+
+PinDialogRotationTest > rotationKeepsTheDialogTypedTextAndFixThenLeavingDropsThem STARTED
+
+PinDialogRotationTest > anExpiredDraftAfterRotationIsRefusedOnSaveSoTheUserStartsAgain STARTED
+
+PinDialogRotationTest > deleteAsksForConfirmationAndCancelKeepsThePin STARTED
+
+PinDialogRotationTest > leavingTheScreenDropsTheDraft STARTED
+
+PinDialogRotationTest > clearingTheViewModelStoreCancelsTheDraftButADisposeDuringRotationDoesNot STARTED
+
+PlaceGuideModelTest > aFailedSeedShowsAnErrorAndFreesTheButton STARTED
+
+PlaceGuideModelTest > cascadeTextHasTheCountsNamesOtherPinsAndNoCoordinates STARTED
+
+PlaceGuideModelTest > thePickerOpensOnTodayAndPagesThirtyAtATime STARTED
+
+PlaceGuideModelTest > pinAPlaceHereOpensTheFormWithNearbySitesAndSavesAPinListedForEditAndDelete STARTED
+
+PlaceGuideModelTest > loadMorePagesByTheLastIdOfItsOwnDayAndNeverRepeats STARTED
+
+PlaceGuideModelTest > anExistingPinGetsAMomentRemovesItAndAnEditKeepsIt STARTED
+
+PlaceGuideModelTest > aForgottenMomentIsNotListedAndAYesterdayMomentCanBeAttachedToAnExistingPin STARTED
+
+PlaceGuideModelTest > theHyderabadPresetSeedsTheCharminarGolcondaBox STARTED
+
+PlaceGuideModelTest > theDaySelectorGoesBackAndForwardButNeverPastToday STARTED
+
+PlaceGuideModelTest > onlyTheSriLankaPresetsCarryTheShortPhotographyHelpAndNoRuleTextIsInTheApp STARTED
+
+PlaceGuideModelTest > seedingAnInvalidBoxSaysSoAndFetchesNothing STARTED
+
+PlaceGuideModelTest > aForgottenMomentClearsTheLinkAndTheBadgeReturnsWhileThePinStays STARTED
+
+PlaceGuideModelTest > theSeedMessageSaysCellsOkPartialAndFailed STARTED
+
+PlaceGuideModelTest > theNoteExplainsWhatStaysLocalAndWhatDeleteAllKeeps STARTED
+
+PlaceGuideModelTest > parsesATypedBoxAndRefusesNonsense STARTED
+
+PlaceGuideModelTest > deleteDialogTextSaysWhatGoesAndWhatStays STARTED
+
+PlaceGuideModelTest > budgetIsOneOfTheFourChoicesAndEvictsAtOnce STARTED
+
+PlaceGuideModelTest > latestMomentMustBeWithinThirtyMinutesElsePickFromTheList STARTED
+
+PlaceGuideModelTest > theScreenShowsSizeAndCountsBySeededFetchedAndPinned STARTED
+
+PlaceGuideModelTest > aSlowEarlierDayLoadNeverOverwritesALaterOne STARTED
+
+PlaceGuideModelTest > aPresetStopsWhenCellsFailAfterTheRetryAndSaysHowToRetry STARTED
+
+PlaceGuideModelTest > aFailingPresetStopsAtTheFirstBoxAndShowsAnError STARTED
+
+PlaceGuideModelTest > pinningInsideAZoneIsRefusedAndNoFormOpens STARTED
+
+PlaceGuideModelTest > placeGuideStartsOffAndTheSwitchWritesThrough STARTED
+
+PlaceGuideModelTest > theRamojiPresetIsOneCellOutsideTheHyderabadBoxAroundTheRealCoordinate STARTED
+
+PlaceGuideModelTest > aLinkToAGoneMomentIsNeverStored STARTED
+
+PlaceGuideModelTest > aBadFormStaysOpenWithAnErrorAndSavesNothing STARTED
+
+PlaceGuideModelTest > clearFetchedNeedsAConfirmationAndCancelDoesNothing STARTED
+
+PlaceGuideModelTest > everyTripPresetBoxContainsItsSitesAndStaysAFewCells STARTED
+
+PlaceGuideModelTest > aTwoBoxPresetSeedsItsBoxesOneAfterTheOtherAndSaysSo STARTED
+
+PlaceGuideModelTest > deleteAllNamesThePinsLikeTheOtherDialogs STARTED
+
+PlaceGuideModelTest > deleteAsksFirstShowsTheMomentCountAndCancelKeepsThePin STARTED
+
+PlaceGuideModelTest > theMomentNoteSaysAnExplicitForgetDeletesThePin STARTED
+
+PlaceGuideModelTest > theSecondDeleteChoiceIsHiddenWithoutAPreview STARTED
+
+PlaceGuideModelTest > savingANewPinIsBlockedWithoutAMomentAndSaysWhy STARTED
+
+PlaceGuideModelTest > saveWithoutAMomentNeedsTheExplicitConfirmAndFlagsThePin STARTED
+
+PlaceGuideModelTest > aMomentForgottenWhileTheDialogIsOpenIsRefusedAndTheDialogStaysOpen STARTED
+
+69 tests completed, 4 failed
+
+> Task :phone:testDebugUnitTest FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':phone:testDebugUnitTest'.
+> There were failing tests. See the report at: file:///Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/phone/build/reports/tests/testDebugUnitTest/index.html
+
+* Try:
+> Run with --scan to get full insights.
+
+BUILD FAILED in 5m 1s
+209 actionable tasks: 5 executed, 204 up-to-date
+rc=1

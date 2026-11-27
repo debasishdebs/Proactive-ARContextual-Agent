@@ -112,6 +112,10 @@ object DeveloperFlags {
     const val PLACE_L1_PHOTO = "placeL1Photo"
     const val PLACE_L2_VISION = "placeL2Vision"
     const val PLACE_MULTI_FRAME = "placeMultiFrame"
+    /** B2: fetch (Wi-Fi only) and embed (charging, not hot) the reference photos of seeded places. ON by default; OFF = neither phase starts and a running one stops at its next step. */
+    const val PLACE_REF_PHOTOS = "placeRefPhotos"
+    fun placeRefPhotos(context: Context) = flag(context, PLACE_REF_PHOTOS)
+    fun setPlaceRefPhotos(context: Context, on: Boolean) = setFlag(context, PLACE_REF_PHOTOS, on)
     fun placeL1Photo(context: Context) = flag(context, PLACE_L1_PHOTO)
     fun setPlaceL1Photo(context: Context, on: Boolean) = setFlag(context, PLACE_L1_PHOTO, on)
     fun placeL2Vision(context: Context) = flag(context, PLACE_L2_VISION)

@@ -83,6 +83,7 @@ class PlaceSeedWorker(appContext: Context, params: WorkerParameters) : Coroutine
             } finally { updates.close(); reporter.join() }
         }
         if (r.failed > 0) PcLog.i(TAG, "seed work done with failed cells") else PcLog.i(TAG, "seed work done")
+        runCatching { PlacePhotoWork(applicationContext).ensure() } // B2: the photo phase starts AFTER the text seed (places are usable at once); free Wi-Fi only, its own work
         if (r.failed == 0) { store.clear(key); if (r.withoutOsm > 0) store.setNoOsm(key, r.withoutOsm) } // Done; cells without OSM extras are only a line, not a failure
         else store.setFailed(key, r.failed) // the FAILED state shows this count and "Retry failed cells" re-queues exactly these (cells that stored nothing)
         return Result.success()
