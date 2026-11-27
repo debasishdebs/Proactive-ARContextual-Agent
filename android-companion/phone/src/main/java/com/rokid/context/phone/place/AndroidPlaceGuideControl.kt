@@ -101,6 +101,12 @@ class AndroidPlaceGuideControl(
         )
     }
 
+    private val refPhotos by lazy { ReferencePhotos(app) }
+    override suspend fun fetchPhoto(link: String): PhotoResult = refPhotos.fromLink(link)
+    override suspend fun readPhoto(uri: String): PhotoResult = refPhotos.fromUri(uri)
+    override suspend fun addReferencePhoto(pinId: String, photo: com.rokid.context.work.frames.place.PreparedPhoto, description: String): Boolean = refPhotos.addTo(pinning, pinId, photo, description)
+    override suspend fun referenceIndexed(momentIds: List<String>): Map<String, Boolean> = if (momentIds.isEmpty()) emptyMap() else refPhotos.indexed(momentIds)
+
     private fun momentDao() = com.rokid.context.memory.MemoryGraph.get(app).db.momentDao()
     private fun com.rokid.context.memory.db.PhotoMomentRow.choice() = MomentChoice(momentId, path, atMs)
 

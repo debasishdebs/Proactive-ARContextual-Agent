@@ -62,8 +62,8 @@ abstract class MomentLocationDao {
     @Query("SELECT MAX(atMs) FROM moment_location") abstract suspend fun lastAt(): Long?
 
     // --- the live recorder (WP4): candidates and the in-transaction guards. Read-only; no coordinates leave these rows. ---
-    /** Photos captured at or after [from] (phone clock). A frame without `capturedAtMs` is never a candidate. */
-    @Query("SELECT frameId AS anchorId, capturedAtMs AS atMs FROM frame_meta WHERE capturedAtMs IS NOT NULL AND capturedAtMs >= :from ORDER BY capturedAtMs, frameId")
+    /** Photos captured at or after [from] (phone clock). A frame without `capturedAtMs` is never a candidate, nor is a Developer reference photo (source `rokid_reference`: a web or file photo that was not captured here, so the phone's position is never attached to it). */
+    @Query("SELECT frameId AS anchorId, capturedAtMs AS atMs FROM frame_meta WHERE capturedAtMs IS NOT NULL AND capturedAtMs >= :from AND frameId NOT IN (SELECT id FROM frame WHERE source = 'rokid_reference') ORDER BY capturedAtMs, frameId")
     abstract suspend fun framesSince(from: Long): List<MomentAnchor>
     /** Marks (kind MOMENT, never the `:i` intent row of a mark) at or after [from]. */
     @Query("SELECT labelId AS anchorId, atMs AS atMs FROM canvas_label WHERE kind = 'MOMENT' AND labelId NOT LIKE '%:i' AND atMs >= :from ORDER BY atMs, labelId")

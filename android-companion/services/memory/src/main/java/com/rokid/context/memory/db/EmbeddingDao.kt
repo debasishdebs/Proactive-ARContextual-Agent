@@ -124,6 +124,9 @@ abstract class EmbeddingDao {
         return space
     }
 
+    /** Developer reference photo: how many image vectors the photo [frameId] has (any space). 0 = not indexed yet. Read-only. */
+    @Query("SELECT COUNT(*) FROM frame_vector WHERE frameId = :frameId") abstract suspend fun imageVectorCountOf(frameId: String): Int
+
     /** Stored photos with no image vector in [spaceId]; a photo marked `unembeddable` (failed to decode twice) is not counted: it never blocks a swap (Ruling 15). Unrouted PENDING frames are not counted either: the scene indexer owns them and writes their vectors into every target at routing time. */
     @Query(
         "SELECT COUNT(*) FROM frame f WHERE NOT EXISTS (SELECT 1 FROM frame_vector v WHERE v.frameId = f.id AND v.spaceId = :spaceId) " +
