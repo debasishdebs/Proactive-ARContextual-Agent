@@ -281,6 +281,7 @@ class PlaceSampler(
         var maybe: String? = null
         var mode = "-"; var backend = "-"; var resolve = "-"; var label = "-"
         /** Layered confirmation (counts and fixed tokens only; null l1 = Layer 1 not asked and the `place layers` line is not written). */
+        val layersCard: String get() = if (card == "shown") "shown" else if (held != "-") "held_${held.removePrefix("held_")}" else "none"
         var l1: String? = null; var l1k = 0; var l1With = 0; var l1No = 0; var l1Score = "na"; var l1Margin = "na"; var l1Cand = 0; var l2 = "-"; var l3 = "-"; var held = "-"; var l1Skip = "-"
         /** F7 fields (default "-"): where the fix came from, how old a reused fix really was, the pin-first decision, the weak back-off window, the retry reason, the history write, the text hit. */
         /** The place ids this attempt chose (a model pick, a pin card, a cluster, the nearest): handed to [chosenSink] ONLY; user-pin ids are never written to the log. */
@@ -343,16 +344,10 @@ class PlaceSampler(
         stats(o)
         try { chosenSink(t.chosenIds) } catch (_: Exception) { }
         log("place outcome=${o.name}")
-        layersLine(o, t)?.let { log(it) }
+        // The one `place layers` line (counts, buckets and fixed tokens; no id, name, coordinate or score), only for an attempt that went through the layered flow.
+        if (t.l1 != null) log("place layers v=1 outcome=${o.name} l1=${t.l1} skip=${t.l1Skip} k=${t.l1k} cand=${t.cand} narrowed=${t.l1Cand} withRef=${t.l1With} noRef=${t.l1No} score=${t.l1Score} margin=${t.l1Margin} l2=${t.l2} l3=${t.l3} card=${t.layersCard}")
         val totalMs = (elapsed() - t.startedAt).coerceAtLeast(0L)
         log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} pinCand=${t.pinCand} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err} mode=${t.mode} backend=${t.backend} resolve=${t.resolve} label=${t.label} thrV=${BackendThresholds.VERSION} fixSrc=${t.fixSrc} fixRealAgeB=${t.fixRealAgeB} pinFirst=${t.pinFirst} weakWin=${t.weakWin} retry=${t.retry} hist=${t.hist} textHit=${t.textHit}${maybeFields(t)}${shadowFields(t)}")
-    }
-
-    /** The one `place layers` line (counts, buckets and fixed tokens; no id, name, coordinate or score). Only for an attempt that went through the layered flow. */
-    private fun layersLine(o: PlaceOutcome, t: Trace): String? {
-        val l1 = t.l1 ?: return null
-        val card = when { t.card == "shown" -> "shown"; t.held != "-" -> "held_${t.held.removePrefix("held_")}"; else -> "none" }
-        return "place layers v=1 outcome=${o.name} l1=$l1 skip=${t.l1Skip} k=${t.l1k} cand=${t.cand} narrowed=${t.l1Cand} withRef=${t.l1With} noRef=${t.l1No} score=${t.l1Score} margin=${t.l1Margin} l2=${t.l2} l3=${t.l3} card=$card"
     }
 
     /** `maybe=<token>`: the offline tier's fixed outcome token (counts and buckets only inside it). Empty when the tier was not asked. */

@@ -50,6 +50,55 @@ class AndroidPlaceGuideControl(
         get() = settings.candidateRadiusM
         set(v) { settings.candidateRadiusM = v }
 
+    // Layered confirmation: the user settings live in `place_guide` prefs, the layer switches in the Developer preference file (`pc_dev`).
+    override var confirmedOnly: Boolean
+        get() = settings.confirmedOnly
+        set(v) { settings.confirmedOnly = v }
+
+    override var pinCardsNearby: Boolean
+        get() = settings.pinCardsNearby
+        set(v) { settings.pinCardsNearby = v }
+
+    override var checkMode: com.rokid.context.work.frames.place.CheckMode
+        get() = settings.checkMode
+        set(v) { settings.checkMode = v }
+
+    override var photoMatch: com.rokid.context.memory.retrieval.PhotoMatchConfig
+        get() = settings.photoMatch
+        set(v) { settings.photoMatch = v }
+
+    override fun resetPhotoMatch() { settings.resetPhotoMatch() }
+
+    override val offlineModelReady: Boolean get() = com.rokid.context.phone.vision.OfflineCaptionerHolder.modelFiles(app) != null
+
+    override var layerPhoto: Boolean
+        get() = com.rokid.context.orchestration.forget.DeveloperFlags.placeL1Photo(app)
+        set(v) { com.rokid.context.orchestration.forget.DeveloperFlags.setPlaceL1Photo(app, v) }
+
+    override var layerOnline: Boolean
+        get() = com.rokid.context.orchestration.forget.DeveloperFlags.placeL2Vision(app)
+        set(v) { com.rokid.context.orchestration.forget.DeveloperFlags.setPlaceL2Vision(app, v) }
+
+    /** Layer 3 = the tier flag and the captioner flag together (the user switch and the model still apply). */
+    override var layerOffline: Boolean
+        get() = com.rokid.context.orchestration.forget.DeveloperFlags.offlineTier(app) && com.rokid.context.orchestration.forget.DeveloperFlags.offlineCaption(app)
+        set(v) {
+            com.rokid.context.orchestration.forget.DeveloperFlags.setOfflineTier(app, v); com.rokid.context.orchestration.forget.DeveloperFlags.setOfflineCaption(app, v)
+            if (!v) com.rokid.context.phone.vision.OfflineCaptionerHolder.releaseIfCreated()
+        }
+
+    override var multiFrame: Boolean
+        get() = com.rokid.context.orchestration.forget.DeveloperFlags.placeMultiFrame(app)
+        set(v) { com.rokid.context.orchestration.forget.DeveloperFlags.setPlaceMultiFrame(app, v) }
+
+    override var bestOfK: Boolean
+        get() = settings.bestOfK
+        set(v) { settings.bestOfK = v }
+
+    override var showAllAttempts: Boolean
+        get() = settings.showAllAttempts
+        set(v) { settings.showAllAttempts = v }
+
     private val seedWork by lazy { SeedWork(app) }
 
     /**

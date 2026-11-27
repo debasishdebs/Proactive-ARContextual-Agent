@@ -99,7 +99,10 @@ data class PlaceGuideUiState(
     /** V2b "Offline place guess (Maybe)": the user's switch (default OFF) and its two Advanced fields (cut-off, candidate radius in metres). */
     /** 27 Nov: the "Extra place types" switches that are ON (all ON by default; see ExtraPlaceTypes). */
     val extraTypes: Set<String> = com.rokid.context.connectors.place.ExtraPlaceTypes.DEFAULT_ON,
-    val offlineGuess: Boolean = false, val maybeCutoff: Float = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_CUTOFF, val candidateRadiusM: Int = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_RADIUS_M,
+    val confirmedOnly: Boolean = true, val pinCardsNearby: Boolean = false, val checkMode: com.rokid.context.work.frames.place.CheckMode = com.rokid.context.work.frames.place.CheckMode.AUTOMATIC,
+    val photoMatch: com.rokid.context.memory.retrieval.PhotoMatchConfig = com.rokid.context.memory.retrieval.PhotoMatchConfig.DEFAULT, val offlineModelReady: Boolean = false,
+    val layerPhoto: Boolean = true, val layerOnline: Boolean = true, val layerOffline: Boolean = true, val multiFrame: Boolean = true, val bestOfK: Boolean = false, val showAllAttempts: Boolean = false,
+    val offlineGuess: Boolean = true, val maybeCutoff: Float = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_CUTOFF, val candidateRadiusM: Int = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_RADIUS_M,
     /** Developer only: the open "Add place manually" form (null = closed). */
     val manualForm: ManualFormState? = null,
     /** Developer only: the open "Add photo" dialog of one pin (null = closed). */
@@ -165,6 +168,41 @@ interface PlaceGuideControl {
         set(@Suppress("UNUSED_PARAMETER") v) {}
     var candidateRadiusM: Int
         get() = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_RADIUS_M
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    /** Layered confirmation (27 Nov): "Cards on glasses: only when the photo matches" (default ON), "Also show pin cards when nearby" (default OFF), "How to check the photo" (Automatic by default), the nine Layer 1 numbers (example values, not calibrated). A fake keeps them in memory. */
+    var confirmedOnly: Boolean
+        get() = true
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    var pinCardsNearby: Boolean
+        get() = false
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    var checkMode: com.rokid.context.work.frames.place.CheckMode
+        get() = com.rokid.context.work.frames.place.CheckMode.AUTOMATIC
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    var photoMatch: com.rokid.context.memory.retrieval.PhotoMatchConfig
+        get() = com.rokid.context.memory.retrieval.PhotoMatchConfig.DEFAULT
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    fun resetPhotoMatch() {}
+    /** The offline photo model (546 MB) is downloaded, so the offline guess can run. */
+    val offlineModelReady: Boolean get() = false
+    /** Developer switches (all ON by default except best-of-k and show-all-attempts): Layer 1 (kill switch), Layer 2, Layer 3, several frames per glance, best-of-k instead of the mean, show NO_MATCH rows in Activity. */
+    var layerPhoto: Boolean
+        get() = true
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    var layerOnline: Boolean
+        get() = true
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    var layerOffline: Boolean
+        get() = true
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    var multiFrame: Boolean
+        get() = true
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    var bestOfK: Boolean
+        get() = false
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    var showAllAttempts: Boolean
+        get() = false
         set(@Suppress("UNUSED_PARAMETER") v) {}
     /** Applies [budgetMb] to the open pack now (evicts least-recently-used fetched places). */
     suspend fun applyBudget(): Int = 0
@@ -301,6 +339,17 @@ object PlaceGuideModel {
     fun needsMoment(p: UserPlace, moments: Map<String, MomentChoice>): Boolean = p.momentId == null || p.momentId !in moments
 
     val SIDE_LABELS = listOf("Left", "Centre", "Right")
+    const val CONFIRMED_TITLE = "Cards on glasses: only when the photo matches"
+    const val CONFIRMED_NOTE = "A card appears on the glasses only when the photo from your glasses matches the place, on the phone or by the online check. An offline guess shows as 'Maybe'. Places that are only nearby are listed in Settings > Place cards with the reason."
+    const val PIN_NEARBY_TITLE = "Also show pin cards when nearby"
+    const val PIN_NEARBY_NOTE = "Your own pin gets its card as soon as you stand inside it, without checking the photo. Off: the pin waits for the photo to match."
+    const val CHECK_TITLE = "How to check the photo"
+    val CHECK_LABELS = listOf("Automatic", "Online only", "On the phone only")
+    const val CHECK_NOTE = "Automatic: on the phone first, then online when the network and Data saver allow, then the offline guess (also when an online call fails). Online only: never the offline guess. On the phone only: nothing is sent online. Model privacy 'Offline only' always wins."
+    const val MODEL_NEEDED = "Needs the offline photo model (546 MB). Download it on Wi-Fi in Settings > Models."
+    const val THRESH_TITLE = "Photo match numbers (Developer)"
+    const val THRESH_NOTE = "Example values, not calibrated. Scores are cosine x 1000. High: accept at once. Floor: below it the place is dropped from the list (0 = off). Margin: the lead needed over the next place. Clamped to 500-999 (margin 0-200). Every change applies to the next photo."
+    val THRESH_KINDS = listOf("Own photo" to "own", "Scene centroid" to "centroid", "Web photo" to "web")
     const val SIDE_NOTE = "Where the card sits on the glasses. The visible area of the glasses was not measured: the margins are cautious and the side must be tuned while worn."
 
     /** V2b ranges: the Maybe cut-off 0.30..0.90 (0.55 default), the candidate radius 50..500 m (150 default). */
@@ -326,7 +375,9 @@ object PlaceGuideModel {
 }
 
 class PlaceGuideViewModel(private val control: PlaceGuideControl, private val work: CoroutineDispatcher = Dispatchers.IO, developerMode: Boolean = false, private val now: () -> Long = System::currentTimeMillis, private val zone: java.time.ZoneId = java.time.ZoneId.systemDefault()) : ViewModel() {
-    private val _state = MutableStateFlow(PlaceGuideUiState(enabled = control.enabled, cardSide = control.cardSide, developerMode = developerMode, budgetMb = control.budgetMb, extraTypes = control.extraTypes, offlineGuess = control.offlineGuess, maybeCutoff = control.maybeCutoff, candidateRadiusM = control.candidateRadiusM))
+    private val _state = MutableStateFlow(PlaceGuideUiState(enabled = control.enabled, cardSide = control.cardSide, developerMode = developerMode, budgetMb = control.budgetMb, extraTypes = control.extraTypes, offlineGuess = control.offlineGuess, maybeCutoff = control.maybeCutoff, candidateRadiusM = control.candidateRadiusM,
+        confirmedOnly = control.confirmedOnly, pinCardsNearby = control.pinCardsNearby, checkMode = control.checkMode, photoMatch = control.photoMatch, offlineModelReady = control.offlineModelReady,
+        layerPhoto = control.layerPhoto, layerOnline = control.layerOnline, layerOffline = control.layerOffline, multiFrame = control.multiFrame, bestOfK = control.bestOfK, showAllAttempts = control.showAllAttempts))
     val state: StateFlow<PlaceGuideUiState> = _state
 
     init { refreshSummary() }
@@ -340,6 +391,17 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     fun setExtraType(key: String, on: Boolean) { control.setExtraType(key, on); _state.update { it.copy(extraTypes = control.extraTypes) } }
     fun setOfflineGuess(on: Boolean) { control.offlineGuess = on; _state.update { it.copy(offlineGuess = control.offlineGuess) } }
     fun setMaybeCutoff(v: Float) { control.maybeCutoff = PlaceGuideModel.clampCutoff(v); _state.update { it.copy(maybeCutoff = control.maybeCutoff) } }
+    fun setConfirmedOnly(on: Boolean) { control.confirmedOnly = on; _state.update { it.copy(confirmedOnly = control.confirmedOnly) } }
+    fun setPinCardsNearby(on: Boolean) { control.pinCardsNearby = on; _state.update { it.copy(pinCardsNearby = control.pinCardsNearby) } }
+    fun setCheckMode(m: com.rokid.context.work.frames.place.CheckMode) { control.checkMode = m; _state.update { it.copy(checkMode = control.checkMode) } }
+    /** The nine numbers: stored clamped, the screen shows what was stored. */
+    fun setPhotoMatch(c: com.rokid.context.memory.retrieval.PhotoMatchConfig) { control.photoMatch = c; _state.update { it.copy(photoMatch = control.photoMatch) } }
+    fun resetPhotoMatch() { control.resetPhotoMatch(); _state.update { it.copy(photoMatch = control.photoMatch) } }
+    fun setLayer(which: String, on: Boolean) {
+        when (which) { "photo" -> control.layerPhoto = on; "online" -> control.layerOnline = on; "offline" -> control.layerOffline = on; "multi" -> control.multiFrame = on; "bestk" -> control.bestOfK = on; "all" -> control.showAllAttempts = on }
+        _state.update { it.copy(layerPhoto = control.layerPhoto, layerOnline = control.layerOnline, layerOffline = control.layerOffline, multiFrame = control.multiFrame, bestOfK = control.bestOfK, showAllAttempts = control.showAllAttempts) }
+        if (which == "all") refreshHistory()
+    }
     fun setCandidateRadius(m: Int) { control.candidateRadiusM = PlaceGuideModel.clampRadius(m); _state.update { it.copy(candidateRadiusM = control.candidateRadiusM) } }
 
     fun seed(box: GeoBox?) {
@@ -752,7 +814,8 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
         val h = control.history ?: return
         val on = h.historyOn
         val rows = if (!on) emptyList() else runCatching { h.rows() }.getOrDefault(emptyList())
-        val ui = rows.map { it.toUi() }
+        val showAll = control.showAllAttempts
+        val ui = rows.filter { it.kind != "NO_MATCH" || showAll }.map { it.toUi() } // a NO_MATCH attempt row is a Developer view ("Show all attempts")
         val open = _state.value.historyDetail
         val detail = if (open == null) null else rows.firstOrNull { it.id == open.row.id }?.let { buildDetail(h, it, open.message) }
         _state.update { it.copy(history = ui, historyOn = on, historyDetail = if (!on) null else if (open == null) it.historyDetail else detail) }
@@ -825,7 +888,8 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     }
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setExtraType = vm::setExtraType, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius, openManual = vm::openManual, updateManual = vm::updateManual, saveManual = vm::saveManual, cancelManual = vm::cancelManual, pickManualPhoto = vm::pickManualPhoto, fetchManualPhoto = vm::fetchManualPhoto, removeManualPhoto = vm::removeManualPhoto, saveManualWithoutPhoto = vm::saveManualWithoutPhoto, openPinPhoto = vm::openPinPhoto, updatePinPhoto = vm::updatePinPhoto, pickPinPhoto = vm::pickPinPhoto, fetchPinPhoto = vm::fetchPinPhoto, removePinPhoto = vm::removePinPhoto, savePinPhoto = vm::savePinPhoto, cancelPinPhoto = vm::cancelPinPhoto))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setExtraType = vm::setExtraType, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius, openManual = vm::openManual, updateManual = vm::updateManual, saveManual = vm::saveManual, cancelManual = vm::cancelManual, pickManualPhoto = vm::pickManualPhoto, fetchManualPhoto = vm::fetchManualPhoto, removeManualPhoto = vm::removeManualPhoto, saveManualWithoutPhoto = vm::saveManualWithoutPhoto, openPinPhoto = vm::openPinPhoto, updatePinPhoto = vm::updatePinPhoto, pickPinPhoto = vm::pickPinPhoto, fetchPinPhoto = vm::fetchPinPhoto, removePinPhoto = vm::removePinPhoto, savePinPhoto = vm::savePinPhoto, cancelPinPhoto = vm::cancelPinPhoto,
+        setConfirmedOnly = vm::setConfirmedOnly, setPinCardsNearby = vm::setPinCardsNearby, setCheckMode = vm::setCheckMode, setPhotoMatch = vm::setPhotoMatch, resetPhotoMatch = vm::resetPhotoMatch, setLayer = vm::setLayer))
 }
 
 /**
@@ -877,6 +941,9 @@ class PlaceGuideActions(
     val pickManualPhoto: (String?) -> Unit = {}, val fetchManualPhoto: () -> Unit = {}, val removeManualPhoto: () -> Unit = {}, val saveManualWithoutPhoto: () -> Unit = {},
     /** Developer "Add photo" on a pin that needs a Moment. */
     val openPinPhoto: (String) -> Unit = {}, val updatePinPhoto: ((PinPhotoState) -> PinPhotoState) -> Unit = {}, val pickPinPhoto: (String?) -> Unit = {}, val fetchPinPhoto: () -> Unit = {}, val removePinPhoto: () -> Unit = {}, val savePinPhoto: () -> Unit = {}, val cancelPinPhoto: () -> Unit = {},
+    /** Layered confirmation: the user switches, the check mode, the nine numbers and the Developer layer switches. */
+    val setConfirmedOnly: (Boolean) -> Unit = {}, val setPinCardsNearby: (Boolean) -> Unit = {}, val setCheckMode: (com.rokid.context.work.frames.place.CheckMode) -> Unit = {},
+    val setPhotoMatch: (com.rokid.context.memory.retrieval.PhotoMatchConfig) -> Unit = {}, val resetPhotoMatch: () -> Unit = {}, val setLayer: (String, Boolean) -> Unit = { _, _ -> },
 )
 
 @Composable
@@ -889,6 +956,15 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 NoticeText(PlaceGuideModel.ZONE_NOTE, tag = "place_guide_zone_note")
                 if (state.packSummary.isNotEmpty()) NoticeText(state.packSummary, tag = "place_guide_pack")
                 SwitchRow("Offline place guess (Maybe)", PlaceGuideModel.OFFLINE_NOTE, state.offlineGuess, on.setOfflineGuess, tag = "place_guide_offline_guess")
+            }
+        }
+        item {
+            SettingsCard {
+                SwitchRow(PlaceGuideModel.CONFIRMED_TITLE, PlaceGuideModel.CONFIRMED_NOTE, state.confirmedOnly, on.setConfirmedOnly, tag = "place_confirmed_only")
+                if (state.confirmedOnly) SwitchRow(PlaceGuideModel.PIN_NEARBY_TITLE, PlaceGuideModel.PIN_NEARBY_NOTE, state.pinCardsNearby, on.setPinCardsNearby, tag = "place_pin_nearby")
+                ChoiceRow(PlaceGuideModel.CHECK_TITLE, PlaceGuideModel.CHECK_LABELS, state.checkMode.ordinal, { on.setCheckMode(com.rokid.context.work.frames.place.CheckMode.entries[it]) }, tag = "place_check_mode")
+                NoticeText(PlaceGuideModel.CHECK_NOTE, tag = "place_check_mode_note")
+                if (!state.offlineModelReady) NoticeText(PlaceGuideModel.MODEL_NEEDED, tag = "place_model_needed")
             }
         }
         item {
@@ -910,6 +986,25 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
             }
         }
         placeHistoryItems(state.history, state.historyShown, java.time.ZoneId.systemDefault(), on.openHistory, on.historyMore, state.historyOn)
+        if (state.developerMode) item {
+            SettingsCard {
+                Text("Photo check layers (Developer)", style = MaterialTheme.typography.titleMedium)
+                SwitchRow("Layer 1: photo vs reference photos", "On the phone. Off = kill switch: the photo is never compared with reference photos.", state.layerPhoto, { on.setLayer("photo", it) }, tag = "place_layer_photo")
+                SwitchRow("Layer 2: online vision check", "Off = the online vision model is never called for places.", state.layerOnline, { on.setLayer("online", it) }, tag = "place_layer_online")
+                SwitchRow("Layer 3: offline guess", "Off = no offline guess (Maybe). The user switch above and the downloaded model still apply.", state.layerOffline, { on.setLayer("offline", it) }, tag = "place_layer_offline")
+                SwitchRow("Several frames per glance", "Averages up to 4 recent frames (last 20 s, similar, no movement) into one query.", state.multiFrame, { on.setLayer("multi", it) }, tag = "place_layer_multi")
+                SwitchRow("Best of the frames instead of the average", "More eager and less precise.", state.bestOfK, { on.setLayer("bestk", it) }, tag = "place_layer_bestk")
+                SwitchRow("Show all attempts in Place cards", "Also lists the attempts that found no place at all.", state.showAllAttempts, { on.setLayer("all", it) }, tag = "place_layer_all")
+            }
+        }
+        if (state.developerMode) item {
+            SettingsCard {
+                Text(PlaceGuideModel.THRESH_TITLE, style = MaterialTheme.typography.titleMedium)
+                NoticeText(PlaceGuideModel.THRESH_NOTE, tag = "place_thresholds_note")
+                PhotoMatchFields(state.photoMatch, on.setPhotoMatch)
+                SecondaryAction("Reset to defaults", on.resetPhotoMatch, tag = "place_thresholds_reset")
+            }
+        }
         if (state.developerMode) item {
             SettingsCard {
                 Text("Card position (Developer)", style = MaterialTheme.typography.titleMedium)
@@ -1198,4 +1293,35 @@ private fun PinPhotoDialog(d: PinPhotoState, on: PlaceGuideActions) {
 /** Texts of the mode (b) delete that are worth a test (a committed delete whose cleanup is still owed must not read as plain success). */
 object PlaceDeleteMessages {
     const val COMMITTED_CLEANUP_OWED = "Place and its Moments deleted, but some cleanup (cached copies or pin removal) did not finish. It is retried at the next start."
+}
+
+
+/** The nine Layer 1 numbers as editable fields (3 kinds x High / Floor / Margin). A field is committed as soon as it parses; the model clamps it, the text you typed stays until you leave. */
+@Composable
+private fun PhotoMatchFields(cfg: com.rokid.context.memory.retrieval.PhotoMatchConfig, set: (com.rokid.context.memory.retrieval.PhotoMatchConfig) -> Unit) {
+    var cur by remember { mutableStateOf(cfg) }
+    androidx.compose.runtime.LaunchedEffect(cfg) { cur = cfg } // a reset (or a clamp) from outside refreshes the values
+    PlaceGuideModel.THRESH_KINDS.forEachIndexed { i, (label, key) ->
+        val shown = listOf(cfg.own, cfg.ownCentroid, cfg.web)[i]
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        var h by remember(key) { mutableStateOf(shown.high.toString()) }
+        var f by remember(key) { mutableStateOf(shown.floor.toString()) }
+        var m by remember(key) { mutableStateOf(shown.margin.toString()) }
+        // Re-sync a field only when its text no longer produces the stored (clamped) value: a reset from outside, never while typing.
+        androidx.compose.runtime.LaunchedEffect(shown) {
+            fun k(nh: Int, nf: Int, nm: Int) = com.rokid.context.memory.retrieval.KindThresholds(nh, nf, nm).clamped()
+            if (h.toIntOrNull()?.let { k(it, 0, 0).high } != shown.high) h = shown.high.toString()
+            if (f.toIntOrNull()?.let { k(shown.high, it, 0).floor } != shown.floor) f = shown.floor.toString()
+            if (m.toIntOrNull()?.let { k(shown.high, 0, it).margin } != shown.margin) m = shown.margin.toString()
+        }
+        fun commit(nh: String, nf: String, nm: String) {
+            val t = listOf(cur.own, cur.ownCentroid, cur.web)[i]
+            val k = com.rokid.context.memory.retrieval.KindThresholds(nh.toIntOrNull() ?: t.high, nf.toIntOrNull() ?: t.floor, nm.toIntOrNull() ?: t.margin)
+            val c = when (i) { 0 -> cur.copy(own = k); 1 -> cur.copy(ownCentroid = k); else -> cur.copy(web = k) }
+            cur = c; set(c)
+        }
+        TextFieldRow("High", h, { h = it; commit(it, f, m) }, tag = "place_thr_${key}_high", number = true)
+        TextFieldRow("Floor (0 = off)", f, { f = it; commit(h, it, m) }, tag = "place_thr_${key}_floor", number = true)
+        TextFieldRow("Margin", m, { m = it; commit(h, f, it) }, tag = "place_thr_${key}_margin", number = true)
+    }
 }

@@ -77,6 +77,8 @@ object PlaceHistoryModel {
         "MAYBE" -> "maybe · offline guess"
         "TEXT" -> "sign read"
         "POSSIBLE" -> "possible · not shown"
+        "IMAGE" -> "photo match · on the phone"
+        "NO_MATCH" -> "no place found"
         else -> "place card"
     }
 
@@ -89,6 +91,13 @@ object PlaceHistoryModel {
         CardDelivery.NOT_SENT_POSSIBLE -> "possible · not shown"
         CardDelivery.NOT_SENT_LATE -> "too late for the glasses"
         CardDelivery.NOT_SENT_BUSY -> "not sent: another message was showing"
+        CardDelivery.HELD_NOT_CONFIRMED -> "Not sent to glasses: the photo did not confirm it"
+        CardDelivery.HELD_NO_REFERENCE -> "Not sent to glasses: no reference photo to compare"
+        CardDelivery.HELD_DATA_SAVER -> "Not sent to glasses: Data saver blocked the online check"
+        CardDelivery.HELD_OFFLINE_NO_MODEL -> "Not sent to glasses: offline and no offline photo model"
+        CardDelivery.HELD_ONLINE_ONLY_NO_NETWORK -> "Not sent to glasses: no network (Online only)"
+        CardDelivery.HELD_CALL_FAILED -> "Not sent to glasses: the online check failed"
+        CardDelivery.HELD_NOT_ADMITTED -> "Not sent to glasses: phone too hot or low on power"
         else -> "unknown"
     }
 
@@ -107,7 +116,8 @@ object PlaceHistoryModel {
         env.zoneBlocked -> "A pause zone is active or near"
         !env.glassesConnected -> "The glasses are not connected"
         kind == "POSSIBLE" -> "This was only a possible match"
-        kind == "PHOTO" && (frameId == null || photoGone) -> "The photo is gone"
+        kind == "NO_MATCH" -> "No place was found for this photo"
+        (kind == "PHOTO" || kind == "IMAGE") && (frameId == null || photoGone) -> "The photo is gone"
         else -> null
     }
 }

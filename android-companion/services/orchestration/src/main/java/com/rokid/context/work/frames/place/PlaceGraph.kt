@@ -211,6 +211,11 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
         get() = runCatching { prefs.getBoolean(BEST_OF_K_KEY, false) }.getOrDefault(false)
         set(v) { prefs.edit().putBoolean(BEST_OF_K_KEY, v).apply() }
 
+    /** Developer: also list the attempts that found no place (NO_MATCH rows) in Place cards. Default OFF. */
+    var showAllAttempts: Boolean
+        get() = runCatching { prefs.getBoolean(SHOW_ALL_KEY, false) }.getOrDefault(false)
+        set(v) { prefs.edit().putBoolean(SHOW_ALL_KEY, v).apply() }
+
     /** The nine Layer 1 numbers (Developer mode shows them); every value is clamped, an unreadable one reads as the example default. EXAMPLE values, not calibrated. */
     var photoMatch: com.rokid.context.memory.retrieval.PhotoMatchConfig
         get() = runCatching {
@@ -258,6 +263,7 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
         private const val PIN_NEARBY_KEY = "pinCardsNearby"
         private const val CHECK_MODE_KEY = "checkMode"
         private const val BEST_OF_K_KEY = "bestOfK"
+        private const val SHOW_ALL_KEY = "showAllAttempts"
         const val DEFAULT_BUDGET_MB = 50
         fun of(context: Context) = PlaceGuideSettings(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
         fun over(prefs: android.content.SharedPreferences) = PlaceGuideSettings(prefs)

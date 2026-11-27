@@ -7,9 +7,9 @@ import org.junit.Test
 
 /** V2b: the Settings fields of the offline guess: defaults, ranges, and the slider grids that hold them. */
 class PlaceGuideOfflineGuessTest {
-    @Test fun theScreenStartsOffWithTheOwnersDefaults() {
+    @Test fun theScreenStartsOnWithTheOwnersDefaults() {
         val s = PlaceGuideUiState()
-        assertFalse(s.offlineGuess); assertEquals(0.55f, s.maybeCutoff); assertEquals(150, s.candidateRadiusM)
+        assertTrue(s.offlineGuess); assertEquals(0.55f, s.maybeCutoff); assertEquals(150, s.candidateRadiusM)
     }
 
     /** 27 Nov night: every "Extra place type" is ON by default except battles, valleys, cities and airports, each is its own switch, and the mountains label keeps the owner's plain wording. */
