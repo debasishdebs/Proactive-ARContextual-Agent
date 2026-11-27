@@ -30,6 +30,7 @@ class PlaceLayersViewModelTest {
         override suspend fun summary() = ""
         override var confirmedOnly = true
         override var pinCardsNearby = false
+        override var noPhotoByGps = false
         override var checkMode = CheckMode.AUTOMATIC
         override var photoMatch = PhotoMatchConfig.DEFAULT
         override fun resetPhotoMatch() { photoMatch = PhotoMatchConfig.DEFAULT }
@@ -54,6 +55,14 @@ class PlaceLayersViewModelTest {
         for (w in listOf("photo", "online", "offline", "multi")) vm.setLayer(w, false)
         assertFalse(c.layerPhoto || c.layerOnline || c.layerOffline || c.multiFrame); assertFalse(vm.state.value.layerPhoto)
         vm.setLayer("bestk", true); assertTrue(c.bestOfK)
+    }
+
+    @Test fun noPhotoByGpsSwitchIsOffByDefaultAndWritesThrough() {
+        val c = Ctl(); val vm = PlaceGuideViewModel(c, d)
+        assertFalse(vm.state.value.noPhotoByGps)
+        vm.setNoPhotoByGps(true)
+        assertTrue(c.noPhotoByGps); assertTrue(vm.state.value.noPhotoByGps)
+        vm.setNoPhotoByGps(false); assertFalse(c.noPhotoByGps)
     }
 
     @Test fun theNineNumbersAndTheReset() {

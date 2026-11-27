@@ -58,6 +58,9 @@ class AndroidPlaceGuideControl(
     override var pinCardsNearby: Boolean
         get() = settings.pinCardsNearby
         set(v) { settings.pinCardsNearby = v }
+    override var noPhotoByGps: Boolean
+        get() = settings.noPhotoByGps
+        set(v) { settings.noPhotoByGps = v }
 
     override var checkMode: com.rokid.context.work.frames.place.CheckMode
         get() = settings.checkMode

@@ -104,7 +104,7 @@ data class PlaceGuideUiState(
     /** V2b "Offline place guess (Maybe)": the user's switch (default OFF) and its two Advanced fields (cut-off, candidate radius in metres). */
     /** 27 Nov: the "Extra place types" switches that are ON (all ON by default; see ExtraPlaceTypes). */
     val extraTypes: Set<String> = com.rokid.context.connectors.place.ExtraPlaceTypes.DEFAULT_ON,
-    val confirmedOnly: Boolean = true, val pinCardsNearby: Boolean = false, val checkMode: com.rokid.context.work.frames.place.CheckMode = com.rokid.context.work.frames.place.CheckMode.AUTOMATIC,
+    val confirmedOnly: Boolean = true, val pinCardsNearby: Boolean = false, val noPhotoByGps: Boolean = false, val checkMode: com.rokid.context.work.frames.place.CheckMode = com.rokid.context.work.frames.place.CheckMode.AUTOMATIC,
     val photoMatch: com.rokid.context.memory.retrieval.PhotoMatchConfig = com.rokid.context.memory.retrieval.PhotoMatchConfig.DEFAULT, val offlineModelReady: Boolean = false,
     val refPhotoLine: String? = null, val layerRefPhotos: Boolean = true, val layerPhoto: Boolean = true, val layerOnline: Boolean = true, val layerOffline: Boolean = true, val multiFrame: Boolean = true, val bestOfK: Boolean = false, val showAllAttempts: Boolean = false,
     val offlineGuess: Boolean = true, val maybeCutoff: Float = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_CUTOFF, val candidateRadiusM: Int = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_RADIUS_M,
@@ -179,6 +179,10 @@ interface PlaceGuideControl {
         get() = true
         set(@Suppress("UNUSED_PARAMETER") v) {}
     var pinCardsNearby: Boolean
+        get() = false
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    /** "Also show places that have no photo, by GPS only" (default OFF). */
+    var noPhotoByGps: Boolean
         get() = false
         set(@Suppress("UNUSED_PARAMETER") v) {}
     var checkMode: com.rokid.context.work.frames.place.CheckMode
@@ -354,6 +358,8 @@ object PlaceGuideModel {
     const val CONFIRMED_NOTE = "A card appears on the glasses only when the photo from your glasses matches the place, on the phone or by the online check. An offline guess shows as 'Maybe'. Places that are only nearby are listed in Settings > Place cards with the reason."
     const val PIN_NEARBY_TITLE = "Also show pin cards when nearby"
     const val PIN_NEARBY_NOTE = "Your own pin gets its card as soon as you stand inside it, without checking the photo. Off: the pin waits for the photo to match."
+    const val NO_PHOTO_TITLE = "Also show places that have no photo, by GPS only"
+    const val NO_PHOTO_NOTE = "A nearby place that has no reference photo at all shows as a plain 'nearby' card (never 'confirmed'). Places with photos still go through the checks. Off: such a place waits for a photo."
     const val CHECK_TITLE = "How to check the photo"
     val CHECK_LABELS = listOf("Automatic", "Online only", "On the phone only")
     const val CHECK_NOTE = "Automatic: on the phone first, then online when the network and Data saver allow, then the offline guess (also when an online call fails). Online only: never the offline guess. On the phone only: nothing is sent online. Model privacy 'Offline only' always wins."
@@ -392,7 +398,7 @@ object PlaceGuideModel {
 
 class PlaceGuideViewModel(private val control: PlaceGuideControl, private val work: CoroutineDispatcher = Dispatchers.IO, developerMode: Boolean = false, private val now: () -> Long = System::currentTimeMillis, private val zone: java.time.ZoneId = java.time.ZoneId.systemDefault()) : ViewModel() {
     private val _state = MutableStateFlow(PlaceGuideUiState(enabled = control.enabled, cardSide = control.cardSide, developerMode = developerMode, budgetMb = control.budgetMb, extraTypes = control.extraTypes, offlineGuess = control.offlineGuess, maybeCutoff = control.maybeCutoff, candidateRadiusM = control.candidateRadiusM,
-        confirmedOnly = control.confirmedOnly, pinCardsNearby = control.pinCardsNearby, checkMode = control.checkMode, photoMatch = control.photoMatch, offlineModelReady = control.offlineModelReady,
+        confirmedOnly = control.confirmedOnly, pinCardsNearby = control.pinCardsNearby, noPhotoByGps = control.noPhotoByGps, checkMode = control.checkMode, photoMatch = control.photoMatch, offlineModelReady = control.offlineModelReady,
         layerRefPhotos = control.layerRefPhotos, layerPhoto = control.layerPhoto, layerOnline = control.layerOnline, layerOffline = control.layerOffline, multiFrame = control.multiFrame, bestOfK = control.bestOfK, showAllAttempts = control.showAllAttempts))
     val state: StateFlow<PlaceGuideUiState> = _state
 
@@ -408,6 +414,7 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     fun setOfflineGuess(on: Boolean) { control.offlineGuess = on; _state.update { it.copy(offlineGuess = control.offlineGuess) } }
     fun setMaybeCutoff(v: Float) { control.maybeCutoff = PlaceGuideModel.clampCutoff(v); _state.update { it.copy(maybeCutoff = control.maybeCutoff) } }
     fun setConfirmedOnly(on: Boolean) { control.confirmedOnly = on; _state.update { it.copy(confirmedOnly = control.confirmedOnly) } }
+    fun setNoPhotoByGps(on: Boolean) { control.noPhotoByGps = on; _state.update { it.copy(noPhotoByGps = control.noPhotoByGps) } }
     fun setPinCardsNearby(on: Boolean) { control.pinCardsNearby = on; _state.update { it.copy(pinCardsNearby = control.pinCardsNearby) } }
     fun setCheckMode(m: com.rokid.context.work.frames.place.CheckMode) { control.checkMode = m; _state.update { it.copy(checkMode = control.checkMode) } }
     /** The nine numbers: stored clamped, the screen shows what was stored. */
@@ -917,7 +924,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
     PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, setLabel = vm::setLabel, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setExtraType = vm::setExtraType, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius, openManual = vm::openManual, updateManual = vm::updateManual, saveManual = vm::saveManual, cancelManual = vm::cancelManual, pickManualPhoto = vm::pickManualPhoto, fetchManualPhoto = vm::fetchManualPhoto, removeManualPhoto = vm::removeManualPhoto, saveManualWithoutPhoto = vm::saveManualWithoutPhoto, openPinPhoto = vm::openPinPhoto, updatePinPhoto = vm::updatePinPhoto, pickPinPhoto = vm::pickPinPhoto, fetchPinPhoto = vm::fetchPinPhoto, removePinPhoto = vm::removePinPhoto, savePinPhoto = vm::savePinPhoto, cancelPinPhoto = vm::cancelPinPhoto,
-        setConfirmedOnly = vm::setConfirmedOnly, setPinCardsNearby = vm::setPinCardsNearby, setCheckMode = vm::setCheckMode, setPhotoMatch = vm::setPhotoMatch, resetPhotoMatch = vm::resetPhotoMatch, setLayer = vm::setLayer))
+        setConfirmedOnly = vm::setConfirmedOnly, setPinCardsNearby = vm::setPinCardsNearby, setNoPhotoByGps = vm::setNoPhotoByGps, setCheckMode = vm::setCheckMode, setPhotoMatch = vm::setPhotoMatch, resetPhotoMatch = vm::resetPhotoMatch, setLayer = vm::setLayer))
 }
 
 /**
@@ -970,7 +977,7 @@ class PlaceGuideActions(
     /** Developer "Add photo" on a pin that needs a Moment. */
     val openPinPhoto: (String) -> Unit = {}, val updatePinPhoto: ((PinPhotoState) -> PinPhotoState) -> Unit = {}, val pickPinPhoto: (String?) -> Unit = {}, val fetchPinPhoto: () -> Unit = {}, val removePinPhoto: () -> Unit = {}, val savePinPhoto: () -> Unit = {}, val cancelPinPhoto: () -> Unit = {},
     /** Layered confirmation: the user switches, the check mode, the nine numbers and the Developer layer switches. */
-    val setConfirmedOnly: (Boolean) -> Unit = {}, val setPinCardsNearby: (Boolean) -> Unit = {}, val setCheckMode: (com.rokid.context.work.frames.place.CheckMode) -> Unit = {},
+    val setConfirmedOnly: (Boolean) -> Unit = {}, val setPinCardsNearby: (Boolean) -> Unit = {}, val setNoPhotoByGps: (Boolean) -> Unit = {}, val setCheckMode: (com.rokid.context.work.frames.place.CheckMode) -> Unit = {},
     val setPhotoMatch: (com.rokid.context.memory.retrieval.PhotoMatchConfig) -> Unit = {}, val resetPhotoMatch: () -> Unit = {}, val setLayer: (String, Boolean) -> Unit = { _, _ -> },
 )
 
@@ -990,6 +997,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
             SettingsCard {
                 SwitchRow(PlaceGuideModel.CONFIRMED_TITLE, PlaceGuideModel.CONFIRMED_NOTE, state.confirmedOnly, on.setConfirmedOnly, tag = "place_confirmed_only")
                 if (state.confirmedOnly) SwitchRow(PlaceGuideModel.PIN_NEARBY_TITLE, PlaceGuideModel.PIN_NEARBY_NOTE, state.pinCardsNearby, on.setPinCardsNearby, tag = "place_pin_nearby")
+                if (state.confirmedOnly) SwitchRow(PlaceGuideModel.NO_PHOTO_TITLE, PlaceGuideModel.NO_PHOTO_NOTE, state.noPhotoByGps, on.setNoPhotoByGps, tag = "place_no_photo_gps")
                 ChoiceRow(PlaceGuideModel.CHECK_TITLE, PlaceGuideModel.CHECK_LABELS, state.checkMode.ordinal, { on.setCheckMode(com.rokid.context.work.frames.place.CheckMode.entries[it]) }, tag = "place_check_mode")
                 NoticeText(PlaceGuideModel.CHECK_NOTE, tag = "place_check_mode_note")
                 if (!state.offlineModelReady) NoticeText(PlaceGuideModel.MODEL_NEEDED, tag = "place_model_needed")

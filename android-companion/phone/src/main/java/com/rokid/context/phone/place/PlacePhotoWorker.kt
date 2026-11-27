@@ -169,6 +169,7 @@ class PlaceEmbedWorker(appContext: Context, params: WorkerParameters) : Coroutin
     override suspend fun doWork(): Result {
         val pack = PlaceGraph.readyPack(applicationContext)
         val e = PlaceRefPhotos.embedder(applicationContext, pack)
+        PcLog.i(TAG, "photo embed start attempt=${runAttemptCount + 1}")
         val end = withContext(Dispatchers.Default) { e.run() }
         val how = end.name; val ok = e.embedded; val failed = e.failed
         PcLog.i(TAG, "photo embed how=$how ok=$ok failed=$failed")
@@ -176,7 +177,7 @@ class PlaceEmbedWorker(appContext: Context, params: WorkerParameters) : Coroutin
         if (end == EmbedEnd.DONE) runCatching { PlacePhotoWork(applicationContext).ensureIfNeeded(pack) }
         return when (end) { EmbedEnd.HOT -> Result.retry(); EmbedEnd.NO_SPACE -> if (runAttemptCount < MAX_WAITS) Result.retry() else Result.success(); else -> Result.success() }
     }
-    companion object { const val UNIQUE = "place_photo_embed"; const val MAX_WAITS = 6; private const val TAG = "PcPlacePhotos" }
+    companion object { /** The v2 name: an older build left a CHARGING-only work under [LEGACY_UNIQUE] that KEEP kept for ever (it never ran), so the matching never started. */ const val UNIQUE = "place_photo_embed_v2"; const val LEGACY_UNIQUE = "place_photo_embed"; const val MAX_WAITS = 6; private const val TAG = "PcPlacePhotos" }
 }
 
 /** Queues and cancels the two photo works (fetch, then matching). Every call is cheap and idempotent (KEEP). */
@@ -205,6 +206,7 @@ class PlacePhotoWork(private val app: Context, private val wm: () -> WorkManager
     fun ensureEmbed() {
         if (!DeveloperFlags.placeRefPhotos(app)) return
         val req = OneTimeWorkRequestBuilder<PlaceEmbedWorker>().setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 2, TimeUnit.MINUTES).build()
+        wm().cancelUniqueWork(PlaceEmbedWorker.LEGACY_UNIQUE) // idempotent: removes a stale charging-only work of an older build
         wm().enqueueUniqueWork(PlaceEmbedWorker.UNIQUE, ExistingWorkPolicy.KEEP, req)
     }
 
@@ -216,7 +218,7 @@ class PlacePhotoWork(private val app: Context, private val wm: () -> WorkManager
         return fetched to (fetched - pack.needsEmbed(space, 100_000).size).coerceAtLeast(0)
     }
 
-    fun cancelAll() { wm().cancelUniqueWork(PlacePhotoWorker.UNIQUE); wm().cancelUniqueWork(PlaceEmbedWorker.UNIQUE); PhotoPhaseStore(app).clear() }
+    fun cancelAll() { wm().cancelUniqueWork(PlacePhotoWorker.UNIQUE); wm().cancelUniqueWork(PlaceEmbedWorker.UNIQUE); wm().cancelUniqueWork(PlaceEmbedWorker.LEGACY_UNIQUE); PhotoPhaseStore(app).clear() }
 }
 
 /** The words of the photo phase for the lists (fixed phrases, no names). */

@@ -37,6 +37,13 @@ class PlacePhotoRulesTest {
         assertTrue("a finished embed run asks the fetch phase again (budget may be free)", c.contains("if (end == EmbedEnd.DONE) runCatching { PlacePhotoWork(applicationContext).ensureIfNeeded(pack) }"))
     }
 
+    @Test fun theEmbedWorkUsesANewUniqueNameSoAStaleChargingOnlyWorkOfAnOlderBuildIsNotKept() {
+        val w = code(named("PlacePhotoWorker.kt"))
+        assertTrue("new name", w.contains("const val UNIQUE = \"place_photo_embed_v2\""))
+        assertTrue("the old name is cancelled once", w.contains("const val LEGACY_UNIQUE = \"place_photo_embed\"") && w.contains("cancelUniqueWork(PlaceEmbedWorker.LEGACY_UNIQUE)"))
+        assertTrue("one line when it starts", w.contains("\"photo embed start\""))
+    }
+
     @Test fun storedPhotosAndVectorsAreNeverReadByAModelCall() {
         val users = all().filter { f -> code(f).let { it.contains("imageVectorsFor(") || it.contains("imagesOf(") } }.map { it.name }.toSet()
         // the matcher reference path, the pack, the embed glue, the credit line and the fetcher: none of them builds a model request
