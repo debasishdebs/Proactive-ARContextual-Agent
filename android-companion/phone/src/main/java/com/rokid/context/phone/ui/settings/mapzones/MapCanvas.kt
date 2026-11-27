@@ -138,7 +138,9 @@ fun MapCanvas(
 ) {
     val measurer = rememberTextMeasurer()
     val fitSig = items.map { it.id }
-    LaunchedEffect(view.size, fitSig, view.fitKey) {
+    // Keyed on "the size is usable", not on the size itself: the sheet below the map changes height as text appears while zooming, and a re-fit on every resize threw the view back to the whole-country start.
+    val sizeUsable = view.size.width >= 10f && view.size.height >= 10f
+    LaunchedEffect(sizeUsable, fitSig, view.fitKey) {
         val s = view.size
         if (s.width < 10f || s.height < 10f) return@LaunchedEffect
         val boxes = fitBoxes.ifEmpty { you?.let { listOf(MapViewport.grown(it.lat, it.lon, it.lat, it.lon, 2_000.0)) } ?: emptyList() }
