@@ -43,6 +43,7 @@ fun SeededAreasContent(p: SeedPanel, onFocus: (SeedOverlay) -> Unit) {
     // One counts line: manual places (pins) and seeded places (summed over the areas); counts only.
     if (p.ui.header != null || p.ui.pins.isNotEmpty()) NoticeText(SeedAreaList.counts(p.ui.pins.size, p.ui.seededPlaces), tag = "seed_counts_header")
     p.ui.areas.forEach { a -> SeedAreaRowContent(p, a) { onFocus(a) } }
+    if (p.ui.photoRetry) SecondaryAction("Retry photos", p.retryPhotos, tag = "seed_retry_photos")
     if (p.ui.areas.isNotEmpty()) NoticeText(SeedAreaList.ATTRIBUTION, tag = "seed_list_attribution")
 }
 

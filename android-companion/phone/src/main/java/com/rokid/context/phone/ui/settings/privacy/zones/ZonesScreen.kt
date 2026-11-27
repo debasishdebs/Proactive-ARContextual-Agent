@@ -167,7 +167,7 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
         // The draft box goes as soon as a seed is queued or started, and when the screen is left; it comes back only from "Draw a box" / "Edit box".
         LaunchedEffect(seedState.clearDraftSeq) { if (seedState.clearDraftSeq > 0 && seedMode) vm.editDraft { ZoneDrafts.withoutBox(it) } }
         if (seedMode) DisposableEffect(vm) { onDispose { vm.editDraft { ZoneDrafts.withoutBox(it) } } }
-        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour, seedVm::requestSeedAgain, seedVm::editArea, seedVm::endEdit, seedVm::viewportSettled, seedVm::setShowPlaces, seedVm::tapDot)
+        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour, seedVm::requestSeedAgain, seedVm::editArea, seedVm::endEdit, seedVm::viewportSettled, seedVm::setShowPlaces, seedVm::tapDot, retryPhotos = seedVm::retryPhotos)
     }
     if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back), null, online, seedPanel, networkOnline); return }
     val mapVm = viewModel(key = "offline_map") { OfflineMapViewModel(offline.files, offline.store) }
@@ -273,6 +273,8 @@ class SeedPanel(
     val viewportSettled: (com.rokid.context.memory.place.GeoBox?) -> Unit = {},
     val setShowPlaces: (Boolean) -> Unit = {},
     val tapDot: (String?) -> Unit = {},
+    /** B2: "Retry photos" (the reference photos of seeded places). */
+    val retryPhotos: () -> Unit = {},
 )
 
 /** The remove-area dialog (both map screens): "the area and its places" is preselected; the other choice keeps the places as ordinary fetched places. */

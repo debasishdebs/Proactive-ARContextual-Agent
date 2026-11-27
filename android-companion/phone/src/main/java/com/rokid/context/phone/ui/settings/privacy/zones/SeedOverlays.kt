@@ -39,8 +39,16 @@ data class SeedAreaInfo(val id: String, val south: Double, val west: Double, val
     /** A done area: how many of its cells have no OSM extras (a count only). */
     val noOsm: Int = 0,
     /** The owner's saved colour (a palette index), or null = the default for the area's order. */
-    val savedColour: Int? = null) {
+    val savedColour: Int? = null,
+    /** B2: reference photos of this area's seeded places (counts only): with a photo, without one for good, and the phase's note ("waiting for free Wi-Fi"); null = not known. */
+    val photos: AreaPhotos? = null) {
     val box: DoubleArray get() = doubleArrayOf(south, west, north, east)
+}
+
+/** B2: [ok] places with a photo, [none] without one (none free, skipped or failed for good) of [total] seeded places; [note] = why the rest waits (null = nothing to say). */
+data class AreaPhotos(val ok: Int, val none: Int, val total: Int, val note: String? = null) {
+    val done: Int get() = (ok + none).coerceAtMost(total)
+    val complete: Boolean get() = total <= 0 || done >= total
 }
 
 /** A user pin as the map needs it: a dot (no name, no note). */
@@ -62,6 +70,8 @@ interface SeedMapControl {
     suspend fun retry(id: String): Result<SeedOutcome> = Result.failure(UnsupportedOperationException())
     /** S4: what this phone's own pack says about places and bytes per seeded cell (read only, offline). The default knows nothing, so the estimate is marked rough. */
     suspend fun rates(): SeedRates = SeedRates.ROUGH
+    /** B2 "Retry" of the photo phase: starts it again (free Wi-Fi only). Default: nothing. */
+    suspend fun retryPhotos() {}
     /** Map zones "Show cells" (read only): the stored status of each 5 km cell touching [box]; a missing cell is absent. The default is empty (nothing known). */
     suspend fun cellStatuses(box: GeoBox): Map<String, String> = emptyMap()
     /** Saves the owner's colour (a [SeedPalette] index) for the area; kept in a small prefs file keyed by a hash of the id. */
@@ -234,6 +244,8 @@ data class SeedMapUiState(
     val pins: List<PinInfo> = emptyList(),
     /** Places stored across the seeded areas (for the counts header). */
     val seededPlaces: Int = 0,
+    /** B2: some seeded place still has no decided reference photo (the list shows "Retry photos"). */
+    val photoRetry: Boolean = false,
     val seeding: Boolean = false,
     val message: String? = null,
     val messageIsError: Boolean = false,
@@ -325,8 +337,13 @@ object SeedAreaList {
     }
     fun name(index: Int, a: SeedAreaInfo): String = a.name?.takeIf { it.isNotBlank() } ?: "Seeded area ${index + 1}"
     fun cellCount(a: SeedAreaInfo): Long = SeedEstimate.boxOf(a.box)?.let { SeedEstimate.cells(it) } ?: 0L
+    /** "Photos: 412 of 980, 37 without a photo" (+ " (waiting for free Wi-Fi)"): counts only; null when the area has no places or nothing is known. */
+    fun photosText(a: SeedAreaInfo): String? = a.photos?.takeIf { it.total > 0 }?.let { "Photos: ${it.done} of ${it.total}, ${it.none} without a photo" + (if (!it.complete) it.note?.let { n -> " ($n)" } ?: "" else "") }
+    /** True while some area still has places without a decided photo: the list then offers "Retry photos". */
+    fun photosIncomplete(areas: List<SeedAreaInfo>): Boolean = areas.any { it.photos?.complete == false }
     fun row(index: Int, a: SeedAreaInfo, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
         val parts = mutableListOf(name(index, a), statusText(a))
+        photosText(a)?.let { parts += it }
         a.places?.let { parts += "$it place${if (it == 1) "" else "s"}" }
         val c = cellCount(a); if (c > 0) parts += cellsText(c.toInt())
         if (a.places != null) parts += SeedEstimate.sizeText(a.bytes)
@@ -430,7 +447,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             infos = a
             val show = runCatching { control.showPlaces() }.getOrDefault(true)
             _state.update { it.copy(showPlaces = show) }
-            _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, rates = r, pins = p, progress = SeedAreaList.progress(a)).keepSelection(a) }
+            _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, photoRetry = SeedAreaList.photosIncomplete(a), rates = r, pins = p, progress = SeedAreaList.progress(a)).keepSelection(a) }
             loadDots()
             if (a.any { it.seed != null }) startPoll()
         }
@@ -449,7 +466,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             com.rokid.context.phone.ui.settings.seedTicks(POLL_MS).takeWhile {
                 val a = runCatching { control.areas() }.getOrDefault(emptyList())
                 infos = a
-                _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, progress = SeedAreaList.progress(a)).keepSelection(a) }
+                _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, photoRetry = SeedAreaList.photosIncomplete(a), progress = SeedAreaList.progress(a)).keepSelection(a) }
                 a.any { it.seed != null }
             }.collect {}
             loadDots() // the seed ended: its new places show
@@ -457,6 +474,9 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
     }
 
     /** Cancel on a row or in the sheet: the work stops, the area stays (partial) and seeding it again resumes. */
+    /** "Retry photos": starts the photo phase again (free Wi-Fi only; Offline only still stops it). */
+    fun retryPhotos() { viewModelScope.launch(work) { runCatching { control.retryPhotos() }; refresh() } }
+
     /** "Retry failed cells" (row, selected-area card or progress area): queues only the cells that did not seed. */
     fun retryFailed(id: String) {
         viewModelScope.launch(work) {

@@ -71,6 +71,20 @@ class AndroidPlaceGuideControl(
 
     override val offlineModelReady: Boolean get() = com.rokid.context.phone.vision.OfflineCaptionerHolder.modelFiles(app) != null
 
+    override suspend fun refPhotoLine(): String? = runCatching {
+        val st = PlaceGraph.readyPack(app).imageStats()
+        com.rokid.context.phone.ui.settings.place.PlaceGuideModel.refPhotoLine(st.ok, st.bytes, st.bytes >= st.capBytes)
+    }.getOrNull()
+
+    override var layerRefPhotos: Boolean
+        get() = com.rokid.context.orchestration.forget.DeveloperFlags.placeRefPhotos(app)
+        set(v) {
+            com.rokid.context.orchestration.forget.DeveloperFlags.setPlaceRefPhotos(app, v)
+            if (v) { PlacePhotoWork(app).ensure(); PlacePhotoWork(app).ensureEmbed() } else PlacePhotoWork(app).cancelAll()
+        }
+
+    override fun embedPhotosNow() { PlacePhotoWork(app).embedNow() }
+
     override var layerPhoto: Boolean
         get() = com.rokid.context.orchestration.forget.DeveloperFlags.placeL1Photo(app)
         set(v) { com.rokid.context.orchestration.forget.DeveloperFlags.setPlaceL1Photo(app, v) }
@@ -229,6 +243,7 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
         runCatching { seedWork.reconcile(pack) } // an area marked seeding with no live work becomes partial
         val states = runCatching { seedWork.states(pack, seedAdmission(app)() != null) }.getOrDefault(emptyMap())
         val stats = runCatching { pack.areaStats() }.getOrDefault(emptyMap())
+        val photoNote = PlacePhotoText.note(PhotoPhaseStore(app).get())
         return pack.areas().map {
             val st = states[it.blueZoneId]
             val live = st?.takeIf { s -> s.active }
@@ -242,7 +257,7 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
             val stored = if (check) runCatching { pack.cellStatuses(box) }.getOrNull() else null
             val t = com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaList.truth(status, live != null, st?.phase, failed, wanted, stored)
             val noOsm = if (t.status == com.rokid.context.memory.place.AREA_DONE && stored == null) (st?.counts?.noOsm ?: 0) else t.noOsm
-            com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, t.status, it.name, live, stats[it.blueZoneId]?.places, stats[it.blueZoneId]?.bytes ?: 0, it.seededAt, t.failed, t.cancelled, noOsm, savedColour = colours.get(it.blueZoneId))
+            com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaInfo(it.blueZoneId, it.south, it.west, it.north, it.east, t.status, it.name, live, stats[it.blueZoneId]?.places, stats[it.blueZoneId]?.bytes ?: 0, it.seededAt, t.failed, t.cancelled, noOsm, savedColour = colours.get(it.blueZoneId), photos = stats[it.blueZoneId]?.let { x -> com.rokid.context.phone.ui.settings.privacy.zones.AreaPhotos(x.photoOk, x.photoNone, x.places, photoNote) })
         }
     }
     override suspend fun rates(): com.rokid.context.phone.ui.settings.privacy.zones.SeedRates {
@@ -252,6 +267,7 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
         return com.rokid.context.phone.ui.settings.privacy.zones.SeedRates.of(cells, st.sumOf { it.places }, st.sumOf { it.bytes }, SeedTimingStore(app).secondsPerCell())
     }
     override suspend fun cancelSeed(id: String) { seedWork.cancel(id) }
+    override suspend fun retryPhotos() { PlacePhotoWork(app).retry() }
     override suspend fun retry(id: String): Result<com.rokid.context.phone.ui.settings.place.SeedOutcome> = runCatching {
         if (com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() != com.rokid.context.core.net.ModelPrivacy.AUTO) {
             com.rokid.context.core.log.PcLog.i("PcData", "seed refused: offline only")
@@ -309,6 +325,13 @@ class AndroidPlaceHistoryControl(
 
     override suspend fun line(row: com.rokid.context.memory.db.PlaceCardLogEntity): String? =
         com.rokid.context.work.frames.place.PlaceCardRebuild.card(row, placesOf(row))?.line
+
+    /** B2: the credit of the stored reference photo of the first cited place that has one. Public Commons credit only; no vector, no bytes. */
+    override suspend fun credit(row: com.rokid.context.memory.db.PlaceCardLogEntity): String? {
+        val ids = com.rokid.context.work.frames.place.PlaceCardRebuild.idsOf(row)
+        val img = PlaceGraph.readyPack(app).imagesOf(ids).firstOrNull { it.status == com.rokid.context.memory.place.ImageState.OK } ?: return null
+        return com.rokid.context.phone.ui.settings.place.PlaceHistoryModel.creditLine(img.author, img.licence)
+    }
 
     override suspend fun photoPath(frameId: String): String? =
         com.rokid.context.memory.MemoryGraph.get(app).db.frameDao().byIds(listOf(frameId)).firstOrNull()?.path?.takeIf { it.isNotBlank() && java.io.File(it).exists() }

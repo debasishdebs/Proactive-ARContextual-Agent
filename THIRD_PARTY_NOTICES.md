@@ -47,6 +47,7 @@ The place seeder fetches facts on the user's network and stores them on the devi
 - Wikipedia article text (intros): CC BY-SA (Creative Commons Attribution-ShareAlike). Version (4.0 vs 3.0 per article): verify. Attribution is shown in the seeding screen; derived text stays under the same licence.
 - Wikidata: CC0 1.0 (public domain dedication).
 - OpenStreetMap data: ODbL 1.0, (c) OpenStreetMap contributors (https://www.openstreetmap.org/copyright).
+- Wikimedia Commons images (reference photos of seeded places): the app downloads one 330 px thumbnail per place from Wikimedia Commons, only for files under a free licence (CC BY, CC BY-SA, CC0 or public domain; files under any other or unknown licence are skipped). The author, licence name and link to the file page are stored with each photo and shown with it (Settings > Place cards, the detail of a card that cites the place: "Reference photo: author, licence, Wikimedia Commons"). The images stay on the device, in the app's private encrypted place database: they are used only for on-device matching, are never uploaded, shown to any model service or included in a backup, and are not redistributed.
 
 ## Map tiles (MapTiler, live only)
 

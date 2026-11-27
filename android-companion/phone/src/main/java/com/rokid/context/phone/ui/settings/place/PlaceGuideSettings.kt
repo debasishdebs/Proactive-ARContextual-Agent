@@ -101,7 +101,7 @@ data class PlaceGuideUiState(
     val extraTypes: Set<String> = com.rokid.context.connectors.place.ExtraPlaceTypes.DEFAULT_ON,
     val confirmedOnly: Boolean = true, val pinCardsNearby: Boolean = false, val checkMode: com.rokid.context.work.frames.place.CheckMode = com.rokid.context.work.frames.place.CheckMode.AUTOMATIC,
     val photoMatch: com.rokid.context.memory.retrieval.PhotoMatchConfig = com.rokid.context.memory.retrieval.PhotoMatchConfig.DEFAULT, val offlineModelReady: Boolean = false,
-    val layerPhoto: Boolean = true, val layerOnline: Boolean = true, val layerOffline: Boolean = true, val multiFrame: Boolean = true, val bestOfK: Boolean = false, val showAllAttempts: Boolean = false,
+    val refPhotoLine: String? = null, val layerRefPhotos: Boolean = true, val layerPhoto: Boolean = true, val layerOnline: Boolean = true, val layerOffline: Boolean = true, val multiFrame: Boolean = true, val bestOfK: Boolean = false, val showAllAttempts: Boolean = false,
     val offlineGuess: Boolean = true, val maybeCutoff: Float = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_CUTOFF, val candidateRadiusM: Int = com.rokid.context.work.frames.place.OfflineTier.DEFAULT_RADIUS_M,
     /** Developer only: the open "Add place manually" form (null = closed). */
     val manualForm: ManualFormState? = null,
@@ -185,6 +185,14 @@ interface PlaceGuideControl {
     fun resetPhotoMatch() {}
     /** The offline photo model (546 MB) is downloaded, so the offline guess can run. */
     val offlineModelReady: Boolean get() = false
+    /** B2: "Place photos for matching: N places have a photo (X MB)" (counts and size only), or null when the pack cannot be read. */
+    suspend fun refPhotoLine(): String? = null
+    /** B2 Developer switch: fetch (free Wi-Fi) and embed (charging, not hot) the reference photos of seeded places. ON by default. */
+    var layerRefPhotos: Boolean
+        get() = true
+        set(@Suppress("UNUSED_PARAMETER") v) {}
+    /** B2 Developer button "Embed seed photos now": embeds the fetched photos once without the charging rule (heat still stops it). */
+    fun embedPhotosNow() {}
     /** Developer switches (all ON by default except best-of-k and show-all-attempts): Layer 1 (kill switch), Layer 2, Layer 3, several frames per glance, best-of-k instead of the mean, show NO_MATCH rows in Activity. */
     var layerPhoto: Boolean
         get() = true
@@ -347,6 +355,11 @@ object PlaceGuideModel {
     val CHECK_LABELS = listOf("Automatic", "Online only", "On the phone only")
     const val CHECK_NOTE = "Automatic: on the phone first, then online when the network and Data saver allow, then the offline guess (also when an online call fails). Online only: never the offline guess. On the phone only: nothing is sent online. Model privacy 'Offline only' always wins."
     const val MODEL_NEEDED = "Needs the offline photo model (546 MB). Download it on Wi-Fi in Settings > Models."
+    const val REF_PHOTO_LINE_PREFIX = "Place photos for matching: "
+    /** "Place photos for matching: 412 places have a photo (13.2 MB)" (counts and size only; no place, no name). */
+    fun refPhotoLine(places: Int, bytes: Long, capped: Boolean = false): String =
+        REF_PHOTO_LINE_PREFIX + "$places place${if (places == 1) " has" else "s have"} a photo (${String.format(java.util.Locale.US, "%.1f", bytes / 1048576.0)} MB)" + if (capped) ". The photo storage is full: new photos are skipped." else ""
+    const val REF_PHOTO_NOTE = "Fetched once on free Wi-Fi while you seed, then used with no network. Prepared for matching while the phone charges. Photos stay on the phone and are never sent anywhere. Credits: Wikimedia Commons, shown where a card uses a photo."
     const val THRESH_TITLE = "Photo match numbers (Developer)"
     const val THRESH_NOTE = "Example values, not calibrated. Scores are cosine x 1000. High: accept at once. Floor: below it the place is dropped from the list (0 = off). Margin: the lead needed over the next place. Clamped to 500-999 (margin 0-200). Every change applies to the next photo."
     val THRESH_KINDS = listOf("Own photo" to "own", "Scene centroid" to "centroid", "Web photo" to "web")
@@ -377,7 +390,7 @@ object PlaceGuideModel {
 class PlaceGuideViewModel(private val control: PlaceGuideControl, private val work: CoroutineDispatcher = Dispatchers.IO, developerMode: Boolean = false, private val now: () -> Long = System::currentTimeMillis, private val zone: java.time.ZoneId = java.time.ZoneId.systemDefault()) : ViewModel() {
     private val _state = MutableStateFlow(PlaceGuideUiState(enabled = control.enabled, cardSide = control.cardSide, developerMode = developerMode, budgetMb = control.budgetMb, extraTypes = control.extraTypes, offlineGuess = control.offlineGuess, maybeCutoff = control.maybeCutoff, candidateRadiusM = control.candidateRadiusM,
         confirmedOnly = control.confirmedOnly, pinCardsNearby = control.pinCardsNearby, checkMode = control.checkMode, photoMatch = control.photoMatch, offlineModelReady = control.offlineModelReady,
-        layerPhoto = control.layerPhoto, layerOnline = control.layerOnline, layerOffline = control.layerOffline, multiFrame = control.multiFrame, bestOfK = control.bestOfK, showAllAttempts = control.showAllAttempts))
+        layerRefPhotos = control.layerRefPhotos, layerPhoto = control.layerPhoto, layerOnline = control.layerOnline, layerOffline = control.layerOffline, multiFrame = control.multiFrame, bestOfK = control.bestOfK, showAllAttempts = control.showAllAttempts))
     val state: StateFlow<PlaceGuideUiState> = _state
 
     init { refreshSummary() }
@@ -397,9 +410,11 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     /** The nine numbers: stored clamped, the screen shows what was stored. */
     fun setPhotoMatch(c: com.rokid.context.memory.retrieval.PhotoMatchConfig) { control.photoMatch = c; _state.update { it.copy(photoMatch = control.photoMatch) } }
     fun resetPhotoMatch() { control.resetPhotoMatch(); _state.update { it.copy(photoMatch = control.photoMatch) } }
+    /** Developer: embeds the fetched seed photos once, without the charging rule. */
+    fun embedPhotosNow() { control.embedPhotosNow() }
     fun setLayer(which: String, on: Boolean) {
-        when (which) { "photo" -> control.layerPhoto = on; "online" -> control.layerOnline = on; "offline" -> control.layerOffline = on; "multi" -> control.multiFrame = on; "bestk" -> control.bestOfK = on; "all" -> control.showAllAttempts = on }
-        _state.update { it.copy(layerPhoto = control.layerPhoto, layerOnline = control.layerOnline, layerOffline = control.layerOffline, multiFrame = control.multiFrame, bestOfK = control.bestOfK, showAllAttempts = control.showAllAttempts) }
+        when (which) { "refphotos" -> control.layerRefPhotos = on; "photo" -> control.layerPhoto = on; "online" -> control.layerOnline = on; "offline" -> control.layerOffline = on; "multi" -> control.multiFrame = on; "bestk" -> control.bestOfK = on; "all" -> control.showAllAttempts = on }
+        _state.update { it.copy(layerRefPhotos = control.layerRefPhotos, layerPhoto = control.layerPhoto, layerOnline = control.layerOnline, layerOffline = control.layerOffline, multiFrame = control.multiFrame, bestOfK = control.bestOfK, showAllAttempts = control.showAllAttempts) }
         if (which == "all") refreshHistory()
     }
     fun setCandidateRadius(m: Int) { control.candidateRadiusM = PlaceGuideModel.clampRadius(m); _state.update { it.copy(candidateRadiusM = control.candidateRadiusM) } }
@@ -824,7 +839,8 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     private suspend fun buildDetail(h: PlaceHistoryControl, r: com.rokid.context.memory.db.PlaceCardLogEntity, message: String? = null): PlaceHistoryDetail {
         val line = runCatching { h.line(r) }.getOrNull()
         val photo = r.frameId?.takeIf { r.photoGone == 0 }?.let { runCatching { h.photoPath(it) }.getOrNull() } // retention v3: a gone photo is never loaded (its id is kept only as lineage)
-        return PlaceHistoryDetail(r.toUi(), line, photo, h.showAgainBlock(r) ?: if (line == null) PlaceHistoryModel.GONE_LINE else null, message)
+        val credit = runCatching { h.credit(r) }.getOrNull()
+        return PlaceHistoryDetail(r.toUi(), line, photo, h.showAgainBlock(r) ?: if (line == null) PlaceHistoryModel.GONE_LINE else null, message, credit)
     }
 
     fun openHistory(id: String) {
@@ -871,7 +887,8 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
         val pins = runCatching { control.pinning?.pins() }.getOrNull().orEmpty()
         val moments = runCatching { control.momentsOf(pins.mapNotNull { it.momentId }) }.getOrDefault(emptyMap())
         val indexed = if (_state.value.developerMode) runCatching { control.referenceIndexed(moments.keys.toList()) }.getOrDefault(emptyMap()) else emptyMap()
-        _state.update { it.copy(packSummary = s, stats = st, pins = pins, moments = moments, refIndexed = indexed) }
+        val photoLine = runCatching { control.refPhotoLine() }.getOrNull()
+        _state.update { it.copy(packSummary = s, stats = st, pins = pins, moments = moments, refIndexed = indexed, refPhotoLine = photoLine) }
         if (refreshSeedLines() > 0) pollSeeds()
         refreshHistoryNow()
     }
@@ -889,7 +906,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
     PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::confirmDeletePin, vm::cancelDeletePin, vm::chooseDeleteMode, vm::acknowledgeDelete, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame, cancelSeeds = vm::cancelSeeds, setExtraType = vm::setExtraType, setOfflineGuess = vm::setOfflineGuess, setMaybeCutoff = vm::setMaybeCutoff, setCandidateRadius = vm::setCandidateRadius, openManual = vm::openManual, updateManual = vm::updateManual, saveManual = vm::saveManual, cancelManual = vm::cancelManual, pickManualPhoto = vm::pickManualPhoto, fetchManualPhoto = vm::fetchManualPhoto, removeManualPhoto = vm::removeManualPhoto, saveManualWithoutPhoto = vm::saveManualWithoutPhoto, openPinPhoto = vm::openPinPhoto, updatePinPhoto = vm::updatePinPhoto, pickPinPhoto = vm::pickPinPhoto, fetchPinPhoto = vm::fetchPinPhoto, removePinPhoto = vm::removePinPhoto, savePinPhoto = vm::savePinPhoto, cancelPinPhoto = vm::cancelPinPhoto,
-        setConfirmedOnly = vm::setConfirmedOnly, setPinCardsNearby = vm::setPinCardsNearby, setCheckMode = vm::setCheckMode, setPhotoMatch = vm::setPhotoMatch, resetPhotoMatch = vm::resetPhotoMatch, setLayer = vm::setLayer))
+        setConfirmedOnly = vm::setConfirmedOnly, setPinCardsNearby = vm::setPinCardsNearby, setCheckMode = vm::setCheckMode, embedPhotosNow = vm::embedPhotosNow, setPhotoMatch = vm::setPhotoMatch, resetPhotoMatch = vm::resetPhotoMatch, setLayer = vm::setLayer))
 }
 
 /**
@@ -943,7 +960,7 @@ class PlaceGuideActions(
     val openPinPhoto: (String) -> Unit = {}, val updatePinPhoto: ((PinPhotoState) -> PinPhotoState) -> Unit = {}, val pickPinPhoto: (String?) -> Unit = {}, val fetchPinPhoto: () -> Unit = {}, val removePinPhoto: () -> Unit = {}, val savePinPhoto: () -> Unit = {}, val cancelPinPhoto: () -> Unit = {},
     /** Layered confirmation: the user switches, the check mode, the nine numbers and the Developer layer switches. */
     val setConfirmedOnly: (Boolean) -> Unit = {}, val setPinCardsNearby: (Boolean) -> Unit = {}, val setCheckMode: (com.rokid.context.work.frames.place.CheckMode) -> Unit = {},
-    val setPhotoMatch: (com.rokid.context.memory.retrieval.PhotoMatchConfig) -> Unit = {}, val resetPhotoMatch: () -> Unit = {}, val setLayer: (String, Boolean) -> Unit = { _, _ -> },
+    val embedPhotosNow: () -> Unit = {}, val setPhotoMatch: (com.rokid.context.memory.retrieval.PhotoMatchConfig) -> Unit = {}, val resetPhotoMatch: () -> Unit = {}, val setLayer: (String, Boolean) -> Unit = { _, _ -> },
 )
 
 @Composable
@@ -989,6 +1006,8 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
         if (state.developerMode) item {
             SettingsCard {
                 Text("Photo check layers (Developer)", style = MaterialTheme.typography.titleMedium)
+                SwitchRow("Reference photos of seeded places", "On: photos are fetched on free Wi-Fi only and prepared while charging and not hot. Off: neither runs.", state.layerRefPhotos, { on.setLayer("refphotos", it) }, tag = "place_layer_refphotos")
+                SecondaryAction("Embed seed photos now", on.embedPhotosNow, tag = "place_embed_photos_now")
                 SwitchRow("Layer 1: photo vs reference photos", "On the phone. Off = kill switch: the photo is never compared with reference photos.", state.layerPhoto, { on.setLayer("photo", it) }, tag = "place_layer_photo")
                 SwitchRow("Layer 2: online vision check", "Off = the online vision model is never called for places.", state.layerOnline, { on.setLayer("online", it) }, tag = "place_layer_online")
                 SwitchRow("Layer 3: offline guess", "Off = no offline guess (Maybe). The user switch above and the downloaded model still apply.", state.layerOffline, { on.setLayer("offline", it) }, tag = "place_layer_offline")
@@ -1057,6 +1076,8 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 Text("Seed this area", style = MaterialTheme.typography.titleMedium)
                 NoticeText(PlaceGuideModel.SEED_NOTE, tag = "place_guide_seed_note")
                 NoticeText(com.rokid.context.phone.ui.settings.privacy.zones.SeedAreaList.ATTRIBUTION, tag = "place_guide_attribution")
+                state.refPhotoLine?.let { NoticeText(it, tag = "place_ref_photo_line") }
+                NoticeText(PlaceGuideModel.REF_PHOTO_NOTE, tag = "place_ref_photo_note")
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(s, { s = it }, label = { Text("South") }, singleLine = true, modifier = Modifier.weight(1f).testTag("seed_south"))
                     OutlinedTextField(w, { w = it }, label = { Text("West") }, singleLine = true, modifier = Modifier.weight(1f).testTag("seed_west"))

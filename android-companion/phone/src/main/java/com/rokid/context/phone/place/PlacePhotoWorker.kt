@@ -119,7 +119,8 @@ class PlacePhotoWorker(appContext: Context, params: WorkerParameters) : Coroutin
                 phase.run { t -> runCatching { setProgress(Data.Builder().putInt("ok", t.ok).putInt("of", t.seeded).build()); setForeground(info(t.ok + t.none, t.seeded)) } }
             }
             val t = packOf(applicationContext).photoTotals()
-            PcLog.i(TAG, "photo work done end=$end seeded=${t.seeded} ok=${t.ok} none=${t.none} waiting=${t.waiting}")
+            val how = end.name; val n = t.seeded; val ok = t.ok; val failed = t.none; val left = t.waiting
+            PcLog.i(TAG, "photo work done how=$how n=$n ok=$ok none=$failed left=$left")
             store.set(if (end == PhotoEnd.CAP_REACHED) PhotoPhase.CAP else PhotoPhase.DONE)
             PlacePhotoWork(applicationContext).ensureEmbed()
             Result.success()
@@ -127,7 +128,8 @@ class PlacePhotoWorker(appContext: Context, params: WorkerParameters) : Coroutin
         } catch (e: PlaceOfflineOnly) { stopped(SeedGate.OFFLINE_ONLY)
         } catch (e: kotlinx.coroutines.CancellationException) { throw e
         } catch (e: PhotoPhaseRetry) {
-            PcLog.i(TAG, "photo work retry cls=${e.cause?.javaClass?.simpleName ?: "none"}")
+            val cls = e.cause?.javaClass?.simpleName ?: "none"
+            PcLog.i(TAG, "photo work retry cls=$cls")
             if (runAttemptCount >= MAX_ATTEMPTS) { store.set(PhotoPhase.FAILED); Result.failure() } else Result.retry()
         } catch (e: Exception) {
             PcLog.i(TAG, "photo work failed cls=${e.javaClass.simpleName}"); store.set(PhotoPhase.FAILED); Result.failure()
@@ -137,7 +139,7 @@ class PlacePhotoWorker(appContext: Context, params: WorkerParameters) : Coroutin
     private fun stopped(reason: String): Result = when (reason) {
         SeedGate.OFFLINE_ONLY -> { store.set(PhotoPhase.OFFLINE_ONLY); PcLog.i(TAG, "photo work refused: offline only"); Result.failure() }
         PhotoGate.OFF -> { store.set(PhotoPhase.OFF); Result.success() }
-        else -> { store.set(PhotoPhase.WAITING_WIFI); PcLog.i(TAG, "photo work waits reason=${reason.replace(' ', '_')}"); Result.retry() } // free Wi-Fi, a network or the data saver: wait, never mobile data
+        else -> { store.set(PhotoPhase.WAITING_WIFI); val why = reason.replace(' ', '_'); PcLog.i(TAG, "photo work waits why=$why"); Result.retry() } // free Wi-Fi, a network or the data saver: wait, never mobile data
     }
 
     private fun info(done: Int, of: Int): ForegroundInfo {
@@ -167,7 +169,8 @@ class PlaceEmbedWorker(appContext: Context, params: WorkerParameters) : Coroutin
         val pack = PlaceGraph.readyPack(applicationContext)
         val e = PlaceRefPhotos.embedder(applicationContext, pack)
         val end = withContext(Dispatchers.Default) { e.run(ignoreCharging = force) }
-        PcLog.i(TAG, "photo embed end=$end embedded=${e.embedded} failed=${e.failed} force=${if (force) 1 else 0}")
+        val how = end.name; val ok = e.embedded; val failed = e.failed; val n = if (force) 1 else 0
+        PcLog.i(TAG, "photo embed how=$how ok=$ok failed=$failed force=$n")
         return when (end) { EmbedEnd.HOT -> Result.retry(); else -> Result.success() }
     }
     companion object { const val FORCE = "force"; const val UNIQUE = "place_photo_embed"; const val UNIQUE_NOW = "place_photo_embed_now"; private const val TAG = "PcPlacePhotos" }
@@ -209,4 +212,17 @@ class PlacePhotoWork(private val app: Context, private val wm: () -> WorkManager
     }
 
     fun cancelAll() { wm().cancelUniqueWork(PlacePhotoWorker.UNIQUE); wm().cancelUniqueWork(PlaceEmbedWorker.UNIQUE); wm().cancelUniqueWork(PlaceEmbedWorker.UNIQUE_NOW); PhotoPhaseStore(app).clear() }
+}
+
+/** The words of the photo phase for the lists (fixed phrases, no names). */
+object PlacePhotoText {
+    /** Why the photos of an incomplete area wait; null while the phase is running or done. */
+    fun note(s: PhotoPhase): String? = when (s) {
+        PhotoPhase.RUNNING, PhotoPhase.DONE -> null
+        PhotoPhase.OFFLINE_ONLY -> "Offline only"
+        PhotoPhase.OFF -> "photos are off"
+        PhotoPhase.FAILED -> "failed, tap Retry photos"
+        PhotoPhase.CAP -> "photo storage is full"
+        PhotoPhase.IDLE, PhotoPhase.WAITING_WIFI -> "waiting for free Wi-Fi"
+    }
 }

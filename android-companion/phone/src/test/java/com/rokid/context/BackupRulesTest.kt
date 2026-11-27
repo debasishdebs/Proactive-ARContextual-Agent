@@ -53,7 +53,7 @@ class BackupRulesTest {
      * the vendor SDK's rokid_bridge) or a recognizer probe made on another phone (voice_probe).
      */
     private val setupState: Set<String> get() = setOf(
-        "onboarding", "place_seed_progress", "place_seed_timing", "app_config", "memory_graph", "index_maintenance", "pipeline_stats", "rokid_link", "rokid_bridge", "voice_probe",
+        "onboarding", "place_seed_progress", "place_seed_timing", "place_photo_phase", "app_config", "memory_graph", "index_maintenance", "pipeline_stats", "rokid_link", "rokid_bridge", "voice_probe",
         // Fix wave I2: the wearer's "I exited the glasses app" (device state of this pairing): never restored onto another phone.
         com.rokid.context.phone.hub.PrefsStandDown.PREFS,
         // Derived state: restored, they would say adoption / retirement already happened on an install that never did it.

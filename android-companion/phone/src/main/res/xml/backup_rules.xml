@@ -93,6 +93,7 @@
     <!-- Background place seeding (S3): cell counts per hashed area key; per-device work state, gone after a restore -->
     <exclude domain="sharedpref" path="place_seed_progress.xml" />
     <exclude domain="sharedpref" path="place_seed_timing.xml" />
+    <exclude domain="sharedpref" path="place_photo_phase.xml" />
     <!-- Seeded-area colours: a palette index per hashed area key; per-device, default again after a restore -->
     <exclude domain="sharedpref" path="seed_area_colours.xml" />
     <!-- Roaming data saver: mode, "I'm abroad" and today's skipped counts are per-device (a restore onto another phone would be wrong there): back to the default (Wi-Fi and home mobile data) after a restore. -->

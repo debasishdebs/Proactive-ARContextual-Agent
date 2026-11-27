@@ -34,6 +34,8 @@ interface PlaceHistoryControl {
     suspend fun rows(): List<PlaceCardLogEntity>
     /** The card line, re-read from the pack or the pin by place id; null = the place is no longer in the pack. */
     suspend fun line(row: PlaceCardLogEntity): String?
+    /** B2: the credit of the reference photo stored for a place this row cites ("Reference photo: author, licence, Wikimedia Commons"); null = no photo. */
+    suspend fun credit(row: PlaceCardLogEntity): String? = null
     /** The photo file of a LIVE frame (for the thumbnail); null = no photo (gone, or never linked). */
     suspend fun photoPath(frameId: String): String?
     suspend fun delete(id: String): Boolean
@@ -55,12 +57,15 @@ data class PlaceHistoryRowUi(
 fun PlaceCardLogEntity.toUi() = PlaceHistoryRowUi(id, title, at, kind, delivery, placeId, members?.split(',')?.filter { it.isNotEmpty() }.orEmpty(), frameId, photoGone == 1, confPct)
 
 /** The detail of one row: the line (null = place gone), the live photo, and the reason "Show on glasses again" is off. */
-data class PlaceHistoryDetail(val row: PlaceHistoryRowUi, val line: String?, val photoPath: String?, val showAgainBlock: String?, val message: String? = null, val busy: Boolean = false)
+data class PlaceHistoryDetail(val row: PlaceHistoryRowUi, val line: String?, val photoPath: String?, val showAgainBlock: String?, val message: String? = null, /** B2: the credit line of the stored reference photo of the cited place (author, licence, Wikimedia Commons); null = none. */ val credit: String? = null, val busy: Boolean = false)
 
 /** What "Show on glasses again" depends on, read by the control at the time of the tap. */
 data class ShowAgainEnv(val placeGuideOn: Boolean, val zoneBlocked: Boolean, val glassesConnected: Boolean)
 
 object PlaceHistoryModel {
+    /** The credit of a place photo, kept small: the author and licence the file page names, then where it comes from. */
+    fun creditLine(author: String?, licence: String?): String =
+        "Reference photo: " + listOfNotNull(author?.takeIf { it.isNotBlank() }, licence?.takeIf { it.isNotBlank() }, "Wikimedia Commons").joinToString(", ")
     const val OFF_LINE = "Card history is off"
     const val EMPTY = "No place cards yet"
     const val SECTION = "Recent place cards"
@@ -159,6 +164,7 @@ fun PlaceHistoryDetailDialog(d: PlaceHistoryDetail, zone: ZoneId, onClose: () ->
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 NoticeText("${PlaceHistoryModel.timeLabel(r.atMs, zone)} · ${PlaceHistoryModel.summary(r)}", tag = "place_history_detail_meta")
                 NoticeText(d.line ?: PlaceHistoryModel.GONE_LINE, tag = "place_history_detail_line")
+                d.credit?.let { NoticeText(it, tag = "place_history_detail_credit") }
                 r.confPct?.let { NoticeText("Confidence about $it %", tag = "place_history_detail_conf") }
                 if (d.photoPath != null) com.rokid.context.core.ui.components.FrameThumb(d.photoPath, Modifier.testTag("place_history_detail_photo"), size = 96.dp)
                 else if (r.photoGone) NoticeText(PlaceHistoryModel.PHOTO_GONE, tag = "place_history_detail_photo_gone")

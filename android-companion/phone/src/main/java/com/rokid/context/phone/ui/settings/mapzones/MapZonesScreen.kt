@@ -134,7 +134,7 @@ fun MapZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = 
         DisposableEffect(mapVm) { onDispose { mapVm.cancelDraw() } }
         LaunchedEffect(seedState?.editSeq) { if ((seedState?.editSeq ?: 0) > 0) mapVm.editSeedBox(seedState?.editBox) } // "Edit box": the area's rectangle becomes the draft
     }
-    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour, seedVm::requestSeedAgain, seedVm::editArea, seedVm::endEdit, seedVm::viewportSettled, seedVm::setShowPlaces, seedVm::tapDot) else null
+    val seedPanel = if (seedVm != null && seedState != null) SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage, seedVm::cancelSeed, seedVm::setRemoveWithPlaces, seedVm::rename, seedVm::retryFailed, seedVm::focusArea, seedVm::clearFocus, seedVm::setColour, seedVm::requestSeedAgain, seedVm::editArea, seedVm::endEdit, seedVm::viewportSettled, seedVm::setShowPlaces, seedVm::tapDot, retryPhotos = seedVm::retryPhotos) else null
     val view = remember { MapViewState() }
     val zoneCb = ZonesCallbacks.of(zonesVm, back)
     val offlinePanel = offline?.let { o ->
