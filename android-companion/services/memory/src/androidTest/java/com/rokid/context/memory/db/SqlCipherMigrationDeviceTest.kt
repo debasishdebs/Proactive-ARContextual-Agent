@@ -92,7 +92,7 @@ class SqlCipherMigrationDeviceTest {
 
     private val schemaDir = "com.rokid.context.memory.db.ContextDatabase"
     /** The latest exported schema version: the chain must land here. */
-    private val latest = 18
+    private val latest = 19
 
     private fun schemaTables(version: Int): Set<String> {
         val json = inst.context.assets.open("$schemaDir/$version.json").bufferedReader().use { it.readText() }
@@ -159,7 +159,7 @@ class SqlCipherMigrationDeviceTest {
 
     /**
      * One keyed fixture that is a faithful snapshot of the HISTORICAL schema [version] (built from its exported `<version>.json`, not by trimming the current schema),
-     * seeded with rows, then migrated through both production builders to the CURRENT latest version (v17): rows survive, every v17 table exists, integrity_check passes.
+     * seeded with rows, then migrated through both production builders to the CURRENT latest version (v19): rows survive, every v19 table exists, integrity_check passes.
      */
     private fun migratesToLatestFrom(version: Int) = runBlocking(Dispatchers.IO) {
         System.loadLibrary("sqlcipher")
