@@ -343,10 +343,12 @@ object SeedAreaList {
     /** "Photos: 412 of 980, 37 without a photo" (+ " (waiting for free Wi-Fi)"): counts only; null when the area has no places or nothing is known. */
     fun photosText(a: SeedAreaInfo): String? = a.photos?.takeIf { it.total > 0 }?.let {
         com.rokid.context.phone.place.PhotoStageText.line(a.seed != null, it.done, it.total, it.matched, it.toMatch, it.note)
-            ?: "Photos: ${it.done} of ${it.total}, ${it.none} without a photo"
+            ?: ("Photos: ${it.done} of ${it.total}, ${it.none} without a photo" + if (it.toMatch > 0) " · Matched ${it.matched} of ${it.toMatch}" else "")
     }
     /** True while some area still has places without a decided photo: the list then offers "Retry photos". */
     fun photosIncomplete(areas: List<SeedAreaInfo>): Boolean = areas.any { it.photos?.complete == false }
+    /** "Retry photos" is always there once an area has photo counts: it also queues the matching of photos that are downloaded but not matched. */
+    fun photosActionable(areas: List<SeedAreaInfo>): Boolean = areas.any { (it.photos?.total ?: 0) > 0 }
     fun row(index: Int, a: SeedAreaInfo, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
         val parts = mutableListOf(name(index, a), statusText(a))
         photosText(a)?.let { parts += it }
@@ -453,7 +455,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             infos = a
             val show = runCatching { control.showPlaces() }.getOrDefault(true)
             _state.update { it.copy(showPlaces = show) }
-            _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, photoRetry = SeedAreaList.photosIncomplete(a), rates = r, pins = p, progress = SeedAreaList.progress(a)).keepSelection(a) }
+            _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, photoRetry = SeedAreaList.photosActionable(a), rates = r, pins = p, progress = SeedAreaList.progress(a)).keepSelection(a) }
             loadDots()
             if (a.any { it.seed != null || it.photos?.busy == true }) startPoll()
         }
@@ -472,7 +474,7 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
             com.rokid.context.phone.ui.settings.seedTicks(POLL_MS).takeWhile {
                 val a = runCatching { control.areas() }.getOrDefault(emptyList())
                 infos = a
-                _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, photoRetry = SeedAreaList.photosIncomplete(a), progress = SeedAreaList.progress(a)).keepSelection(a) }
+                _state.update { it.copy(areas = SeedOverlays.of(a), rows = SeedAreaList.rows(a), header = SeedAreaList.header(a).takeIf { a.isNotEmpty() }, seededPlaces = a.sumOf { x -> x.places ?: 0 }, photoRetry = SeedAreaList.photosActionable(a), progress = SeedAreaList.progress(a)).keepSelection(a) }
                 a.any { it.seed != null || it.photos?.busy == true }
             }.collect {}
             loadDots() // the seed ended: its new places show

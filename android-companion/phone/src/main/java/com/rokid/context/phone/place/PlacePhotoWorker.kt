@@ -197,11 +197,13 @@ class PlacePhotoWork(private val app: Context, private val wm: () -> WorkManager
     suspend fun ensureIfNeeded(pack: com.rokid.context.memory.place.PlacePack) {
         val space = PlaceRefPhotos.activeSpace(app) ?: "-"
         if (pack.needsFetch(space, PlaceImageFetcher.MAX_TRIES, 1).isNotEmpty()) ensure()
-        if (pack.needsEmbed(space, 1).isNotEmpty()) ensureEmbed()
+        val needEmbed = pack.needsEmbed(space, 1).isNotEmpty()
+        PcLog.i("PcPlacePhotos", "photo catch-up needFetch=${pack.needsFetch(space, PlaceImageFetcher.MAX_TRIES, 1).isNotEmpty()} needEmbed=$needEmbed space=${if (space == "-") "none" else "ok"}")
+        ensureEmbed() // always: the worker returns at once when nothing needs a vector, and it leaves a log line either way
     }
 
     /** The "Retry" button: starts the phase again (failed places with tries left included). */
-    fun retry() = ensure(replace = true)
+    fun retry() { ensure(replace = true); ensureEmbed() }
 
     /** Embed ("matching"): queued as soon as photos are stored; no charging or network constraint (the worker stops itself when the phone is too hot). */
     fun ensureEmbed() {
