@@ -8,7 +8,7 @@ import java.util.UUID
 /**
  * A place the user pinned (Place Guide v2, spec 2026-11-16 §B3 / §D 1.2.0): a sub-place Wikidata lacks (Sri Lanka's Mirror Wall, Lion's Paw) or any spot of their own. Everything in it is typed by the
  * user and stays on the phone: the [name] is a candidate name for the match (names only, like any other place), the [note] IS the card text ("Your note"), and neither is ever fetched, logged or sent
- * anywhere else. [id] is `user:<uuid>`; the pack holds it as a row with source `user` and `pinned = true` (never evicted, never overwritten by a fetch).
+ * anywhere else. [id] is `user:<uuid>`; the pack holds it as a row with source `manual` and `pinned = true` (never evicted, never overwritten by a fetch).
  */
 data class UserPlace(
     val id: String,
@@ -36,7 +36,7 @@ data class UserPlace(
             (parentId == null || (parentId != id && !parentId.startsWith(PREFIX) && parentId.isNotBlank())) &&
             (momentId == null || com.rokid.context.memory.moment.MomentId.parse(momentId) != null) && (pinnedAt == null || pinnedAt > 0)
 
-    /** The pack row: pinned, source `user`, the note as summary. [lastUsedDay] is kept across edits by the pack. */
+    /** The pack row: pinned, source `manual`, the note as summary. [lastUsedDay] is kept across edits by the pack. */
     fun toEntity(lastUsedDay: Int = 0): PlaceEntity {
         val row = PlaceEntity(id, parentId, name, kind, lat, lon, radiusM, note, SOURCE, SOURCE, 0, seeded = false, pinned = true, lastUsedDay = lastUsedDay, bytes = 0)
         return row.copy(bytes = PlacePack.sizeOf(row))
@@ -44,7 +44,10 @@ data class UserPlace(
 
     companion object {
         const val PREFIX = "user:"
-        const val SOURCE = "user"
+        /** The source every user pin carries in places.db and everywhere it is shown or exported ("manual"). Rows written by older builds say [LEGACY_SOURCE]; the mirror is rebuilt at every start, so they heal; [isUserSource] reads both. */
+        const val SOURCE = "manual"
+        const val LEGACY_SOURCE = "user"
+        fun isUserSource(source: String): Boolean = source == SOURCE || source == LEGACY_SOURCE
         const val DEFAULT_RADIUS_M = 60
         const val MIN_RADIUS_M = 10
         const val NOTE_MAX = 140

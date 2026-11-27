@@ -47,7 +47,7 @@ class PlacePackUserTest {
         p.replaceUserPlaces(listOf(a, b, a.copy(id = "wd:bad")))
         val rows = db.dao().userPlaces().associateBy { it.id }
         assertEquals(setOf(a.id, b.id), rows.keys)
-        assertTrue(rows.values.all { it.pinned && !it.seeded && it.source == "user" })
+        assertTrue(rows.values.all { it.pinned && !it.seeded && it.source == "manual" })
         db.dao().touch(listOf(a.id), 321)
         p.replaceUserPlaces(listOf(a.copy(name = "Mirror Wall (edited)", note = "New note.")))
         val after = db.dao().userPlaces().single()
@@ -62,7 +62,7 @@ class PlacePackUserTest {
         p.replaceUserPlaces(listOf(mine))
         assertEquals(CellOutcome.FETCHED, p.ensureCell(cell, true))
         val row = db.dao().byIds(listOf(mine.id)).single()
-        assertEquals("Mine", row.name); assertEquals("Only mine.", row.summary); assertEquals("user", row.source); assertTrue(row.pinned)
+        assertEquals("Mine", row.name); assertEquals("Only mine.", row.summary); assertEquals("manual", row.source); assertTrue(row.pinned)
         assertEquals(1, db.dao().byIds(listOf("wd:Q1")).size)
     }
 

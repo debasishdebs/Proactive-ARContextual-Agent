@@ -48,7 +48,7 @@ class UserPlaceTest {
 
     @Test fun theRowIsPinnedUserSourcedAndCarriesTheNoteAsItsSummary() {
         val r = pin().toEntity(lastUsedDay = 7)
-        assertTrue(r.pinned); assertFalse(r.seeded); assertEquals("user", r.source); assertEquals("Polished plaster wall, with old graffiti.", r.summary)
+        assertTrue(r.pinned); assertFalse(r.seeded); assertEquals("manual", r.source); assertEquals("Polished plaster wall, with old graffiti.", r.summary)
         assertEquals(7, r.lastUsedDay); assertTrue(r.bytes > 0); assertEquals(0L, r.fetchedAt)
     }
 

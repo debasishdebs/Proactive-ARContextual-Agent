@@ -2,6 +2,7 @@ package com.rokid.context.work.frames.place
 
 import com.rokid.context.memory.place.PlaceEntity
 import com.rokid.context.memory.place.PlaceKinds
+import com.rokid.context.memory.place.UserPlace
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.text.SimpleDateFormat
@@ -81,7 +82,7 @@ object PlaceCards {
 
     /** A photo-confirmed card: the first sentence of the pack summary and where the pack got it. */
     fun photo(p: PlaceEntity, frameId: String): PlaceCard =
-        PlaceCard(p.id, p.name, (if (p.source == USER_SOURCE) userLine(p.summary) else firstSentence(p.summary)).ifEmpty { kindLabel(p.kind) }, sourceLabel(p), PlaceConfidence.PHOTO, frameId)
+        PlaceCard(p.id, p.name, (if (UserPlace.isUserSource(p.source)) userLine(p.summary) else firstSentence(p.summary)).ifEmpty { kindLabel(p.kind) }, sourceLabel(p), PlaceConfidence.PHOTO, frameId)
 
     const val PIN_SOURCE = "Your pin · here"
     const val CLUSTER_SOURCE = "Your pins · here"
@@ -100,7 +101,7 @@ object PlaceCards {
     /** The text of a user place: the user's own note, whole (it is at most 140 characters), on one line. It is never summarised or rewritten. */
     fun userLine(note: String): String = note.replace(Regex("\\s+"), " ").trim().take(LINE_MAX)
 
-    const val USER_SOURCE = "user"
+    const val USER_SOURCE = UserPlace.SOURCE
     const val USER_LABEL = "Your note"
 
     /**
@@ -124,7 +125,7 @@ object PlaceCards {
     const val TITLE_MAX = 80
 
     /** The stored intro of [p] fitted into [max] characters: a user pin gives its note, a pack place whole sentences from the start of its summary (the card's one-line length rule, see [intro]). */
-    fun introOf(p: PlaceEntity, max: Int): String = if (p.source == USER_SOURCE) userLine(p.summary).take(max.coerceAtLeast(0)) else intro(p.summary, max)
+    fun introOf(p: PlaceEntity, max: Int): String = if (UserPlace.isUserSource(p.source)) userLine(p.summary).take(max.coerceAtLeast(0)) else intro(p.summary, max)
 
     /** Whole sentences from the start of [summary] while they fit in [max] characters; when even the first does not fit it is cut at a word end with an ellipsis. Empty for an empty summary or no room. */
     fun intro(summary: String, max: Int = LINE_MAX): String {
@@ -162,7 +163,7 @@ object PlaceCards {
 
     /** "Wikipedia · fetched 12 Nov" (the source and the day the pack fetched it). */
     fun sourceLabel(p: PlaceEntity, zone: java.util.TimeZone = java.util.TimeZone.getDefault()): String {
-        if (p.source == USER_SOURCE) return USER_LABEL
+        if (UserPlace.isUserSource(p.source)) return USER_LABEL
         val name = when {
             p.source.startsWith("wikipedia") -> "Wikipedia"
             p.source == "wikidata" -> "Wikidata"
